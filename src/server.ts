@@ -103,6 +103,10 @@ export class PayGateServer {
         return this.handleRevokeKey(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
+      case '/balance':
+        return this.handleBalance(req, res);
+      case '/usage':
+        return this.handleUsage(req, res);
       case '/stripe/webhook':
         return this.handleStripeWebhook(req, res);
       default:
@@ -148,13 +152,16 @@ export class PayGateServer {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       name: this.config.name,
-      version: '0.1.0',
+      version: '0.4.0',
       endpoints: {
         mcp: 'POST /mcp — JSON-RPC (MCP transport). Send X-API-Key header.',
+        balance: 'GET /balance — Check own credits (requires X-API-Key)',
         status: 'GET /status — Usage dashboard (requires X-Admin-Key)',
         createKey: 'POST /keys — Create API key (requires X-Admin-Key)',
         listKeys: 'GET /keys — List API keys (requires X-Admin-Key)',
+        revokeKey: 'POST /keys/revoke — Revoke a key (requires X-Admin-Key)',
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
+        usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
       },
       shadowMode: this.config.shadowMode,
     }));
@@ -293,6 +300,86 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Key revoked' }));
+  }
+
+  // ─── /balance — Client self-service ────────────────────────────────────────
+
+  private handleBalance(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const apiKey = (req.headers['x-api-key'] as string) || null;
+    if (!apiKey) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing X-API-Key header' }));
+      return;
+    }
+
+    const record = this.gate.store.getKey(apiKey);
+    if (!record || !record.active) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid or inactive API key' }));
+      return;
+    }
+
+    // Return balance and basic usage info (no sensitive data)
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      name: record.name,
+      credits: record.credits,
+      totalSpent: record.totalSpent,
+      totalCalls: record.totalCalls,
+      lastUsedAt: record.lastUsedAt,
+    }));
+  }
+
+  // ─── /usage — Admin usage export ──────────────────────────────────────────
+
+  private handleUsage(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    // Parse query params for filtering
+    const urlParts = req.url?.split('?') || [];
+    const queryStr = urlParts[1] || '';
+    const params = new URLSearchParams(queryStr);
+    const since = params.get('since') || undefined;
+    const format = params.get('format') || 'json';
+
+    const events = this.gate.meter.getEvents(since);
+
+    if (format === 'csv') {
+      // CSV export
+      const header = 'timestamp,apiKey,keyName,tool,creditsCharged,allowed,denyReason';
+      const rows = events.map(e =>
+        `${e.timestamp},${e.apiKey.slice(0, 10)}...,${e.keyName},${e.tool},${e.creditsCharged},${e.allowed},${e.denyReason || ''}`
+      );
+      res.writeHead(200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': 'attachment; filename="paygate-usage.csv"',
+      });
+      res.end([header, ...rows].join('\n'));
+    } else {
+      // JSON export (default)
+      // Mask API keys in export
+      const masked = events.map(e => ({
+        ...e,
+        apiKey: e.apiKey.slice(0, 10) + '...',
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        count: masked.length,
+        since: since || 'all',
+        events: masked,
+      }, null, 2));
+    }
   }
 
   // ─── /stripe/webhook — Stripe integration ────────────────────────────────

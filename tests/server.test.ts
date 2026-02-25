@@ -213,6 +213,282 @@ describe('PayGateServer (HTTP)', () => {
     });
   });
 
+  // ─── /balance — Client self-service ──────────────────────────────────────
+
+  describe('GET /balance', () => {
+    let clientKey: string;
+
+    beforeAll(async () => {
+      const res = await request('/keys', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: { name: 'balance-client', credits: 250 },
+      });
+      clientKey = res.body.key;
+    });
+
+    it('should return balance for valid API key', async () => {
+      const res = await request('/balance', {
+        headers: { 'X-API-Key': clientKey },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('balance-client');
+      expect(res.body.credits).toBe(250);
+      expect(res.body.totalSpent).toBe(0);
+      expect(res.body.totalCalls).toBe(0);
+      expect(res.body.lastUsedAt).toBeNull();
+    });
+
+    it('should NOT expose the full API key', async () => {
+      const res = await request('/balance', {
+        headers: { 'X-API-Key': clientKey },
+      });
+      expect(res.status).toBe(200);
+      // Response should NOT contain the full key
+      const body = JSON.stringify(res.body);
+      expect(body).not.toContain(clientKey);
+    });
+
+    it('should reject missing API key', async () => {
+      const res = await request('/balance');
+      expect(res.status).toBe(401);
+      expect(res.body.error).toContain('Missing');
+    });
+
+    it('should reject invalid API key', async () => {
+      const res = await request('/balance', {
+        headers: { 'X-API-Key': 'pg_nonexistent_000000' },
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('Invalid');
+    });
+
+    it('should reject revoked key', async () => {
+      // Create and revoke a key
+      const create = await request('/keys', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: { name: 'revoked-balance', credits: 100 },
+      });
+      await request('/keys/revoke', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: { key: create.body.key },
+      });
+
+      const res = await request('/balance', {
+        headers: { 'X-API-Key': create.body.key },
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('should reject non-GET methods', async () => {
+      const res = await request('/balance', {
+        method: 'POST',
+        headers: { 'X-API-Key': clientKey },
+        body: {},
+      });
+      expect(res.status).toBe(405);
+    });
+  });
+
+  // ─── /keys/revoke — Admin key revocation ────────────────────────────────────
+
+  describe('POST /keys/revoke', () => {
+    it('should revoke an existing key', async () => {
+      const create = await request('/keys', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: { name: 'revoke-target', credits: 100 },
+      });
+      const key = create.body.key;
+
+      const res = await request('/keys/revoke', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: { key },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.message).toContain('revoked');
+
+      // Verify key is now inactive
+      const balance = await request('/balance', {
+        headers: { 'X-API-Key': key },
+      });
+      expect(balance.status).toBe(404);
+    });
+
+    it('should require admin key', async () => {
+      const res = await request('/keys/revoke', {
+        method: 'POST',
+        body: { key: 'pg_anything' },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('should reject missing key param', async () => {
+      const res = await request('/keys/revoke', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: {},
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('should 404 for nonexistent key', async () => {
+      const res = await request('/keys/revoke', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: { key: 'pg_nonexistent_key_000000' },
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('should reject non-POST', async () => {
+      const res = await request('/keys/revoke', {
+        headers: { 'X-Admin-Key': adminKey },
+      });
+      expect(res.status).toBe(405);
+    });
+  });
+
+  // ─── /usage — Admin usage export ────────────────────────────────────────
+
+  describe('GET /usage', () => {
+    it('should return usage events as JSON', async () => {
+      const res = await request('/usage', {
+        headers: { 'X-Admin-Key': adminKey },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.count).toBeDefined();
+      expect(res.body.since).toBe('all');
+      expect(Array.isArray(res.body.events)).toBe(true);
+    });
+
+    it('should require admin key', async () => {
+      const res = await request('/usage');
+      expect(res.status).toBe(401);
+    });
+
+    it('should mask API keys in JSON output', async () => {
+      // Make a tool call to generate usage data first
+      const create = await request('/keys', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: { name: 'usage-test', credits: 100 },
+      });
+      const key = create.body.key;
+
+      // Call a tool to generate a usage event
+      await request('/mcp', {
+        method: 'POST',
+        headers: { 'X-API-Key': key },
+        body: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'test-tool' },
+        },
+      });
+
+      const res = await request('/usage', {
+        headers: { 'X-Admin-Key': adminKey },
+      });
+      expect(res.status).toBe(200);
+
+      // Check that events have masked keys
+      if (res.body.events.length > 0) {
+        for (const event of res.body.events) {
+          expect(event.apiKey).toContain('...');
+          expect(event.apiKey.length).toBeLessThan(20);
+        }
+      }
+    });
+
+    it('should support CSV format', async () => {
+      return new Promise((resolve, reject) => {
+        const http = require('http');
+        const req = http.request({
+          hostname: 'localhost',
+          port,
+          path: '/usage?format=csv',
+          method: 'GET',
+          headers: {
+            'X-Admin-Key': adminKey,
+          },
+        }, (res: any) => {
+          let data = '';
+          res.on('data', (chunk: string) => { data += chunk; });
+          res.on('end', () => {
+            expect(res.statusCode).toBe(200);
+            expect(res.headers['content-type']).toContain('text/csv');
+            expect(res.headers['content-disposition']).toContain('paygate-usage.csv');
+            // First line should be the CSV header
+            const lines = data.split('\n');
+            expect(lines[0]).toContain('timestamp');
+            expect(lines[0]).toContain('apiKey');
+            expect(lines[0]).toContain('tool');
+            resolve(undefined);
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    });
+
+    it('should support since filter', async () => {
+      // Use a future date to get zero results
+      const futureDate = new Date(Date.now() + 86400000).toISOString();
+      return new Promise((resolve, reject) => {
+        const http = require('http');
+        const req = http.request({
+          hostname: 'localhost',
+          port,
+          path: `/usage?since=${encodeURIComponent(futureDate)}`,
+          method: 'GET',
+          headers: {
+            'X-Admin-Key': adminKey,
+            'Content-Type': 'application/json',
+          },
+        }, (res: any) => {
+          let data = '';
+          res.on('data', (chunk: string) => { data += chunk; });
+          res.on('end', () => {
+            const body = JSON.parse(data);
+            expect(res.statusCode).toBe(200);
+            expect(body.count).toBe(0);
+            expect(body.events).toEqual([]);
+            resolve(undefined);
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    });
+
+    it('should reject non-GET', async () => {
+      const res = await request('/usage', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey },
+        body: {},
+      });
+      expect(res.status).toBe(405);
+    });
+  });
+
+  // ─── /stripe/webhook — Stripe integration ────────────────────────────────
+
+  describe('POST /stripe/webhook', () => {
+    it('should return 404 when stripe is not configured', async () => {
+      const res = await request('/stripe/webhook', {
+        method: 'POST',
+        body: { type: 'checkout.session.completed' },
+      });
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('not configured');
+    });
+  });
+
   describe('CORS', () => {
     it('should handle OPTIONS preflight', async () => {
       const res = await request('/mcp', { method: 'OPTIONS' });

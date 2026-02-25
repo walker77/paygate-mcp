@@ -116,6 +116,33 @@ curl -X POST http://localhost:3402/topup \
   -d '{"key": "CLIENT_API_KEY", "credits": 500}'
 ```
 
+### Check Balance (Client Self-Service)
+
+```bash
+curl http://localhost:3402/balance \
+  -H "X-API-Key: CLIENT_API_KEY"
+```
+
+Returns credits, total spent, call count, and last used timestamp. Clients can check their own balance without needing admin access.
+
+### Export Usage Data (Admin)
+
+```bash
+# JSON export
+curl http://localhost:3402/usage \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# CSV export (for spreadsheet/billing import)
+curl "http://localhost:3402/usage?format=csv" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by date
+curl "http://localhost:3402/usage?since=2025-01-01T00:00:00Z" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+Returns per-call usage events with tool name, credits charged, and timestamps. API keys are masked in output.
+
 ### Check Status
 
 ```bash
@@ -130,10 +157,12 @@ Returns active keys, usage stats, per-tool breakdown, and deny reasons.
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/mcp` | POST | `X-API-Key` | JSON-RPC 2.0 proxy to wrapped MCP server |
+| `/balance` | GET | `X-API-Key` | Client self-service — check own credits |
 | `/keys` | POST | `X-Admin-Key` | Create a new API key with credits |
 | `/keys` | GET | `X-Admin-Key` | List all keys (masked) |
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
+| `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
 | `/stripe/webhook` | POST | Stripe Signature | Auto-top-up credits on payment |
 | `/` | GET | None | Health check |
@@ -234,7 +263,7 @@ const { port, adminKey } = await server.start();
 - API keys never forwarded to remote servers (HTTP transport)
 - Rate limiting is per-key, concurrent-safe
 - Stripe webhook signature verification (HMAC-SHA256, timing-safe)
-- Red-teamed with 50 adversarial security tests across 6 passes
+- Red-teamed with 60 adversarial security tests across 7 passes
 
 ## Current Limitations
 
@@ -246,6 +275,8 @@ const { port, adminKey } = await server.start();
 - [x] Persistent storage (`--state-file`)
 - [x] Streamable HTTP transport (`--remote-url`)
 - [x] Stripe webhook integration (`--stripe-secret`)
+- [x] Client self-service balance check (`/balance`)
+- [x] Usage data export — JSON and CSV (`/usage`)
 - [ ] Web dashboard for key management
 
 ## Requirements

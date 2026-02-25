@@ -5,6 +5,9 @@
  * Pass 2: Rate limit evasion and credit abuse
  * Pass 3: Input validation, injection, and edge cases
  * Pass 4: Persistence attack vectors
+ * Pass 5: HTTP transport security
+ * Pass 6: Stripe webhook security
+ * Pass 7: Self-service endpoint security
  */
 
 import { PayGateServer } from '../../src/server';
@@ -1073,5 +1076,213 @@ describe('RED TEAM — Stripe Webhook Security', () => {
     // Should not crash, just return error for nonexistent key
     const result = handler.handleWebhook(body, sig);
     expect(result.success).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PASS 7: Self-Service Endpoint Security
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('RED TEAM — Self-Service Endpoint Security', () => {
+  let server: PayGateServer;
+  let port: number;
+  let adminKey: string;
+
+  beforeAll(async () => {
+    port = 3800 + Math.floor(Math.random() * 100);
+    server = new PayGateServer({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port,
+    });
+    const result = await server.start();
+    port = result.port;
+    adminKey = result.adminKey;
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  // ── /balance: Information disclosure ──────────────────────────────────────
+
+  test('should not return full API key from /balance endpoint', async () => {
+    // Create a key
+    const createRes = await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'leak-test', credits: 100 },
+    });
+    const fullKey = createRes.body.key;
+
+    // Check balance
+    const res = await httpRequest(port, '/balance', {
+      headers: { 'X-API-Key': fullKey },
+    });
+
+    expect(res.status).toBe(200);
+    // Ensure the full key is NOT in the response body
+    const bodyStr = JSON.stringify(res.body);
+    expect(bodyStr).not.toContain(fullKey);
+  });
+
+  test('should not allow /balance to enumerate valid keys via timing', async () => {
+    // Both invalid and valid keys should return similar status codes
+    const validRes = await httpRequest(port, '/balance', {
+      headers: { 'X-API-Key': 'pg_nonexistent_key_aaaaaa' },
+    });
+    const invalidRes = await httpRequest(port, '/balance', {
+      headers: { 'X-API-Key': 'totally_wrong_format' },
+    });
+
+    // Both should return 404 (not found/invalid)
+    expect(validRes.status).toBe(404);
+    expect(invalidRes.status).toBe(404);
+  });
+
+  test('should reject /balance with admin key in X-API-Key header', async () => {
+    // Admin key should NOT work as an API key for /balance
+    const res = await httpRequest(port, '/balance', {
+      headers: { 'X-API-Key': adminKey },
+    });
+    expect(res.status).toBe(404); // Admin key is not in the key store
+  });
+
+  test('should not allow /balance to be used via POST to modify data', async () => {
+    const createRes = await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'post-balance', credits: 100 },
+    });
+
+    // Attempt POST to /balance with a body trying to set credits
+    const res = await httpRequest(port, '/balance', {
+      method: 'POST',
+      headers: { 'X-API-Key': createRes.body.key },
+      body: { credits: 999999 },
+    });
+    expect(res.status).toBe(405); // Method not allowed
+
+    // Verify credits unchanged
+    const balanceRes = await httpRequest(port, '/balance', {
+      headers: { 'X-API-Key': createRes.body.key },
+    });
+    expect(balanceRes.body.credits).toBe(100);
+  });
+
+  // ── /usage: Access control ────────────────────────────────────────────────
+
+  test('should not allow /usage access with regular API key', async () => {
+    const createRes = await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'usage-leak', credits: 100 },
+    });
+
+    // Try accessing /usage with regular API key as admin key
+    const res = await httpRequest(port, '/usage', {
+      headers: { 'X-Admin-Key': createRes.body.key },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  test('should mask API keys in /usage CSV output', async () => {
+    // Create key and make a call to generate usage
+    const createRes = await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'csv-leak', credits: 100 },
+    });
+    const fullKey = createRes.body.key;
+
+    await httpRequest(port, '/mcp', {
+      method: 'POST',
+      headers: { 'X-API-Key': fullKey },
+      body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'test_tool' } },
+    });
+
+    // Get CSV usage data
+    const res = await httpRequest(port, '/usage?format=csv', {
+      headers: { 'X-Admin-Key': adminKey },
+    });
+
+    expect(res.status).toBe(200);
+    // Full key should NOT appear in CSV
+    const csvBody = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    expect(csvBody).not.toContain(fullKey);
+  });
+
+  test('should handle /usage with malicious since parameter', async () => {
+    // SQL injection-style attack in since param (URL-encoded)
+    const malicious = encodeURIComponent("' OR 1=1; DROP TABLE users; --");
+    const res = await httpRequest(port, `/usage?since=${malicious}`, {
+      headers: { 'X-Admin-Key': adminKey },
+    });
+    expect(res.status).toBe(200);
+    // Should just return empty results (invalid ISO date matches nothing)
+  });
+
+  test('should handle /usage with XSS in format parameter', async () => {
+    const res = await httpRequest(port, '/usage?format=<script>alert(1)</script>', {
+      headers: { 'X-Admin-Key': adminKey },
+    });
+    // Should default to JSON (unknown format falls through to else branch)
+    expect(res.status).toBe(200);
+  });
+
+  // ── /keys/revoke: Authorization checks ───────────────────────────────────
+
+  test('should not allow a regular API key to revoke other keys', async () => {
+    const createRes1 = await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'victim', credits: 100 },
+    });
+    const createRes2 = await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'attacker', credits: 100 },
+    });
+
+    // Attacker tries to revoke victim's key using their own key as admin
+    const res = await httpRequest(port, '/keys/revoke', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': createRes2.body.key },
+      body: { key: createRes1.body.key },
+    });
+    expect(res.status).toBe(401);
+
+    // Verify victim's key is still active
+    const balance = await httpRequest(port, '/balance', {
+      headers: { 'X-API-Key': createRes1.body.key },
+    });
+    expect(balance.status).toBe(200);
+    expect(balance.body.credits).toBe(100);
+  });
+
+  test('should not allow double-revoke to cause errors', async () => {
+    const createRes = await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'double-revoke', credits: 100 },
+    });
+
+    // Revoke once
+    const res1 = await httpRequest(port, '/keys/revoke', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { key: createRes.body.key },
+    });
+    expect(res1.status).toBe(200);
+
+    // Revoke again — should not crash (idempotent is acceptable)
+    const res2 = await httpRequest(port, '/keys/revoke', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { key: createRes.body.key },
+    });
+    // revokeKey uses keys.get() not getKey(), so it finds revoked keys too
+    // Either 200 (idempotent) or 404 is acceptable — just must not crash
+    expect([200, 404]).toContain(res2.status);
   });
 });

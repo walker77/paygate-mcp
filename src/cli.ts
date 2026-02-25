@@ -201,7 +201,7 @@ async function main(): Promise<void> {
     case 'version':
     case '--version':
     case '-v':
-      console.log('paygate-mcp v0.3.0');
+      console.log('paygate-mcp v0.4.0');
       break;
 
     default:

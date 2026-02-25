@@ -8,7 +8,7 @@ Thanks for your interest in contributing! Here's how to get started.
 git clone https://github.com/walker77/paygate-mcp.git
 cd paygate-mcp
 npm install
-npm test        # Run all 165 tests
+npm test        # Run all 193 tests
 npm run build   # Compile TypeScript
 ```
 
