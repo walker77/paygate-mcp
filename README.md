@@ -1,6 +1,10 @@
 # paygate-mcp
 
-Monetize any MCP server with one command. Add API key auth, per-tool pricing, rate limiting, and usage metering to any Model Context Protocol server.
+[![CI](https://github.com/walker77/paygate-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/walker77/paygate-mcp/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/paygate-mcp.svg)](https://www.npmjs.com/package/paygate-mcp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+Monetize any MCP server with one command. Add API key auth, per-tool pricing, rate limiting, and usage metering to any Model Context Protocol server. Zero dependencies. Zero config. Zero code changes.
 
 ## Quick Start
 
@@ -171,7 +175,12 @@ const { port, adminKey } = await server.start();
 - **Single process** — No clustering or horizontal scaling.
 - **Stdio transport only** — The wrapped MCP server must use stdio (most do).
 
-Persistent storage and Stripe integration are on the roadmap.
+## Roadmap
+
+- [x] Persistent storage (`--state-file`)
+- [ ] Streamable HTTP transport (remote MCP servers)
+- [ ] Stripe webhook integration (real payments)
+- [ ] Web dashboard for key management
 
 ## Requirements
 
