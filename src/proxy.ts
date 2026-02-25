@@ -98,7 +98,7 @@ export class McpProxy extends EventEmitter {
           jsonrpc: '2.0',
           id: request.id,
           error: {
-            code: -32000,
+            code: -32402,
             message: `Payment required: ${decision.reason}`,
             data: {
               creditsRequired: this.gate.getToolPrice(toolCall.name),
@@ -111,12 +111,25 @@ export class McpProxy extends EventEmitter {
       // Allowed — forward to wrapped server
       const response = await this.forwardToServer(request);
 
+      // Refund on failure: if the downstream tool call returned an error,
+      // give the credits back (pre-execution deduction model).
+      let refunded = false;
+      if (response.error && this.gate.refundOnFailure && decision.creditsCharged > 0) {
+        this.gate.refund(apiKey!, toolCall.name, decision.creditsCharged);
+        refunded = true;
+      }
+
+      const remaining = refunded
+        ? (this.gate.store.getKey(apiKey!)?.credits ?? decision.remainingCredits)
+        : decision.remainingCredits;
+
       // Emit for observability
       this.emit('tool-call', {
         tool: toolCall.name,
         apiKey: apiKey?.slice(0, 10),
-        creditsCharged: decision.creditsCharged,
-        remainingCredits: decision.remainingCredits,
+        creditsCharged: refunded ? 0 : decision.creditsCharged,
+        remainingCredits: remaining,
+        refunded,
       });
 
       return response;

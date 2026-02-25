@@ -23,6 +23,7 @@ export { KeyStore } from './store';
 export { UsageMeter } from './meter';
 export { RateLimiter } from './rate-limiter';
 export { StripeWebhookHandler } from './stripe';
+export { WebhookEmitter } from './webhook';
 export { getDashboardHtml } from './dashboard';
 
 export type {

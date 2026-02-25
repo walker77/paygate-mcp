@@ -5,12 +5,20 @@
  * Usage:
  *   npx paygate-mcp wrap --server "npx my-mcp-server" --port 3402
  *   npx paygate-mcp wrap --server "python server.py" --price 2 --rate-limit 30
- *   npx paygate-mcp keys create --name "my-client" --credits 500
- *   npx paygate-mcp status
+ *   npx paygate-mcp wrap --config paygate.json
  */
 
 import { PayGateServer } from './server';
-import { ToolPricing } from './types';
+import { PayGateConfig, ToolPricing } from './types';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -42,22 +50,26 @@ function printUsage(): void {
   USAGE:
     paygate-mcp wrap --server <command> [options]     # stdio transport
     paygate-mcp wrap --remote-url <url> [options]     # Streamable HTTP transport
+    paygate-mcp wrap --config <path> [options]        # load from config file
 
   OPTIONS:
-    --server <cmd>       MCP server command to wrap via stdio (required unless --remote-url)
-                         e.g. "npx @modelcontextprotocol/server-filesystem /"
-    --remote-url <url>   Remote MCP server URL (Streamable HTTP transport)
-                         e.g. "https://my-mcp-server.example.com/mcp"
-    --port <n>           HTTP port (default: 3402)
-    --price <n>          Default credits per tool call (default: 1)
-    --rate-limit <n>     Max calls/min per key (default: 60, 0=unlimited)
-    --name <s>           Server display name (default: "PayGate MCP Server")
-    --shadow             Shadow mode — log but don't enforce payment
-    --admin-key <s>      Set admin key (default: auto-generated)
-    --tool-price <t:n>   Per-tool price override (e.g. "search:5,generate:10")
-    --import-key <k:c>   Import an existing API key with credits (e.g. "pg_abc123:100")
-    --state-file <path>  Persist keys/credits to a JSON file (survives restarts)
-    --stripe-secret <s>  Stripe webhook signing secret (enables /stripe/webhook endpoint)
+    --server <cmd>         MCP server command to wrap via stdio (required unless --remote-url or --config)
+                           e.g. "npx @modelcontextprotocol/server-filesystem /"
+    --remote-url <url>     Remote MCP server URL (Streamable HTTP transport)
+                           e.g. "https://my-mcp-server.example.com/mcp"
+    --config <path>        Load all settings from a JSON file
+    --port <n>             HTTP port (default: 3402)
+    --price <n>            Default credits per tool call (default: 1)
+    --rate-limit <n>       Max calls/min per key (default: 60, 0=unlimited)
+    --name <s>             Server display name (default: "PayGate MCP Server")
+    --shadow               Shadow mode — log but don't enforce payment
+    --admin-key <s>        Set admin key (default: auto-generated)
+    --tool-price <t:n>     Per-tool price override (e.g. "search:5,generate:10")
+    --import-key <k:c>     Import an existing API key with credits (e.g. "pg_abc123:100")
+    --state-file <path>    Persist keys/credits to a JSON file (survives restarts)
+    --stripe-secret <s>    Stripe webhook signing secret (enables /stripe/webhook endpoint)
+    --webhook-url <url>    POST usage events to this URL (batched)
+    --refund-on-failure    Refund credits when downstream tool call fails
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -72,8 +84,8 @@ function printUsage(): void {
     # Shadow mode (observe without enforcing)
     paygate-mcp wrap --server "node server.js" --shadow
 
-    # Per-tool pricing
-    paygate-mcp wrap --server "node server.js" --tool-price "search:5,generate:10"
+    # Load config from file
+    paygate-mcp wrap --config paygate.json
   `);
 }
 
@@ -89,6 +101,23 @@ function parseToolPricing(input: string): Record<string, ToolPricing> {
   return pricing;
 }
 
+interface ConfigFile {
+  serverCommand?: string;
+  serverArgs?: string[];
+  remoteUrl?: string;
+  port?: number;
+  defaultCreditsPerCall?: number;
+  toolPricing?: Record<string, { creditsPerCall: number }>;
+  globalRateLimitPerMin?: number;
+  shadowMode?: boolean;
+  adminKey?: string;
+  stateFile?: string;
+  stripeWebhookSecret?: string;
+  webhookUrl?: string;
+  refundOnFailure?: boolean;
+  importKeys?: Record<string, number>;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -96,11 +125,23 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'wrap': {
-      const serverCmd = flags['server'];
-      const remoteUrl = flags['remote-url'];
+      // Load config file if specified
+      let fileConfig: ConfigFile = {};
+      if (flags['config']) {
+        try {
+          const raw = readFileSync(flags['config'], 'utf-8');
+          fileConfig = JSON.parse(raw);
+        } catch (err) {
+          console.error(`Error loading config file: ${(err as Error).message}`);
+          process.exit(1);
+        }
+      }
+
+      const serverCmd = flags['server'] || (fileConfig.serverCommand ? [fileConfig.serverCommand, ...(fileConfig.serverArgs || [])].join(' ') : '');
+      const remoteUrl = flags['remote-url'] || fileConfig.remoteUrl;
 
       if (!serverCmd && !remoteUrl) {
-        console.error('Error: --server or --remote-url is required.\n');
+        console.error('Error: --server, --remote-url, or --config is required.\n');
         printUsage();
         process.exit(1);
       }
@@ -111,23 +152,25 @@ async function main(): Promise<void> {
       }
 
       // Parse server command into command + args (stdio mode)
-      let serverCommand = '';
-      let serverArgs: string[] = [];
-      if (serverCmd) {
-        const parts = serverCmd.split(/\s+/);
+      let serverCommand = fileConfig.serverCommand || '';
+      let serverArgs: string[] = fileConfig.serverArgs || [];
+      if (flags['server']) {
+        const parts = flags['server'].split(/\s+/);
         serverCommand = parts[0];
         serverArgs = parts.slice(1);
       }
 
-      const port = parseInt(flags['port'] || '3402', 10);
-      const price = parseInt(flags['price'] || '1', 10);
-      const rateLimit = parseInt(flags['rate-limit'] || '60', 10);
-      const name = flags['name'] || 'PayGate MCP Server';
-      const shadowMode = flags['shadow'] === 'true' || flags['shadow'] === undefined && 'shadow' in flags;
-      const adminKey = flags['admin-key'];
-      const toolPricing = flags['tool-price'] ? parseToolPricing(flags['tool-price']) : {};
-      const stateFile = flags['state-file'];
-      const stripeSecret = flags['stripe-secret'];
+      const port = parseInt(flags['port'] || String(fileConfig.port || 3402), 10);
+      const price = parseInt(flags['price'] || String(fileConfig.defaultCreditsPerCall || 1), 10);
+      const rateLimit = parseInt(flags['rate-limit'] || String(fileConfig.globalRateLimitPerMin || 60), 10);
+      const name = flags['name'] || fileConfig.serverCommand && 'PayGate MCP Server' || 'PayGate MCP Server';
+      const shadowMode = flags['shadow'] === 'true' || ('shadow' in flags && flags['shadow'] === undefined) || fileConfig.shadowMode || false;
+      const adminKey = flags['admin-key'] || fileConfig.adminKey;
+      const toolPricing = flags['tool-price'] ? parseToolPricing(flags['tool-price']) : (fileConfig.toolPricing || {});
+      const stateFile = flags['state-file'] || fileConfig.stateFile;
+      const stripeSecret = flags['stripe-secret'] || fileConfig.stripeWebhookSecret;
+      const webhookUrl = flags['webhook-url'] || fileConfig.webhookUrl || null;
+      const refundOnFailure = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || fileConfig.refundOnFailure || false;
 
       const server = new PayGateServer({
         serverCommand,
@@ -138,9 +181,11 @@ async function main(): Promise<void> {
         name,
         shadowMode: !!shadowMode,
         toolPricing,
+        webhookUrl,
+        refundOnFailure: !!refundOnFailure,
       }, adminKey, stateFile, remoteUrl, stripeSecret);
 
-      // Import keys if specified
+      // Import keys from CLI flags
       if (flags['import-key']) {
         const pairs = flags['import-key'].split(',');
         for (const pair of pairs) {
@@ -148,6 +193,13 @@ async function main(): Promise<void> {
           if (key && creditsStr) {
             server.gate.store.importKey(key.trim(), 'imported', parseInt(creditsStr.trim(), 10));
           }
+        }
+      }
+
+      // Import keys from config file
+      if (fileConfig.importKeys) {
+        for (const [key, credits] of Object.entries(fileConfig.importKeys)) {
+          server.gate.store.importKey(key, 'imported', credits);
         }
       }
 
@@ -169,13 +221,15 @@ async function main(): Promise<void> {
   ║                                                  ║
   ║  Endpoint:   http://localhost:${String(result.port).padEnd(5)}              ║
   ║  Admin Key:  ${result.adminKey.slice(0, 20)}...       ║
-  ║  Backend:    ${(remoteUrl ? 'HTTP → ' + remoteUrl.slice(0, 28) : 'stdio → ' + (serverCmd || '').slice(0, 27)).padEnd(35)}║
+  ║  Backend:    ${(remoteUrl ? 'HTTP → ' + remoteUrl.slice(0, 28) : 'stdio → ' + (serverCmd || serverCommand).slice(0, 27)).padEnd(35)}║
   ║                                                  ║
   ║  Pricing:    ${String(price).padEnd(3)} credit(s) per tool call       ║
   ║  Rate Limit: ${String(rateLimit).padEnd(3)} calls/min per key          ║
   ║  Shadow:     ${String(!!shadowMode).padEnd(5)}                            ║
   ║  Persist:    ${(stateFile ? stateFile.slice(0, 33) : 'off (in-memory)').padEnd(35)}║
   ║  Stripe:     ${(stripeSecret ? 'enabled (/stripe/webhook)' : 'off').padEnd(35)}║
+  ║  Refund:     ${String(!!refundOnFailure).padEnd(35)}║
+  ║  Webhook:    ${(webhookUrl ? webhookUrl.slice(0, 33) : 'off').padEnd(35)}║
   ║                                                  ║
   ╠══════════════════════════════════════════════════╣
   ║  POST /mcp       — JSON-RPC (X-API-Key header)  ║
@@ -183,6 +237,7 @@ async function main(): Promise<void> {
   ║  GET  /balance   — Client balance (X-API-Key)    ║
   ║  POST /keys      — Create key (X-Admin-Key)      ║
   ║  POST /topup     — Add credits (X-Admin-Key)     ║
+  ║  POST /limits    — Set spending limit (Admin)     ║
   ╚══════════════════════════════════════════════════╝
 `);
         console.log(`  Admin key (save this): ${result.adminKey}\n`);
@@ -202,7 +257,7 @@ async function main(): Promise<void> {
     case 'version':
     case '--version':
     case '-v':
-      console.log('paygate-mcp v0.5.0');
+      console.log(`paygate-mcp v${PKG_VERSION}`);
       break;
 
     default:

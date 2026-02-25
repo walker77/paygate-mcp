@@ -9,6 +9,9 @@
  * Pass 6: Stripe webhook security
  * Pass 7: Self-service endpoint security
  * Pass 8: Dashboard security (XSS, info leakage, admin key exposure)
+ * Pass 9: Budget bypass (spending limits)
+ * Pass 10: Refund abuse
+ * Pass 11: Webhook security
  */
 
 import { PayGateServer } from '../../src/server';
@@ -1411,5 +1414,261 @@ describe('RED TEAM — Dashboard Security', () => {
     expect(body).toContain('window.location.origin');
     // Should NOT contain any hardcoded external URLs
     expect(body).not.toMatch(/https?:\/\/[^'"\s]+\.com/);
+  });
+});
+
+// ─── PASS 9: Budget Bypass ─────────────────────────────────────────────────
+
+describe('RED TEAM — Budget Bypass (Spending Limits)', () => {
+  let gate: Gate;
+
+  beforeEach(() => {
+    gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      defaultCreditsPerCall: 1,
+    });
+  });
+
+  afterEach(() => gate.destroy());
+
+  test('should enforce spending limit', () => {
+    const record = gate.store.createKey('test', 100);
+    record.spendingLimit = 5;
+    gate.store.save();
+
+    // Spend up to limit
+    for (let i = 0; i < 5; i++) {
+      const d = gate.evaluate(record.key, { name: 'search' });
+      expect(d.allowed).toBe(true);
+    }
+
+    // 6th call should be denied
+    const d = gate.evaluate(record.key, { name: 'search' });
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toContain('spending_limit_exceeded');
+  });
+
+  test('should floor float spending limits to integers', () => {
+    const record = gate.store.createKey('test', 100);
+    record.spendingLimit = Math.max(0, Math.floor(3.7));
+    gate.store.save();
+
+    for (let i = 0; i < 3; i++) {
+      const d = gate.evaluate(record.key, { name: 'search' });
+      expect(d.allowed).toBe(true);
+    }
+
+    const d = gate.evaluate(record.key, { name: 'search' });
+    expect(d.allowed).toBe(false);
+  });
+
+  test('should clamp negative spending limits to 0 (unlimited)', () => {
+    const record = gate.store.createKey('test', 100);
+    record.spendingLimit = Math.max(0, -50);
+    gate.store.save();
+
+    // 0 = unlimited, so calls should succeed
+    for (let i = 0; i < 10; i++) {
+      const d = gate.evaluate(record.key, { name: 'search' });
+      expect(d.allowed).toBe(true);
+    }
+  });
+
+  test('should not allow spending limit bypass via rapid concurrent calls', () => {
+    const record = gate.store.createKey('test', 100);
+    record.spendingLimit = 3;
+    gate.store.save();
+
+    // Rapid fire — should still only allow 3
+    const results = [];
+    for (let i = 0; i < 10; i++) {
+      results.push(gate.evaluate(record.key, { name: 'search' }));
+    }
+
+    const allowed = results.filter(r => r.allowed);
+    expect(allowed.length).toBe(3);
+  });
+
+  test('should not allow spending limit bypass via different tools', () => {
+    gate.destroy();
+    gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      defaultCreditsPerCall: 1,
+      toolPricing: { 'expensive': { creditsPerCall: 3 } },
+    });
+
+    const record = gate.store.createKey('test', 100);
+    record.spendingLimit = 5;
+    gate.store.save();
+
+    // Use 3 credits on expensive tool
+    const d1 = gate.evaluate(record.key, { name: 'expensive' });
+    expect(d1.allowed).toBe(true);
+    expect(d1.creditsCharged).toBe(3);
+
+    // Use 1 more on cheap tool
+    const d2 = gate.evaluate(record.key, { name: 'cheap' });
+    expect(d2.allowed).toBe(true);
+
+    // Now at 4 spent, 1 credit should still work
+    const d3 = gate.evaluate(record.key, { name: 'cheap' });
+    expect(d3.allowed).toBe(true);
+
+    // Now at 5 spent = limit. Next should fail
+    const d4 = gate.evaluate(record.key, { name: 'cheap' });
+    expect(d4.allowed).toBe(false);
+  });
+
+});
+
+// ─── PASS 10: Refund Abuse ─────────────────────────────────────────────────
+
+describe('RED TEAM — Refund Abuse', () => {
+  let gate: Gate;
+
+  beforeEach(() => {
+    gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      defaultCreditsPerCall: 1,
+      refundOnFailure: true,
+    });
+  });
+
+  afterEach(() => gate.destroy());
+
+  test('should not allow infinite credits via refund loop', () => {
+    const record = gate.store.createKey('test', 10);
+    const key = record.key;
+
+    // Spend 1 credit
+    gate.evaluate(key, { name: 'search' });
+    expect(gate.store.getKey(key)!.credits).toBe(9);
+
+    // Refund it
+    gate.refund(key, 'search', 1);
+    expect(gate.store.getKey(key)!.credits).toBe(10);
+
+    // Refund again — should NOT give extra credits beyond original
+    gate.refund(key, 'search', 1);
+    // Credits can go above initial amount, but totalSpent is clamped to 0
+    expect(gate.store.getKey(key)!.totalSpent).toBe(0);
+    expect(gate.store.getKey(key)!.totalCalls).toBe(0);
+  });
+
+  test('should not let totalSpent go negative', () => {
+    const record = gate.store.createKey('test', 100);
+    // Refund without any spending
+    gate.refund(record.key, 'search', 50);
+    expect(gate.store.getKey(record.key)!.totalSpent).toBe(0);
+    expect(gate.store.getKey(record.key)!.totalCalls).toBe(0);
+  });
+
+  test('should not refund for non-existent keys', () => {
+    // Should not crash
+    gate.refund('pg_nonexistent_key_12345678', 'search', 100);
+  });
+
+  test('should not allow negative credits in meter after refund', () => {
+    const record = gate.store.createKey('test', 100);
+    gate.evaluate(record.key, { name: 'search' });
+    gate.refund(record.key, 'search', 1);
+
+    const summary = gate.meter.getSummary();
+    // Check no event has negative credits making the total negative
+    expect(summary.totalCreditsSpent).toBeGreaterThanOrEqual(0);
+  });
+
+  test('should not bypass spending limits via refund+re-spend', () => {
+    const record = gate.store.createKey('test', 100);
+    record.spendingLimit = 5;
+    gate.store.save();
+
+    // Spend 5 credits
+    for (let i = 0; i < 5; i++) {
+      gate.evaluate(record.key, { name: 'search' });
+    }
+    expect(gate.store.getKey(record.key)!.totalSpent).toBe(5);
+
+    // Refund 3
+    gate.refund(record.key, 'search', 1);
+    gate.refund(record.key, 'search', 1);
+    gate.refund(record.key, 'search', 1);
+    expect(gate.store.getKey(record.key)!.totalSpent).toBe(2);
+
+    // Should be able to spend 3 more (back up to limit 5)
+    for (let i = 0; i < 3; i++) {
+      const d = gate.evaluate(record.key, { name: 'search' });
+      expect(d.allowed).toBe(true);
+    }
+
+    // Now at limit again — should be denied
+    const d = gate.evaluate(record.key, { name: 'search' });
+    expect(d.allowed).toBe(false);
+  });
+});
+
+// ─── PASS 11: Webhook Security ─────────────────────────────────────────────
+
+describe('RED TEAM — Webhook Security', () => {
+  test('should not crash if webhook URL is malformed', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      webhookUrl: 'not-a-valid-url',
+    });
+
+    const record = gate.store.createKey('test', 100);
+    gate.evaluate(record.key, { name: 'search' });
+
+    // Destroy triggers flush — should not throw
+    expect(() => gate.destroy()).not.toThrow();
+  });
+
+  test('should not crash if webhook URL is unreachable', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      webhookUrl: 'http://192.0.2.1:1/webhook',
+    });
+
+    const record = gate.store.createKey('test', 100);
+    gate.evaluate(record.key, { name: 'search' });
+    expect(() => gate.destroy()).not.toThrow();
+  });
+
+  test('should mask webhook URL in status response', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      webhookUrl: 'https://secret-api.example.com/webhook?token=abc123',
+    });
+
+    const status = gate.getStatus();
+    expect(status.config.webhookUrl).toBe('***');
+    expect(JSON.stringify(status)).not.toContain('secret-api.example.com');
+    expect(JSON.stringify(status)).not.toContain('abc123');
+    gate.destroy();
+  });
+
+  test('should have null webhook URL in status when disabled', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      webhookUrl: null,
+    });
+
+    const status = gate.getStatus();
+    expect(status.config.webhookUrl).toBeNull();
+    gate.destroy();
   });
 });

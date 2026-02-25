@@ -31,6 +31,10 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Rate Limiting** — Sliding window per-key rate limits
 - **Usage Metering** — Track who called what, when, and how much they spent
 - **Two Transports** — Wrap local servers via stdio or remote servers via Streamable HTTP
+- **Spending Limits** — Cap total spend per API key to prevent runaway costs
+- **Refund on Failure** — Automatically refund credits when downstream tool calls fail
+- **Webhook Events** — POST batched usage events to any URL for external billing/alerting
+- **Config File Mode** — Load all settings from a JSON file (`--config`)
 - **Shadow Mode** — Log everything without enforcing payment (for testing)
 - **Persistent Storage** — Keys and credits survive restarts with `--state-file`
 - **Zero Dependencies** — No external npm packages. Uses only Node.js built-ins.
@@ -175,6 +179,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
 | `/dashboard` | GET | None (admin key in-browser) | Real-time admin web dashboard |
+| `/limits` | POST | `X-Admin-Key` | Set spending limit on a key |
 | `/stripe/webhook` | POST | Stripe Signature | Auto-top-up credits on payment |
 | `/` | GET | None | Health check |
 
@@ -198,6 +203,9 @@ These MCP methods pass through without auth or billing:
 --import-key <k:c>   Import existing key with credits (e.g. "pg_abc:100")
 --state-file <path>  Persist keys/credits to a JSON file (survives restarts)
 --stripe-secret <s>  Stripe webhook signing secret (enables /stripe/webhook)
+--webhook-url <url>  POST batched usage events to this URL
+--refund-on-failure  Refund credits when downstream tool call fails
+--config <path>      Load settings from a JSON config file
 ```
 
 > **Note:** Use `--server` OR `--remote-url`, not both.
@@ -237,6 +245,74 @@ When a customer completes payment, credits are automatically added to their API 
 - Payment status verification (only `paid` triggers credits)
 - Zero dependencies — uses Node.js built-in `crypto`
 
+### Spending Limits
+
+Cap the total credits any API key can spend:
+
+```bash
+# Set a spending limit on a key (admin only)
+curl -X POST http://localhost:3402/limits \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "CLIENT_API_KEY", "spendingLimit": 500}'
+
+# Check remaining budget
+curl http://localhost:3402/balance -H "X-API-Key: CLIENT_API_KEY"
+# → { "spendingLimit": 500, "remainingBudget": 350, ... }
+```
+
+Set `spendingLimit` to `0` for unlimited. When a key hits its limit, tool calls are denied with a clear error.
+
+### Refund on Failure
+
+Automatically return credits when a downstream tool call fails:
+
+```bash
+npx paygate-mcp wrap --server "node server.js" --refund-on-failure
+```
+
+Credits are deducted before the tool call. If the wrapped server returns an error, credits are refunded and `totalSpent` / `totalCalls` are rolled back. Prevents charging users for failed operations.
+
+### Webhook Events
+
+POST usage events to any external URL for billing, alerting, or analytics:
+
+```bash
+npx paygate-mcp wrap --server "node server.js" --webhook-url "https://billing.example.com/events"
+```
+
+Events are batched (up to 10 per POST) and flushed every 5 seconds. Each event includes tool name, credits charged, API key, and timestamp. Fire-and-forget with one retry on failure.
+
+### Config File Mode
+
+Load all settings from a JSON file instead of CLI flags:
+
+```bash
+npx paygate-mcp wrap --config paygate.json
+```
+
+Example `paygate.json`:
+```json
+{
+  "serverCommand": "npx",
+  "serverArgs": ["@modelcontextprotocol/server-filesystem", "/tmp"],
+  "port": 3402,
+  "defaultCreditsPerCall": 2,
+  "globalRateLimitPerMin": 30,
+  "webhookUrl": "https://billing.example.com/events",
+  "refundOnFailure": true,
+  "stateFile": "~/.paygate/state.json",
+  "toolPricing": {
+    "premium_analyze": { "creditsPerCall": 10 }
+  },
+  "importKeys": {
+    "pg_abc123def456": 500
+  }
+}
+```
+
+CLI flags override config file values when both are specified.
+
 ## Programmatic API
 
 ```typescript
@@ -275,7 +351,9 @@ const { port, adminKey } = await server.start();
 - Rate limiting is per-key, concurrent-safe
 - Stripe webhook signature verification (HMAC-SHA256, timing-safe)
 - Dashboard uses safe DOM methods (textContent/createElement) — no innerHTML
-- Red-teamed with 70 adversarial security tests across 8 passes
+- Webhook URLs masked in status output
+- Spending limits enforced with integer arithmetic (no float bypass)
+- Red-teamed with 84 adversarial security tests across 11 passes
 
 ## Current Limitations
 
@@ -290,6 +368,10 @@ const { port, adminKey } = await server.start();
 - [x] Client self-service balance check (`/balance`)
 - [x] Usage data export — JSON and CSV (`/usage`)
 - [x] Admin web dashboard (`/dashboard`)
+- [x] Per-key spending limits (`/limits`)
+- [x] Webhook events (`--webhook-url`)
+- [x] Refund on failure (`--refund-on-failure`)
+- [x] Config file mode (`--config`)
 - [ ] Multi-tenant mode
 
 ## Requirements

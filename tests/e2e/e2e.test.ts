@@ -121,7 +121,7 @@ describe('E2E: PayGate wrapping mock MCP server', () => {
     });
     expect(premiumRes.status).toBe(200);
     expect(premiumRes.body.error).toBeDefined();
-    expect(premiumRes.body.error.code).toBe(-32000);
+    expect(premiumRes.body.error.code).toBe(-32402);
     expect(premiumRes.body.error.message).toContain('insufficient_credits');
 
     // Step 6: Use remaining credits with regular calls

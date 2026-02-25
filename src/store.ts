@@ -53,6 +53,7 @@ export class KeyStore {
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
       active: true,
+      spendingLimit: 0,
     };
     this.keys.set(key, record);
     this.save();
@@ -153,6 +154,7 @@ export class KeyStore {
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
       active: true,
+      spendingLimit: 0,
     };
     this.keys.set(key, record);
     this.save();
@@ -165,7 +167,7 @@ export class KeyStore {
    * Save state to disk (atomic: write tmp, then rename).
    * No-op if statePath is not set.
    */
-  private save(): void {
+  save(): void {
     if (!this.statePath) return;
 
     const data = Array.from(this.keys.entries());
@@ -199,6 +201,8 @@ export class KeyStore {
 
       for (const [key, record] of data) {
         if (key && record && typeof record.key === 'string') {
+          // Backfill spendingLimit for old state files
+          if (record.spendingLimit === undefined) record.spendingLimit = 0;
           this.keys.set(key, record);
         }
       }

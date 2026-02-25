@@ -65,6 +65,10 @@ export interface PayGateConfig {
   freeMethods: string[];
   /** Whether to log all calls (shadow mode) without enforcing payment */
   shadowMode: boolean;
+  /** Webhook URL to POST usage events to. Null = disabled. */
+  webhookUrl: string | null;
+  /** Refund credits when downstream tool call fails. Default: false. */
+  refundOnFailure: boolean;
 }
 
 export const DEFAULT_CONFIG: PayGateConfig = {
@@ -77,6 +81,8 @@ export const DEFAULT_CONFIG: PayGateConfig = {
   globalRateLimitPerMin: 60,
   freeMethods: ['initialize', 'initialized', 'ping', 'notifications/initialized', 'tools/list', 'resources/list', 'prompts/list'],
   shadowMode: false,
+  webhookUrl: null,
+  refundOnFailure: false,
 };
 
 // ─── API Key + Credits ──────────────────────────────────────────────────────────
@@ -90,6 +96,8 @@ export interface ApiKeyRecord {
   createdAt: string;
   lastUsedAt: string | null;
   active: boolean;
+  /** Max total credits this key can ever spend. 0 = unlimited. */
+  spendingLimit: number;
 }
 
 // ─── Metering ───────────────────────────────────────────────────────────────────

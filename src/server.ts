@@ -13,7 +13,17 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { PayGateConfig, JsonRpcRequest, DEFAULT_CONFIG } from './types';
+
+/** Read version from package.json at runtime */
+const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
 import { Gate } from './gate';
 import { McpProxy } from './proxy';
 import { HttpMcpProxy } from './http-proxy';
@@ -106,6 +116,8 @@ export class PayGateServer {
         return this.handleTopUp(req, res);
       case '/balance':
         return this.handleBalance(req, res);
+      case '/limits':
+        return this.handleLimits(req, res);
       case '/usage':
         return this.handleUsage(req, res);
       case '/stripe/webhook':
@@ -155,7 +167,7 @@ export class PayGateServer {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       name: this.config.name,
-      version: '0.5.0',
+      version: PKG_VERSION,
       endpoints: {
         mcp: 'POST /mcp — JSON-RPC (MCP transport). Send X-API-Key header.',
         balance: 'GET /balance — Check own credits (requires X-API-Key)',
@@ -166,6 +178,7 @@ export class PayGateServer {
         revokeKey: 'POST /keys/revoke — Revoke a key (requires X-Admin-Key)',
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
+        limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
       },
       shadowMode: this.config.shadowMode,
     }));
@@ -330,13 +343,63 @@ export class PayGateServer {
     }
 
     // Return balance and basic usage info (no sensitive data)
+    const remainingBudget = record.spendingLimit > 0
+      ? Math.max(0, record.spendingLimit - record.totalSpent)
+      : null;
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       name: record.name,
       credits: record.credits,
       totalSpent: record.totalSpent,
       totalCalls: record.totalCalls,
+      spendingLimit: record.spendingLimit,
+      remainingBudget,
       lastUsedAt: record.lastUsedAt,
+    }));
+  }
+
+  // ─── /limits — Set spending limit ────────────────────────────────────────
+
+  private async handleLimits(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; spendingLimit?: number };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    const record = this.gate.store.getKey(params.key);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      return;
+    }
+
+    const limit = Math.max(0, Math.floor(Number(params.spendingLimit) || 0));
+    record.spendingLimit = limit;
+    this.gate.store.save();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      spendingLimit: record.spendingLimit,
+      message: limit > 0 ? `Spending limit set to ${limit}` : 'Spending limit removed (unlimited)',
     }));
   }
 
