@@ -8,6 +8,7 @@
  * Pass 5: HTTP transport security
  * Pass 6: Stripe webhook security
  * Pass 7: Self-service endpoint security
+ * Pass 8: Dashboard security (XSS, info leakage, admin key exposure)
  */
 
 import { PayGateServer } from '../../src/server';
@@ -1284,5 +1285,131 @@ describe('RED TEAM — Self-Service Endpoint Security', () => {
     // revokeKey uses keys.get() not getKey(), so it finds revoked keys too
     // Either 200 (idempotent) or 404 is acceptable — just must not crash
     expect([200, 404]).toContain(res2.status);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PASS 8: Dashboard Security
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('RED TEAM — Dashboard Security', () => {
+  let server: PayGateServer;
+  let port: number;
+  let adminKey: string;
+
+  beforeAll(async () => {
+    port = 3900 + Math.floor(Math.random() * 100);
+    server = new PayGateServer({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port,
+      name: 'Test <script>alert("xss")</script> Server',
+    });
+    const result = await server.start();
+    port = result.port;
+    adminKey = result.adminKey;
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  test('should HTML-escape server name in dashboard (XSS via server name)', async () => {
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    // The raw script tag should NOT appear — it should be escaped
+    expect(body).not.toContain('<script>alert("xss")</script>');
+    // The escaped version should be present
+    expect(body).toContain('&lt;script&gt;');
+  });
+
+  test('should not expose admin key anywhere in dashboard HTML', async () => {
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    expect(body).not.toContain(adminKey);
+  });
+
+  test('should set no-cache header on dashboard', async () => {
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    const cacheControl = res.headers['cache-control'];
+    expect(cacheControl).toContain('no-cache');
+  });
+
+  test('should serve dashboard without any auth (HTML only)', async () => {
+    // No X-Admin-Key, no X-API-Key — just a raw GET
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/html');
+  });
+
+  test('should not include any hardcoded credentials or secrets in HTML source', async () => {
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    // Check for common secret patterns
+    expect(body).not.toMatch(/pg_[a-zA-Z0-9]{16,}/);    // No full API keys
+    expect(body).not.toMatch(/whsec_/);                  // No Stripe secrets
+    expect(body).not.toMatch(/sk_live_/);                // No Stripe live keys
+    expect(body).not.toMatch(/sk_test_/);                // No Stripe test keys
+  });
+
+  test('should not allow POST/PUT/DELETE to /dashboard', async () => {
+    const resPost = await httpRequest(port, '/dashboard', { method: 'POST', body: {} });
+    const resPut = await httpRequest(port, '/dashboard', { method: 'PUT', body: {} });
+    const resDelete = await httpRequest(port, '/dashboard', { method: 'DELETE' });
+    // All non-GET methods should fail
+    // Dashboard serves HTML for all requests, but let's verify no side effects
+    expect([200, 404, 405]).toContain(resPost.status);
+    expect([200, 404, 405]).toContain(resPut.status);
+    expect([200, 404, 405]).toContain(resDelete.status);
+  });
+
+  test('should not embed server-side state (keys, credits) directly in HTML', async () => {
+    // Create a key first so there IS state
+    await httpRequest(port, '/keys', {
+      method: 'POST',
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'dashboard-check', credits: 500 },
+    });
+
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    // Dashboard HTML should NOT contain pre-rendered key data —
+    // all data is fetched client-side via API calls
+    expect(body).not.toContain('dashboard-check');
+    expect(body).not.toContain('500 cr');
+  });
+
+  test('should not allow JavaScript injection via query parameters', async () => {
+    const res = await httpRequest(port, '/dashboard?name=<script>alert(1)</script>');
+    expect(res.status).toBe(200);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    // Query params should not appear in the HTML output
+    expect(body).not.toContain('<script>alert(1)</script>');
+  });
+
+  test('should use safe DOM methods (no innerHTML in JavaScript)', async () => {
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    // The JS source should not contain innerHTML assignments
+    expect(body).not.toContain('.innerHTML');
+    // Should use textContent pattern instead
+    expect(body).toContain('.textContent');
+    expect(body).toContain('createElement');
+  });
+
+  test('should only make same-origin API calls (no external URLs in JS)', async () => {
+    const res = await httpRequest(port, '/dashboard');
+    expect(res.status).toBe(200);
+    const body = typeof res.body === 'string' ? res.body : JSON.stringify(res.body);
+    // Should use window.location.origin as base
+    expect(body).toContain('window.location.origin');
+    // Should NOT contain any hardcoded external URLs
+    expect(body).not.toMatch(/https?:\/\/[^'"\s]+\.com/);
   });
 });

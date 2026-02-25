@@ -18,6 +18,7 @@ import { Gate } from './gate';
 import { McpProxy } from './proxy';
 import { HttpMcpProxy } from './http-proxy';
 import { StripeWebhookHandler } from './stripe';
+import { getDashboardHtml } from './dashboard';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -109,6 +110,8 @@ export class PayGateServer {
         return this.handleUsage(req, res);
       case '/stripe/webhook':
         return this.handleStripeWebhook(req, res);
+      case '/dashboard':
+        return this.handleDashboard(req, res);
       default:
         // Root — simple info
         if (url === '/' || url === '') {
@@ -152,11 +155,12 @@ export class PayGateServer {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       name: this.config.name,
-      version: '0.4.0',
+      version: '0.5.0',
       endpoints: {
         mcp: 'POST /mcp — JSON-RPC (MCP transport). Send X-API-Key header.',
         balance: 'GET /balance — Check own credits (requires X-API-Key)',
-        status: 'GET /status — Usage dashboard (requires X-Admin-Key)',
+        dashboard: 'GET /dashboard — Admin web dashboard (browser UI)',
+        status: 'GET /status — Usage data JSON (requires X-Admin-Key)',
         createKey: 'POST /keys — Create API key (requires X-Admin-Key)',
         listKeys: 'GET /keys — List API keys (requires X-Admin-Key)',
         revokeKey: 'POST /keys/revoke — Revoke a key (requires X-Admin-Key)',
@@ -415,6 +419,18 @@ export class PayGateServer {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     }
+  }
+
+  // ─── /dashboard — Admin web dashboard ─────────────────────────────────────
+
+  private handleDashboard(_req: IncomingMessage, res: ServerResponse): void {
+    // Dashboard is public HTML — auth is done client-side via admin key prompt.
+    // The dashboard JS calls /status, /usage, /keys which all require X-Admin-Key.
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    });
+    res.end(getDashboardHtml(this.config.name));
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────

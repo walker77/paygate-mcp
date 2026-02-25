@@ -178,10 +178,11 @@ async function main(): Promise<void> {
   ║  Stripe:     ${(stripeSecret ? 'enabled (/stripe/webhook)' : 'off').padEnd(35)}║
   ║                                                  ║
   ╠══════════════════════════════════════════════════╣
-  ║  POST /mcp     — JSON-RPC (X-API-Key header)    ║
-  ║  GET  /status  — Dashboard (X-Admin-Key header)  ║
-  ║  POST /keys    — Create key (X-Admin-Key header) ║
-  ║  POST /topup   — Add credits (X-Admin-Key header)║
+  ║  POST /mcp       — JSON-RPC (X-API-Key header)  ║
+  ║  GET  /dashboard — Admin web UI (open in browser)║
+  ║  GET  /balance   — Client balance (X-API-Key)    ║
+  ║  POST /keys      — Create key (X-Admin-Key)      ║
+  ║  POST /topup     — Add credits (X-Admin-Key)     ║
   ╚══════════════════════════════════════════════════╝
 `);
         console.log(`  Admin key (save this): ${result.adminKey}\n`);
@@ -201,7 +202,7 @@ async function main(): Promise<void> {
     case 'version':
     case '--version':
     case '-v':
-      console.log('paygate-mcp v0.4.0');
+      console.log('paygate-mcp v0.5.0');
       break;
 
     default:

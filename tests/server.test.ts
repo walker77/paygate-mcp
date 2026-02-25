@@ -489,6 +489,83 @@ describe('PayGateServer (HTTP)', () => {
     });
   });
 
+  // ─── /dashboard — Admin web UI ──────────────────────────────────────────
+
+  describe('GET /dashboard', () => {
+    it('should return HTML', async () => {
+      return new Promise((resolve, reject) => {
+        const http = require('http');
+        const req = http.request({
+          hostname: 'localhost',
+          port,
+          path: '/dashboard',
+          method: 'GET',
+        }, (res: any) => {
+          let data = '';
+          res.on('data', (chunk: string) => { data += chunk; });
+          res.on('end', () => {
+            expect(res.statusCode).toBe(200);
+            expect(res.headers['content-type']).toContain('text/html');
+            expect(data).toContain('PayGate Dashboard');
+            expect(data).toContain('admin-key-input');
+            resolve(undefined);
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    });
+
+    it('should include the server name in the dashboard', async () => {
+      return new Promise((resolve, reject) => {
+        const http = require('http');
+        const req = http.request({
+          hostname: 'localhost',
+          port,
+          path: '/dashboard',
+          method: 'GET',
+        }, (res: any) => {
+          let data = '';
+          res.on('data', (chunk: string) => { data += chunk; });
+          res.on('end', () => {
+            expect(data).toContain('PayGate MCP Server');
+            resolve(undefined);
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    });
+
+    it('should NOT expose admin key in dashboard HTML', async () => {
+      return new Promise((resolve, reject) => {
+        const http = require('http');
+        const req = http.request({
+          hostname: 'localhost',
+          port,
+          path: '/dashboard',
+          method: 'GET',
+        }, (res: any) => {
+          let data = '';
+          res.on('data', (chunk: string) => { data += chunk; });
+          res.on('end', () => {
+            expect(data).not.toContain(adminKey);
+            resolve(undefined);
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    });
+
+    it('should not require authentication (auth is done client-side)', async () => {
+      const res = await request('/dashboard');
+      // request helper tries to JSON.parse, which will fail on HTML
+      // but status should still be 200
+      expect(res.status).toBe(200);
+    });
+  });
+
   describe('CORS', () => {
     it('should handle OPTIONS preflight', async () => {
       const res = await request('/mcp', { method: 'OPTIONS' });

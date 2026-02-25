@@ -8,7 +8,7 @@ Thanks for your interest in contributing! Here's how to get started.
 git clone https://github.com/walker77/paygate-mcp.git
 cd paygate-mcp
 npm install
-npm test        # Run all 193 tests
+npm test        # Run all 207 tests
 npm run build   # Compile TypeScript
 ```
 
@@ -34,6 +34,7 @@ src/
   rate-limiter.ts # Sliding window rate limiter
   meter.ts        # Usage metering and analytics
   types.ts        # Shared TypeScript types
+  dashboard.ts    # Embedded HTML admin dashboard (XSS-safe)
   index.ts        # Public API exports
 
 tests/

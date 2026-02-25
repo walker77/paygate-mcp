@@ -152,6 +152,16 @@ curl http://localhost:3402/status \
 
 Returns active keys, usage stats, per-tool breakdown, and deny reasons.
 
+### Admin Dashboard
+
+Open the web dashboard in your browser:
+
+```
+http://localhost:3402/dashboard
+```
+
+A real-time admin UI for managing keys, viewing usage, and monitoring tool calls. Enter your admin key to authenticate. Features auto-refresh every 30s, top tools chart, activity feed, and key creation/management.
+
 ## API Reference
 
 | Endpoint | Method | Auth | Description |
@@ -164,6 +174,7 @@ Returns active keys, usage stats, per-tool breakdown, and deny reasons.
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
+| `/dashboard` | GET | None (admin key in-browser) | Real-time admin web dashboard |
 | `/stripe/webhook` | POST | Stripe Signature | Auto-top-up credits on payment |
 | `/` | GET | None | Health check |
 
@@ -263,7 +274,8 @@ const { port, adminKey } = await server.start();
 - API keys never forwarded to remote servers (HTTP transport)
 - Rate limiting is per-key, concurrent-safe
 - Stripe webhook signature verification (HMAC-SHA256, timing-safe)
-- Red-teamed with 60 adversarial security tests across 7 passes
+- Dashboard uses safe DOM methods (textContent/createElement) — no innerHTML
+- Red-teamed with 70 adversarial security tests across 8 passes
 
 ## Current Limitations
 
@@ -277,7 +289,8 @@ const { port, adminKey } = await server.start();
 - [x] Stripe webhook integration (`--stripe-secret`)
 - [x] Client self-service balance check (`/balance`)
 - [x] Usage data export — JSON and CSV (`/usage`)
-- [ ] Web dashboard for key management
+- [x] Admin web dashboard (`/dashboard`)
+- [ ] Multi-tenant mode
 
 ## Requirements
 
