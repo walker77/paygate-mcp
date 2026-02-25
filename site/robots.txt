@@ -1,3 +1,0 @@
-User-agent: *
-Allow: /
-Sitemap: https://paygated.dev/sitemap.xml
