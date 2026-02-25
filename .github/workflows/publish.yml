@@ -17,10 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: |
-          echo "//registry.npmjs.org/:_authToken=" > ~/.npmrc
-          npm publish --provenance --access public
+      - run: npm publish --provenance --access public
