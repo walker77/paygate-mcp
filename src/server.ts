@@ -112,6 +112,10 @@ export class PayGateServer {
         break;
       case '/keys/revoke':
         return this.handleRevokeKey(req, res);
+      case '/keys/acl':
+        return this.handleSetAcl(req, res);
+      case '/keys/expiry':
+        return this.handleSetExpiry(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
       case '/balance':
@@ -176,6 +180,8 @@ export class PayGateServer {
         createKey: 'POST /keys — Create API key (requires X-Admin-Key)',
         listKeys: 'GET /keys — List API keys (requires X-Admin-Key)',
         revokeKey: 'POST /keys/revoke — Revoke a key (requires X-Admin-Key)',
+        setAcl: 'POST /keys/acl — Set tool ACL (requires X-Admin-Key)',
+        setExpiry: 'POST /keys/expiry — Set key expiry (requires X-Admin-Key)',
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
@@ -199,7 +205,7 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const body = await this.readBody(req);
-    let params: { name?: string; credits?: number };
+    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string };
     try {
       params = JSON.parse(body);
     } catch {
@@ -217,13 +223,28 @@ export class PayGateServer {
       return;
     }
 
-    const record = this.gate.store.createKey(name, credits);
+    // Calculate expiry: expiresIn (seconds) takes priority over expiresAt (ISO date)
+    let expiresAt: string | null = null;
+    if (params.expiresIn && Number(params.expiresIn) > 0) {
+      expiresAt = new Date(Date.now() + Number(params.expiresIn) * 1000).toISOString();
+    } else if (params.expiresAt) {
+      expiresAt = String(params.expiresAt);
+    }
+
+    const record = this.gate.store.createKey(name, credits, {
+      allowedTools: params.allowedTools,
+      deniedTools: params.deniedTools,
+      expiresAt,
+    });
 
     res.writeHead(201, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       key: record.key,
       name: record.name,
       credits: record.credits,
+      allowedTools: record.allowedTools,
+      deniedTools: record.deniedTools,
+      expiresAt: record.expiresAt,
       message: 'Save this key — it cannot be retrieved later.',
     }));
   }
@@ -319,6 +340,97 @@ export class PayGateServer {
     res.end(JSON.stringify({ message: 'Key revoked' }));
   }
 
+  // ─── /keys/acl — Set tool ACL ──────────────────────────────────────────────
+
+  private async handleSetAcl(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; allowedTools?: string[]; deniedTools?: string[] };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    const success = this.gate.store.setAcl(params.key, params.allowedTools, params.deniedTools);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      return;
+    }
+
+    const record = this.gate.store.getKey(params.key);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      allowedTools: record?.allowedTools || [],
+      deniedTools: record?.deniedTools || [],
+      message: 'ACL updated',
+    }));
+  }
+
+  // ─── /keys/expiry — Set key expiry ─────────────────────────────────────────
+
+  private async handleSetExpiry(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; expiresAt?: string | null; expiresIn?: number };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    // Calculate expiry: expiresIn (seconds) takes priority over expiresAt (ISO date)
+    let expiresAt: string | null = null;
+    if (params.expiresIn && Number(params.expiresIn) > 0) {
+      expiresAt = new Date(Date.now() + Number(params.expiresIn) * 1000).toISOString();
+    } else if (params.expiresAt !== undefined) {
+      expiresAt = params.expiresAt;
+    }
+
+    const success = this.gate.store.setExpiry(params.key, expiresAt);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const record = this.gate.store.getKeyRaw(params.key);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      expiresAt: record?.expiresAt || null,
+      message: expiresAt ? `Key expires at ${expiresAt}` : 'Expiry removed (key never expires)',
+    }));
+  }
+
   // ─── /balance — Client self-service ────────────────────────────────────────
 
   private handleBalance(req: IncomingMessage, res: ServerResponse): void {
@@ -356,6 +468,9 @@ export class PayGateServer {
       spendingLimit: record.spendingLimit,
       remainingBudget,
       lastUsedAt: record.lastUsedAt,
+      allowedTools: record.allowedTools,
+      deniedTools: record.deniedTools,
+      expiresAt: record.expiresAt,
     }));
   }
 

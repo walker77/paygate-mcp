@@ -28,9 +28,12 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 
 - **API Key Auth** — Clients need a valid `X-API-Key` to call tools
 - **Credit Billing** — Each tool call costs credits (configurable per-tool)
-- **Rate Limiting** — Sliding window per-key rate limits
+- **Rate Limiting** — Sliding window per-key rate limits + per-tool rate limits
 - **Usage Metering** — Track who called what, when, and how much they spent
 - **Two Transports** — Wrap local servers via stdio or remote servers via Streamable HTTP
+- **Per-Tool ACL** — Whitelist/blacklist tools per API key (enterprise access control)
+- **Per-Tool Rate Limits** — Independent rate limits per tool, not just global
+- **Key Expiry (TTL)** — Auto-expire API keys after a set time
 - **Spending Limits** — Cap total spend per API key to prevent runaway costs
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
@@ -171,15 +174,17 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/mcp` | POST | `X-API-Key` | JSON-RPC 2.0 proxy to wrapped MCP server |
-| `/balance` | GET | `X-API-Key` | Client self-service — check own credits |
-| `/keys` | POST | `X-Admin-Key` | Create a new API key with credits |
-| `/keys` | GET | `X-Admin-Key` | List all keys (masked) |
+| `/balance` | GET | `X-API-Key` | Client self-service — check own credits, ACL, expiry |
+| `/keys` | POST | `X-Admin-Key` | Create API key (with ACL, expiry, credits) |
+| `/keys` | GET | `X-Admin-Key` | List all keys (masked, with expiry status) |
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
+| `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
+| `/keys/expiry` | POST | `X-Admin-Key` | Set or remove key expiry (TTL) |
+| `/limits` | POST | `X-Admin-Key` | Set spending limit on a key |
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
 | `/dashboard` | GET | None (admin key in-browser) | Real-time admin web dashboard |
-| `/limits` | POST | `X-Admin-Key` | Set spending limit on a key |
 | `/stripe/webhook` | POST | Stripe Signature | Auto-top-up credits on payment |
 | `/` | GET | None | Health check |
 
@@ -244,6 +249,82 @@ When a customer completes payment, credits are automatically added to their API 
 - 5-minute timestamp tolerance to prevent replay attacks
 - Payment status verification (only `paid` triggers credits)
 - Zero dependencies — uses Node.js built-in `crypto`
+
+### Per-Tool ACL (Access Control)
+
+Control which tools each API key can access:
+
+```bash
+# Create a key that can only access search and read tools
+curl -X POST http://localhost:3402/keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "limited-client", "credits": 100, "allowedTools": ["search", "read_file"]}'
+
+# Create a key with specific tools blocked
+curl -X POST http://localhost:3402/keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "safe-client", "credits": 100, "deniedTools": ["delete_file", "admin_reset"]}'
+
+# Update ACL on an existing key
+curl -X POST http://localhost:3402/keys/acl \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "CLIENT_API_KEY", "allowedTools": ["search"], "deniedTools": ["admin"]}'
+```
+
+- **allowedTools** (whitelist): Only these tools are accessible. Empty = all tools.
+- **deniedTools** (blacklist): These tools are always denied. Applied after allowedTools.
+- ACL also filters `tools/list` — clients only see their permitted tools.
+
+### Per-Tool Rate Limits
+
+Set independent rate limits per tool (on top of the global limit):
+
+```json
+{
+  "toolPricing": {
+    "expensive_analyze": { "creditsPerCall": 10, "rateLimitPerMin": 5 },
+    "search": { "creditsPerCall": 1, "rateLimitPerMin": 30 },
+    "cheap_read": { "creditsPerCall": 1 }
+  }
+}
+```
+
+Per-tool limits are enforced independently per API key. A key can be rate-limited on one tool while still accessing others. The global `--rate-limit` applies across all tools.
+
+### Key Expiry (TTL)
+
+Create API keys that auto-expire:
+
+```bash
+# Create a key that expires in 1 hour (3600 seconds)
+curl -X POST http://localhost:3402/keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "trial-user", "credits": 50, "expiresIn": 3600}'
+
+# Create a key with a specific expiry date
+curl -X POST http://localhost:3402/keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "quarterly", "credits": 1000, "expiresAt": "2026-06-01T00:00:00Z"}'
+
+# Set or extend expiry on an existing key
+curl -X POST http://localhost:3402/keys/expiry \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "CLIENT_API_KEY", "expiresIn": 86400}'
+
+# Remove expiry (key never expires)
+curl -X POST http://localhost:3402/keys/expiry \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "CLIENT_API_KEY", "expiresAt": null}'
+```
+
+Expired keys return a clear `api_key_expired` error. Admins can extend or remove expiry at any time.
 
 ### Spending Limits
 
@@ -353,7 +434,9 @@ const { port, adminKey } = await server.start();
 - Dashboard uses safe DOM methods (textContent/createElement) — no innerHTML
 - Webhook URLs masked in status output
 - Spending limits enforced with integer arithmetic (no float bypass)
-- Red-teamed with 84 adversarial security tests across 11 passes
+- Per-tool ACL enforcement (whitelist + blacklist, sanitized inputs)
+- Key expiry with fail-closed behavior (expired = denied)
+- Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
 
@@ -372,7 +455,12 @@ const { port, adminKey } = await server.start();
 - [x] Webhook events (`--webhook-url`)
 - [x] Refund on failure (`--refund-on-failure`)
 - [x] Config file mode (`--config`)
-- [ ] Multi-tenant mode
+- [x] Per-tool ACL — whitelist/blacklist tools per key
+- [x] Per-tool rate limits — independent limits per tool
+- [x] Key expiry (TTL) — auto-expire API keys
+- [ ] Multi-server mode — wrap N MCP servers behind one PayGate
+- [ ] Client SDK — `@paygate-mcp/client` with auto 402 retry
+- [ ] OAuth 2.1 — MCP spec mandates it for production
 
 ## Requirements
 

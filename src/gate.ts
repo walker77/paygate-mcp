@@ -11,7 +11,7 @@
  * Shadow mode: log but don't enforce (always ALLOW).
  */
 
-import { PayGateConfig, GateDecision, UsageEvent, ToolCallParams } from './types';
+import { PayGateConfig, GateDecision, UsageEvent, ToolCallParams, ApiKeyRecord } from './types';
 import { KeyStore } from './store';
 import { RateLimiter } from './rate-limiter';
 import { UsageMeter } from './meter';
@@ -48,17 +48,30 @@ export class Gate {
       return { allowed: false, reason: 'missing_api_key', creditsCharged: 0, remainingCredits: 0 };
     }
 
-    // Step 2: Valid key?
+    // Step 2: Valid key? (also checks expiry)
     const keyRecord = this.store.getKey(apiKey);
     if (!keyRecord) {
-      this.recordEvent(apiKey, 'unknown', toolName, 0, false, 'invalid_api_key');
+      // Distinguish expired vs invalid for better error messages
+      const isExpired = this.store.isExpired(apiKey);
+      const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
+      this.recordEvent(apiKey, 'unknown', toolName, 0, false, reason);
       if (this.config.shadowMode) {
-        return { allowed: true, reason: 'shadow:invalid_api_key', creditsCharged: 0, remainingCredits: 0 };
+        return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: 0 };
       }
-      return { allowed: false, reason: 'invalid_api_key', creditsCharged: 0, remainingCredits: 0 };
+      return { allowed: false, reason, creditsCharged: 0, remainingCredits: 0 };
     }
 
-    // Step 3: Rate limit?
+    // Step 3: Tool ACL check
+    const aclResult = this.checkToolAcl(keyRecord, toolName);
+    if (!aclResult.allowed) {
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, aclResult.reason);
+      if (this.config.shadowMode) {
+        return { allowed: true, reason: `shadow:${aclResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+      return { allowed: false, reason: aclResult.reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
+    }
+
+    // Step 4: Global rate limit?
     const rateResult = this.rateLimiter.check(apiKey);
     if (!rateResult.allowed) {
       this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, rateResult.reason);
@@ -68,7 +81,22 @@ export class Gate {
       return { allowed: false, reason: rateResult.reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
     }
 
-    // Step 4: Sufficient credits?
+    // Step 5: Per-tool rate limit?
+    const toolPricing = this.config.toolPricing[toolName];
+    if (toolPricing?.rateLimitPerMin && toolPricing.rateLimitPerMin > 0) {
+      const compositeKey = `${apiKey}:tool:${toolName}`;
+      const toolRateResult = this.rateLimiter.checkCustom(compositeKey, toolPricing.rateLimitPerMin);
+      if (!toolRateResult.allowed) {
+        const reason = `tool_rate_limited: ${toolName} limited to ${toolPricing.rateLimitPerMin} calls/min`;
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason);
+        if (this.config.shadowMode) {
+          return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+        }
+        return { allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+    }
+
+    // Step 6: Sufficient credits?
     if (!this.store.hasCredits(apiKey, creditsRequired)) {
       this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, 'insufficient_credits');
       if (this.config.shadowMode) {
@@ -82,7 +110,7 @@ export class Gate {
       };
     }
 
-    // Step 5: Spending limit?
+    // Step 7: Spending limit?
     if (keyRecord.spendingLimit > 0) {
       const wouldSpend = keyRecord.totalSpent + creditsRequired;
       if (wouldSpend > keyRecord.spendingLimit) {
@@ -99,13 +127,59 @@ export class Gate {
       }
     }
 
-    // Step 6: ALLOW — deduct credits and record
+    // Step 8: ALLOW — deduct credits and record
     this.store.deductCredits(apiKey, creditsRequired);
     this.rateLimiter.record(apiKey);
+    // Record per-tool rate limit usage
+    if (toolPricing?.rateLimitPerMin && toolPricing.rateLimitPerMin > 0) {
+      this.rateLimiter.recordCustom(`${apiKey}:tool:${toolName}`);
+    }
     const remaining = this.store.getKey(apiKey)?.credits ?? 0;
     this.recordEvent(apiKey, keyRecord.name, toolName, creditsRequired, true);
 
     return { allowed: true, creditsCharged: creditsRequired, remainingCredits: remaining };
+  }
+
+  /**
+   * Check if a tool call is allowed by the key's ACL.
+   */
+  private checkToolAcl(keyRecord: ApiKeyRecord, toolName: string): { allowed: boolean; reason?: string } {
+    // Check whitelist first: if allowedTools is non-empty, tool must be in it
+    if (keyRecord.allowedTools.length > 0) {
+      if (!keyRecord.allowedTools.includes(toolName)) {
+        return { allowed: false, reason: `tool_not_allowed: ${toolName} not in allowedTools` };
+      }
+    }
+    // Check blacklist: if deniedTools contains the tool, deny
+    if (keyRecord.deniedTools.length > 0) {
+      if (keyRecord.deniedTools.includes(toolName)) {
+        return { allowed: false, reason: `tool_denied: ${toolName} is in deniedTools` };
+      }
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * Filter a tools list based on a key's ACL. Used by proxies for tools/list filtering.
+   * Returns null if no filtering needed (no API key or no ACL configured).
+   */
+  filterToolsForKey(apiKey: string | null, tools: Array<{ name: string; [k: string]: unknown }>): Array<{ name: string; [k: string]: unknown }> | null {
+    if (!apiKey) return null;
+    const keyRecord = this.store.getKey(apiKey);
+    if (!keyRecord) return null;
+    if (keyRecord.allowedTools.length === 0 && keyRecord.deniedTools.length === 0) return null;
+
+    return tools.filter(tool => {
+      // Whitelist: if set, tool must be in it
+      if (keyRecord.allowedTools.length > 0 && !keyRecord.allowedTools.includes(tool.name)) {
+        return false;
+      }
+      // Blacklist: if set, tool must not be in it
+      if (keyRecord.deniedTools.length > 0 && keyRecord.deniedTools.includes(tool.name)) {
+        return false;
+      }
+      return true;
+    });
   }
 
   /**

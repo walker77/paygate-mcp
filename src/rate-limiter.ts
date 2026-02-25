@@ -73,6 +73,48 @@ export class RateLimiter {
     entry.timestamps.push(Date.now());
   }
 
+  /**
+   * Check a key against a custom limit. Used for per-tool rate limiting.
+   * Uses composite keys like "pg_abc:tool:search" to track per-tool usage.
+   */
+  checkCustom(key: string, maxCalls: number): RateLimitResult {
+    if (maxCalls <= 0) {
+      return { allowed: true, remaining: Infinity, resetInMs: 0 };
+    }
+
+    const now = Date.now();
+    const cutoff = now - this.windowMs;
+    const entry = this.getOrCreate(key);
+
+    // Remove expired timestamps
+    entry.timestamps = entry.timestamps.filter(t => t > cutoff);
+
+    if (entry.timestamps.length >= maxCalls) {
+      const oldestInWindow = entry.timestamps[0];
+      const resetInMs = oldestInWindow + this.windowMs - now;
+      return {
+        allowed: false,
+        reason: `rate_limited: ${maxCalls} calls/min exceeded for tool`,
+        remaining: 0,
+        resetInMs: Math.max(0, resetInMs),
+      };
+    }
+
+    return {
+      allowed: true,
+      remaining: maxCalls - entry.timestamps.length - 1,
+      resetInMs: entry.timestamps.length > 0 ? entry.timestamps[0] + this.windowMs - now : this.windowMs,
+    };
+  }
+
+  /**
+   * Record a call for any key (including composite per-tool keys).
+   */
+  recordCustom(key: string): void {
+    const entry = this.getOrCreate(key);
+    entry.timestamps.push(Date.now());
+  }
+
   destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);

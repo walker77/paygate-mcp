@@ -47,9 +47,20 @@ export class HttpMcpProxy extends EventEmitter {
       return this.errorResponse(request.id, -32603, 'Proxy not started');
     }
 
-    // Free methods pass through without auth
+    // Free methods pass through without auth (but tools/list may be ACL-filtered)
     if (this.gate.isFreeMethod(request.method)) {
-      return this.forwardToServer(request);
+      const response = await this.forwardToServer(request);
+      // Filter tools/list based on key ACL
+      if (request.method === 'tools/list' && response.result && apiKey) {
+        const result = response.result as { tools?: Array<{ name: string; [k: string]: unknown }> };
+        if (result.tools && Array.isArray(result.tools)) {
+          const filtered = this.gate.filterToolsForKey(apiKey, result.tools);
+          if (filtered) {
+            result.tools = filtered;
+          }
+        }
+      }
+      return response;
     }
 
     // tools/call — gate it

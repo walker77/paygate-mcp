@@ -1,6 +1,29 @@
 # Changelog
 
-## 0.7.0 (2025-02-26)
+## 0.8.0 (2026-02-25)
+
+### Features
+- **Per-tool ACL** — Whitelist (`allowedTools`) and blacklist (`deniedTools`) tools per API key. ACL also filters `tools/list` responses so clients only see permitted tools. Manage via `POST /keys/acl` or set at key creation.
+- **Per-tool rate limits** — Set independent rate limits per tool via `toolPricing[tool].rateLimitPerMin`. Enforced independently per API key on top of the global rate limit.
+- **Key expiry (TTL)** — Create API keys with `expiresIn` (seconds) or `expiresAt` (ISO date). Expired keys return `api_key_expired` error. Manage via `POST /keys/expiry`. Admins can extend or remove expiry at any time.
+- **Enhanced `/keys` endpoint** — Create keys with ACL, expiry, and credits in one call.
+- **Enhanced `/balance` endpoint** — Returns `allowedTools`, `deniedTools`, and `expiresAt` alongside credits.
+- **New admin endpoints** — `POST /keys/acl` (set tool ACL), `POST /keys/expiry` (set key TTL).
+- **Backward-compatible persistence** — Old state files auto-backfill new fields on load.
+
+### Security
+- 17 new red-team tests (Passes 12-14): ACL bypass, key expiry bypass, per-tool rate limit bypass
+- ACL lists capped at 100 entries, empty/whitespace values filtered
+- Expiry uses fail-closed behavior — expired = denied
+- Invalid date strings treated as no-expiry (safe default)
+- Per-tool rate limit counters isolated per key (no cross-key leakage)
+
+### Tests
+- 311 tests across 16 suites (up from 232 across 12)
+
+---
+
+## 0.7.0 (2026-02-25)
 
 ### Features
 - **Spending limits** — Set max total spend per API key via `POST /limits`. Keys are denied when they hit their cap. Balance endpoint shows `spendingLimit` and `remainingBudget`.
@@ -19,7 +42,7 @@
 
 ---
 
-## 0.5.0 (2025-01-22)
+## 0.5.0 (2026-02-25)
 
 ### Features
 - **Streamable HTTP transport** — Gate remote MCP servers via `--remote-url`

@@ -98,6 +98,12 @@ export interface ApiKeyRecord {
   active: boolean;
   /** Max total credits this key can ever spend. 0 = unlimited. */
   spendingLimit: number;
+  /** Whitelist: only these tools are accessible. Empty array = all tools allowed. */
+  allowedTools: string[];
+  /** Blacklist: these tools are always denied. Applied after allowedTools filter. */
+  deniedTools: string[];
+  /** ISO date string when this key expires. Null = never expires. */
+  expiresAt: string | null;
 }
 
 // ─── Metering ───────────────────────────────────────────────────────────────────

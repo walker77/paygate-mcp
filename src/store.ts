@@ -40,9 +40,24 @@ export class KeyStore {
   }
 
   /**
+   * Sanitize and validate tool list for ACL. Max 100 entries, trimmed.
+   */
+  private sanitizeToolList(tools?: string[]): string[] {
+    if (!tools || !Array.isArray(tools)) return [];
+    return tools
+      .filter(t => typeof t === 'string' && t.trim().length > 0)
+      .map(t => t.trim())
+      .slice(0, 100);
+  }
+
+  /**
    * Create a new API key with initial credits.
    */
-  createKey(name: string, initialCredits: number): ApiKeyRecord {
+  createKey(name: string, initialCredits: number, options?: {
+    allowedTools?: string[];
+    deniedTools?: string[];
+    expiresAt?: string | null;
+  }): ApiKeyRecord {
     const key = `pg_${randomBytes(24).toString('hex')}`;
     const record: ApiKeyRecord = {
       key,
@@ -54,6 +69,9 @@ export class KeyStore {
       lastUsedAt: null,
       active: true,
       spendingLimit: 0,
+      allowedTools: this.sanitizeToolList(options?.allowedTools),
+      deniedTools: this.sanitizeToolList(options?.deniedTools),
+      expiresAt: options?.expiresAt || null,
     };
     this.keys.set(key, record);
     this.save();
@@ -61,12 +79,39 @@ export class KeyStore {
   }
 
   /**
-   * Look up an API key. Returns null if not found or inactive.
+   * Look up an API key. Returns null if not found, inactive, or expired.
    */
   getKey(key: string): ApiKeyRecord | null {
     const record = this.keys.get(key);
     if (!record || !record.active) return null;
+    // Check expiry
+    if (record.expiresAt) {
+      const expiresAt = new Date(record.expiresAt).getTime();
+      if (!isNaN(expiresAt) && Date.now() >= expiresAt) {
+        return null; // Expired
+      }
+    }
     return record;
+  }
+
+  /**
+   * Look up key without expiry check (for admin operations on expired keys).
+   */
+  getKeyRaw(key: string): ApiKeyRecord | null {
+    const record = this.keys.get(key);
+    if (!record) return null;
+    return record;
+  }
+
+  /**
+   * Check if a key is expired (not inactive, specifically expired).
+   */
+  isExpired(key: string): boolean {
+    const record = this.keys.get(key);
+    if (!record) return false;
+    if (!record.expiresAt) return false;
+    const expiresAt = new Date(record.expiresAt).getTime();
+    return !isNaN(expiresAt) && Date.now() >= expiresAt;
   }
 
   /**
@@ -108,6 +153,33 @@ export class KeyStore {
   }
 
   /**
+   * Set tool ACL for a key. allowedTools = whitelist, deniedTools = blacklist.
+   */
+  setAcl(key: string, allowedTools?: string[], deniedTools?: string[]): boolean {
+    const record = this.getKey(key);
+    if (!record) return false;
+    if (allowedTools !== undefined) {
+      record.allowedTools = this.sanitizeToolList(allowedTools);
+    }
+    if (deniedTools !== undefined) {
+      record.deniedTools = this.sanitizeToolList(deniedTools);
+    }
+    this.save();
+    return true;
+  }
+
+  /**
+   * Set expiry for a key. Null = never expires.
+   */
+  setExpiry(key: string, expiresAt: string | null): boolean {
+    const record = this.getKeyRaw(key);
+    if (!record) return false;
+    record.expiresAt = expiresAt;
+    this.save();
+    return true;
+  }
+
+  /**
    * Revoke an API key.
    */
   revokeKey(key: string): boolean {
@@ -119,13 +191,17 @@ export class KeyStore {
   }
 
   /**
-   * List all keys (with key values masked).
+   * List all keys (with key values masked). Includes expiry status.
    */
-  listKeys(): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string }> {
-    const result: Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string }> = [];
+  listKeys(): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> {
+    const result: Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> = [];
     for (const record of this.keys.values()) {
       const { key, ...rest } = record;
-      result.push({ ...rest, keyPrefix: key.slice(0, 10) + '...' });
+      result.push({
+        ...rest,
+        keyPrefix: key.slice(0, 10) + '...',
+        expired: this.isExpired(key),
+      });
     }
     return result;
   }
@@ -144,7 +220,11 @@ export class KeyStore {
   /**
    * Import a key directly (for config file loading).
    */
-  importKey(key: string, name: string, credits: number): ApiKeyRecord {
+  importKey(key: string, name: string, credits: number, options?: {
+    allowedTools?: string[];
+    deniedTools?: string[];
+    expiresAt?: string | null;
+  }): ApiKeyRecord {
     const record: ApiKeyRecord = {
       key,
       name: this.sanitizeName(name),
@@ -155,6 +235,9 @@ export class KeyStore {
       lastUsedAt: null,
       active: true,
       spendingLimit: 0,
+      allowedTools: this.sanitizeToolList(options?.allowedTools),
+      deniedTools: this.sanitizeToolList(options?.deniedTools),
+      expiresAt: options?.expiresAt || null,
     };
     this.keys.set(key, record);
     this.save();
@@ -201,8 +284,11 @@ export class KeyStore {
 
       for (const [key, record] of data) {
         if (key && record && typeof record.key === 'string') {
-          // Backfill spendingLimit for old state files
+          // Backfill fields for old state files
           if (record.spendingLimit === undefined) record.spendingLimit = 0;
+          if (!Array.isArray(record.allowedTools)) record.allowedTools = [];
+          if (!Array.isArray(record.deniedTools)) record.deniedTools = [];
+          if (record.expiresAt === undefined) record.expiresAt = null;
           this.keys.set(key, record);
         }
       }

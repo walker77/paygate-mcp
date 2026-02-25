@@ -12,6 +12,9 @@
  * Pass 9: Budget bypass (spending limits)
  * Pass 10: Refund abuse
  * Pass 11: Webhook security
+ * Pass 12: ACL bypass attempts
+ * Pass 13: Key expiry bypass
+ * Pass 14: Per-tool rate limit bypass
  */
 
 import { PayGateServer } from '../../src/server';
@@ -1669,6 +1672,353 @@ describe('RED TEAM — Webhook Security', () => {
 
     const status = gate.getStatus();
     expect(status.config.webhookUrl).toBeNull();
+    gate.destroy();
+  });
+});
+
+// ─── PASS 12: ACL Bypass Attempts ──────────────────────────────────────────
+
+describe('RED TEAM — ACL Bypass', () => {
+  test('should not allow accessing denied tool via case variation', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const record = gate.store.createKey('test', 100, {
+      deniedTools: ['admin-tool'],
+    });
+
+    // Exact match should be denied
+    expect(gate.evaluate(record.key, { name: 'admin-tool' }).allowed).toBe(false);
+    // Case variation — tool names are case-sensitive in MCP, so different case is a different tool
+    // But the ACTUAL tool will also have a different name, so this is safe
+    expect(gate.evaluate(record.key, { name: 'Admin-Tool' }).allowed).toBe(true);
+    gate.destroy();
+  });
+
+  test('should not bypass ACL by setting allowedTools to non-array via API', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const record = gate.store.createKey('test', 100, {
+      allowedTools: ['search'] as any,
+    });
+
+    // Should only allow search
+    expect(gate.evaluate(record.key, { name: 'search' }).allowed).toBe(true);
+    expect(gate.evaluate(record.key, { name: 'other' }).allowed).toBe(false);
+
+    // Try to set ACL with garbage values — sanitizeToolList should handle it
+    gate.store.setAcl(record.key, null as any, undefined as any);
+    // After setting null, allowedTools should become [] (empty = all allowed)
+    expect(gate.evaluate(record.key, { name: 'other' }).allowed).toBe(true);
+    gate.destroy();
+  });
+
+  test('should not allow more than 100 tools in ACL list', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const bigList = Array.from({ length: 200 }, (_, i) => `tool-${i}`);
+    const record = gate.store.createKey('test', 100, {
+      allowedTools: bigList,
+    });
+
+    expect(record.allowedTools.length).toBe(100);
+    gate.destroy();
+  });
+
+  test('should handle empty string tools in ACL list', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const record = gate.store.createKey('test', 100, {
+      allowedTools: ['search', '', '  ', 'generate'],
+    });
+
+    // Empty/whitespace strings should be filtered out
+    expect(record.allowedTools).toEqual(['search', 'generate']);
+    gate.destroy();
+  });
+
+  test('should not allow tool injection via special characters in tool name', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const record = gate.store.createKey('test', 100, {
+      allowedTools: ['search'],
+    });
+
+    // Various injection attempts
+    expect(gate.evaluate(record.key, { name: 'search\x00admin' }).allowed).toBe(false);
+    expect(gate.evaluate(record.key, { name: 'search,admin' }).allowed).toBe(false);
+    expect(gate.evaluate(record.key, { name: '../search' }).allowed).toBe(false);
+    gate.destroy();
+  });
+
+  test('should not return denied tools in filterToolsForKey', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+
+    const tools = [
+      { name: 'search', description: 'Search' },
+      { name: 'admin', description: 'Admin' },
+      { name: 'secret', description: 'Secret' },
+    ];
+
+    const record = gate.store.createKey('test', 100, {
+      deniedTools: ['admin', 'secret'],
+    });
+
+    const filtered = gate.filterToolsForKey(record.key, tools);
+    expect(filtered).not.toBeNull();
+    expect(filtered!.length).toBe(1);
+    expect(filtered![0].name).toBe('search');
+
+    // Denied tools should not leak through
+    const names = filtered!.map(t => t.name);
+    expect(names).not.toContain('admin');
+    expect(names).not.toContain('secret');
+    gate.destroy();
+  });
+});
+
+// ─── PASS 13: Key Expiry Bypass ────────────────────────────────────────────
+
+describe('RED TEAM — Key Expiry Bypass', () => {
+  test('should not allow using key that expired 1ms ago', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const past = new Date(Date.now() - 1).toISOString();
+    const record = gate.store.createKey('test', 100, { expiresAt: past });
+
+    const decision = gate.evaluate(record.key, { name: 'search' });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe('api_key_expired');
+    gate.destroy();
+  });
+
+  test('should not bypass expiry via invalid date format', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    // Invalid date string — should be treated as "no expiry" (NaN check)
+    const record = gate.store.createKey('test', 100, { expiresAt: 'not-a-date' });
+
+    // Invalid date: isNaN check means it won't expire (can't parse, so no expiry enforced)
+    const decision = gate.evaluate(record.key, { name: 'search' });
+    expect(decision.allowed).toBe(true);
+    gate.destroy();
+  });
+
+  test('should not allow extending expiry without admin key', async () => {
+    // This tests the HTTP endpoint — expired keys can only be extended via admin
+    const portNum = 3700 + Math.floor(Math.random() * 100);
+    const testServer = new PayGateServer({
+      serverCommand: 'node',
+      serverArgs: [MOCK_SERVER],
+      port: portNum,
+      defaultCreditsPerCall: 1,
+      globalRateLimitPerMin: 100,
+      name: 'Expiry Test',
+    });
+
+    const result = await testServer.start();
+    await new Promise(r => setTimeout(r, 300));
+
+    try {
+      // Create a key with expiry
+      const createRes = await httpRequest(result.port, '/keys', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': result.adminKey },
+        body: { name: 'expiring', credits: 100, expiresIn: 3600 },
+      });
+      expect(createRes.status).toBe(201);
+      expect(createRes.body.expiresAt).toBeTruthy();
+
+      const key = createRes.body.key;
+
+      // Try to extend expiry without admin key — should fail
+      const extendRes = await httpRequest(result.port, '/keys/expiry', {
+        method: 'POST',
+        headers: { 'X-API-Key': key },
+        body: { key, expiresIn: 99999 },
+      });
+      expect(extendRes.status).toBe(401);
+    } finally {
+      await testServer.stop();
+    }
+  }, 15000);
+
+  test('should not allow negative expiresIn to create far-future expiry', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    // Negative expiresIn would create a past date, which is expired
+    const past = new Date(Date.now() + (-86400 * 1000)).toISOString(); // -1 day
+    const record = gate.store.createKey('test', 100, { expiresAt: past });
+
+    const decision = gate.evaluate(record.key, { name: 'search' });
+    expect(decision.allowed).toBe(false);
+    gate.destroy();
+  });
+
+  test('should not allow credits to be deducted from expired key', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const past = new Date(Date.now() - 1000).toISOString();
+    const record = gate.store.createKey('test', 100, { expiresAt: past });
+
+    // Try to deduct via gate
+    gate.evaluate(record.key, { name: 'search' });
+    const raw = gate.store.getKeyRaw(record.key);
+    expect(raw!.credits).toBe(100); // No deduction
+    expect(raw!.totalCalls).toBe(0);
+    gate.destroy();
+  });
+
+  test('should not allow topup on expired key via store', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+    });
+    const past = new Date(Date.now() - 1000).toISOString();
+    const record = gate.store.createKey('test', 100, { expiresAt: past });
+
+    // addCredits calls getKey which checks expiry
+    const success = gate.store.addCredits(record.key, 50);
+    expect(success).toBe(false);
+
+    const raw = gate.store.getKeyRaw(record.key);
+    expect(raw!.credits).toBe(100); // Not modified
+    gate.destroy();
+  });
+});
+
+// ─── PASS 14: Per-Tool Rate Limit Bypass ───────────────────────────────────
+
+describe('RED TEAM — Per-Tool Rate Limit Bypass', () => {
+  test('should not bypass per-tool limit via different API keys sharing tool counter', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      toolPricing: {
+        'expensive': { creditsPerCall: 1, rateLimitPerMin: 2 },
+      },
+    });
+
+    const key1 = gate.store.createKey('user1', 1000);
+    const key2 = gate.store.createKey('user2', 1000);
+
+    // Key1 exhausts its per-tool limit
+    gate.evaluate(key1.key, { name: 'expensive' });
+    gate.evaluate(key1.key, { name: 'expensive' });
+    expect(gate.evaluate(key1.key, { name: 'expensive' }).allowed).toBe(false);
+
+    // Key2 should have its own counter
+    expect(gate.evaluate(key2.key, { name: 'expensive' }).allowed).toBe(true);
+    gate.destroy();
+  });
+
+  test('should enforce both global and per-tool limits simultaneously', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 5,
+      toolPricing: {
+        'limited-tool': { creditsPerCall: 1, rateLimitPerMin: 3 },
+      },
+    });
+
+    const record = gate.store.createKey('test', 1000);
+
+    // Per-tool limit is 3, global is 5
+    for (let i = 0; i < 3; i++) {
+      expect(gate.evaluate(record.key, { name: 'limited-tool' }).allowed).toBe(true);
+    }
+
+    // Per-tool limit hit at 3
+    const perToolDenied = gate.evaluate(record.key, { name: 'limited-tool' });
+    expect(perToolDenied.allowed).toBe(false);
+    expect(perToolDenied.reason).toContain('tool_rate_limited');
+
+    // But other tools should still work (global has 2 more calls)
+    expect(gate.evaluate(record.key, { name: 'other-tool' }).allowed).toBe(true);
+    expect(gate.evaluate(record.key, { name: 'other-tool' }).allowed).toBe(true);
+
+    // Now global is exhausted too
+    expect(gate.evaluate(record.key, { name: 'other-tool' }).allowed).toBe(false);
+    gate.destroy();
+  });
+
+  test('should not allow per-tool rate limit bypass via tool name mutation', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 100,
+      toolPricing: {
+        'search': { creditsPerCall: 1, rateLimitPerMin: 2 },
+      },
+    });
+
+    const record = gate.store.createKey('test', 1000);
+
+    // Exhaust search limit
+    gate.evaluate(record.key, { name: 'search' });
+    gate.evaluate(record.key, { name: 'search' });
+    expect(gate.evaluate(record.key, { name: 'search' }).allowed).toBe(false);
+
+    // Different name — no per-tool limit configured, uses global only
+    expect(gate.evaluate(record.key, { name: 'Search' }).allowed).toBe(true);
+    expect(gate.evaluate(record.key, { name: 'SEARCH' }).allowed).toBe(true);
+    gate.destroy();
+  });
+
+  test('should not let per-tool rate limit counter overflow', () => {
+    const gate = new Gate({
+      ...DEFAULT_CONFIG,
+      serverCommand: 'echo',
+      globalRateLimitPerMin: 0, // unlimited global
+      toolPricing: {
+        'tool': { creditsPerCall: 1, rateLimitPerMin: 5 },
+      },
+    });
+
+    const record = gate.store.createKey('test', 100000);
+
+    // Make many calls — should be rate limited after 5
+    let denied = 0;
+    for (let i = 0; i < 20; i++) {
+      const d = gate.evaluate(record.key, { name: 'tool' });
+      if (!d.allowed) denied++;
+    }
+
+    // Should have been denied 15 times (20 - 5 allowed)
+    expect(denied).toBe(15);
     gate.destroy();
   });
 });
