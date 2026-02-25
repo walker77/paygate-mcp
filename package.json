@@ -1,6 +1,6 @@
 {
   "name": "paygate-mcp",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Pay-per-tool-call gating proxy for MCP servers. Wrap any MCP server with API key auth, per-tool pricing, rate limiting, and usage metering.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -8,7 +8,8 @@
   "files": ["dist", "README.md", "LICENSE"],
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proxy": { "types": "./dist/proxy.d.ts", "default": "./dist/proxy.js" }
+    "./proxy": { "types": "./dist/proxy.d.ts", "default": "./dist/proxy.js" },
+    "./client": { "types": "./dist/client.d.ts", "default": "./dist/client.js" }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -9,7 +9,7 @@
  */
 
 import { PayGateServer } from './server';
-import { PayGateConfig, ToolPricing } from './types';
+import { PayGateConfig, ToolPricing, ServerBackendConfig } from './types';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -78,6 +78,14 @@ function printUsage(): void {
     # Gate a remote MCP server (Streamable HTTP transport)
     paygate-mcp wrap --remote-url "https://my-server.example.com/mcp" --price 5
 
+    # Multi-server mode: wrap N servers behind one PayGate
+    paygate-mcp wrap --config multi-server.json
+    # Config file: { "servers": [
+    #   { "prefix": "fs", "serverCommand": "npx", "serverArgs": ["@mcp/server-filesystem", "/tmp"] },
+    #   { "prefix": "gh", "remoteUrl": "https://github-mcp.example.com/mcp" }
+    # ]}
+    # Tools become: "fs:read_file", "gh:search_repos", etc.
+
     # Custom pricing and rate limit
     paygate-mcp wrap --server "python my-server.py" --price 2 --rate-limit 30
 
@@ -116,6 +124,13 @@ interface ConfigFile {
   webhookUrl?: string;
   refundOnFailure?: boolean;
   importKeys?: Record<string, number>;
+  /** Multi-server mode: wrap multiple MCP servers with tool prefix routing */
+  servers?: Array<{
+    prefix: string;
+    serverCommand?: string;
+    serverArgs?: string[];
+    remoteUrl?: string;
+  }>;
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -137,12 +152,21 @@ async function main(): Promise<void> {
         }
       }
 
+      // Multi-server mode check
+      const multiServers: ServerBackendConfig[] | undefined = fileConfig.servers;
+      const isMultiServer = multiServers && multiServers.length > 0;
+
       const serverCmd = flags['server'] || (fileConfig.serverCommand ? [fileConfig.serverCommand, ...(fileConfig.serverArgs || [])].join(' ') : '');
       const remoteUrl = flags['remote-url'] || fileConfig.remoteUrl;
 
-      if (!serverCmd && !remoteUrl) {
-        console.error('Error: --server, --remote-url, or --config is required.\n');
+      if (!serverCmd && !remoteUrl && !isMultiServer) {
+        console.error('Error: --server, --remote-url, or --config (with servers[]) is required.\n');
         printUsage();
+        process.exit(1);
+      }
+
+      if (isMultiServer && (serverCmd || remoteUrl)) {
+        console.error('Error: use "servers" array OR --server/--remote-url, not both.\n');
         process.exit(1);
       }
 
@@ -183,7 +207,7 @@ async function main(): Promise<void> {
         toolPricing,
         webhookUrl,
         refundOnFailure: !!refundOnFailure,
-      }, adminKey, stateFile, remoteUrl, stripeSecret);
+      }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers);
 
       // Import keys from CLI flags
       if (flags['import-key']) {
@@ -214,6 +238,18 @@ async function main(): Promise<void> {
 
       try {
         const result = await server.start();
+
+        // Build backend display string
+        let backendDisplay: string;
+        if (isMultiServer) {
+          const prefixes = multiServers!.map(s => s.prefix).join(', ');
+          backendDisplay = `multi (${multiServers!.length}) → ${prefixes}`.slice(0, 35);
+        } else if (remoteUrl) {
+          backendDisplay = ('HTTP → ' + remoteUrl.slice(0, 28));
+        } else {
+          backendDisplay = ('stdio → ' + (serverCmd || serverCommand).slice(0, 27));
+        }
+
         console.log(`
   ╔══════════════════════════════════════════════════╗
   ║         PayGate MCP — Server Running             ║
@@ -221,7 +257,7 @@ async function main(): Promise<void> {
   ║                                                  ║
   ║  Endpoint:   http://localhost:${String(result.port).padEnd(5)}              ║
   ║  Admin Key:  ${result.adminKey.slice(0, 20)}...       ║
-  ║  Backend:    ${(remoteUrl ? 'HTTP → ' + remoteUrl.slice(0, 28) : 'stdio → ' + (serverCmd || serverCommand).slice(0, 27)).padEnd(35)}║
+  ║  Backend:    ${backendDisplay.padEnd(35)}║
   ║                                                  ║
   ║  Pricing:    ${String(price).padEnd(3)} credit(s) per tool call       ║
   ║  Rate Limit: ${String(rateLimit).padEnd(3)} calls/min per key          ║
@@ -240,6 +276,17 @@ async function main(): Promise<void> {
   ║  POST /limits    — Set spending limit (Admin)     ║
   ╚══════════════════════════════════════════════════╝
 `);
+
+        // Show multi-server details
+        if (isMultiServer) {
+          console.log('  Multi-server backends:');
+          for (const s of multiServers!) {
+            const transport = s.remoteUrl ? `HTTP → ${s.remoteUrl}` : `stdio → ${s.serverCommand} ${(s.serverArgs || []).join(' ')}`;
+            console.log(`    ${s.prefix}: ${transport}`);
+          }
+          console.log('');
+        }
+
         console.log(`  Admin key (save this): ${result.adminKey}\n`);
       } catch (error) {
         console.error('Failed to start server:', error);

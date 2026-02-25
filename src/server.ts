@@ -15,7 +15,7 @@
 import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { PayGateConfig, JsonRpcRequest, DEFAULT_CONFIG } from './types';
+import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG } from './types';
 
 /** Read version from package.json at runtime */
 const PKG_VERSION = (() => {
@@ -27,6 +27,7 @@ const PKG_VERSION = (() => {
 import { Gate } from './gate';
 import { McpProxy } from './proxy';
 import { HttpMcpProxy } from './http-proxy';
+import { MultiServerRouter } from './router';
 import { StripeWebhookHandler } from './stripe';
 import { getDashboardHtml } from './dashboard';
 
@@ -36,13 +37,31 @@ const MAX_BODY_SIZE = 1_048_576;
 /** Union type for both proxy backends */
 type ProxyBackend = McpProxy | HttpMcpProxy;
 
+/** Common interface for request handling (single proxy or multi-server router) */
+interface RequestHandler {
+  handleRequest(request: JsonRpcRequest, apiKey: string | null): Promise<JsonRpcResponse>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  readonly isRunning: boolean;
+}
+
+import { JsonRpcResponse } from './types';
+
 export class PayGateServer {
   readonly gate: Gate;
-  readonly proxy: ProxyBackend;
+  /** Single-server proxy (when not in multi-server mode) */
+  readonly proxy: ProxyBackend | null;
+  /** Multi-server router (when servers[] config is provided) */
+  readonly router: MultiServerRouter | null;
   private server: Server | null = null;
   private readonly config: PayGateConfig;
   private readonly adminKey: string;
   private stripeHandler: StripeWebhookHandler | null = null;
+
+  /** The active request handler — either proxy or router */
+  private get handler(): RequestHandler {
+    return (this.router || this.proxy) as RequestHandler;
+  }
 
   constructor(
     config: Partial<PayGateConfig> & { serverCommand: string },
@@ -50,15 +69,22 @@ export class PayGateServer {
     statePath?: string,
     remoteUrl?: string,
     stripeWebhookSecret?: string,
+    servers?: ServerBackendConfig[],
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.adminKey = adminKey || `admin_${require('crypto').randomBytes(16).toString('hex')}`;
     this.gate = new Gate(this.config, statePath);
 
-    if (remoteUrl) {
+    // Multi-server mode: use Router
+    if (servers && servers.length > 0) {
+      this.router = new MultiServerRouter(this.gate, servers);
+      this.proxy = null;
+    } else if (remoteUrl) {
       this.proxy = new HttpMcpProxy(this.gate, remoteUrl);
+      this.router = null;
     } else {
       this.proxy = new McpProxy(this.gate, this.config.serverCommand, this.config.serverArgs);
+      this.router = null;
     }
 
     if (stripeWebhookSecret) {
@@ -67,7 +93,7 @@ export class PayGateServer {
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
-    await this.proxy.start();
+    await this.handler.start();
 
     return new Promise((resolve, reject) => {
       this.server = createServer(async (req, res) => {
@@ -159,7 +185,7 @@ export class PayGateServer {
       return;
     }
 
-    const response = await this.proxy.handleRequest(request, apiKey);
+    const response = await this.handler.handleRequest(request, apiKey);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(response));
@@ -642,7 +668,7 @@ export class PayGateServer {
   }
 
   async stop(): Promise<void> {
-    await this.proxy.stop();
+    await this.handler.stop();
     this.gate.destroy();
     if (this.server) {
       return new Promise((resolve) => {

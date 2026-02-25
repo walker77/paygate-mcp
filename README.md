@@ -30,6 +30,8 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Billing** — Each tool call costs credits (configurable per-tool)
 - **Rate Limiting** — Sliding window per-key rate limits + per-tool rate limits
 - **Usage Metering** — Track who called what, when, and how much they spent
+- **Multi-Server Mode** — Wrap N MCP servers behind one PayGate with tool prefix routing
+- **Client SDK** — `PayGateClient` with auto 402 retry, balance tracking, and typed errors
 - **Two Transports** — Wrap local servers via stdio or remote servers via Streamable HTTP
 - **Per-Tool ACL** — Whitelist/blacklist tools per API key (enterprise access control)
 - **Per-Tool Rate Limits** — Independent rate limits per tool, not just global
@@ -87,6 +89,75 @@ The proxy handles:
 - Graceful session cleanup (HTTP DELETE on shutdown)
 
 When started, you'll see your admin key in the console. Save it.
+
+### Multi-Server Mode
+
+Wrap multiple MCP servers behind a single PayGate instance. Tools are prefixed with the server name:
+
+```bash
+npx paygate-mcp wrap --config multi-server.json
+```
+
+Example `multi-server.json`:
+```json
+{
+  "port": 3402,
+  "defaultCreditsPerCall": 1,
+  "servers": [
+    {
+      "prefix": "fs",
+      "serverCommand": "npx",
+      "serverArgs": ["@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    {
+      "prefix": "github",
+      "remoteUrl": "https://github-mcp.example.com/mcp"
+    }
+  ]
+}
+```
+
+Tools are exposed with prefixes: `fs:read_file`, `fs:write_file`, `github:search_repos`, etc. Pricing and ACLs work on the prefixed names:
+
+```json
+{
+  "toolPricing": {
+    "github:search_repos": { "creditsPerCall": 5 },
+    "fs:read_file": { "creditsPerCall": 1 }
+  }
+}
+```
+
+Credits are shared across all backends — one API key works for all servers.
+
+### Client SDK
+
+Use `PayGateClient` to call tools from TypeScript/Node.js with auto 402 retry:
+
+```typescript
+import { PayGateClient, PayGateError } from 'paygate-mcp/client';
+
+const client = new PayGateClient({
+  url: 'http://localhost:3402',
+  apiKey: 'pg_abc123...',
+  autoRetry: true,
+  onCreditsNeeded: async (info) => {
+    // Called when credits run out — add credits and return true to retry
+    await topUpCredits(info.creditsRequired);
+    return true;
+  },
+});
+
+const tools = await client.listTools();
+const result = await client.callTool('search', { query: 'hello' });
+const balance = await client.getBalance();
+```
+
+Features:
+- **Auto 402 retry**: When a tool call returns payment-required, calls `onCreditsNeeded` and retries
+- **Balance tracking**: `client.lastKnownBalance` tracks credits from `getBalance()` calls
+- **Typed errors**: `PayGateError` with `.isPaymentRequired`, `.isRateLimited`, `.isExpired` helpers
+- **Zero dependencies**: Uses Node.js built-in `http`/`https`
 
 ### Create API Keys
 
@@ -213,7 +284,7 @@ These MCP methods pass through without auth or billing:
 --config <path>      Load settings from a JSON config file
 ```
 
-> **Note:** Use `--server` OR `--remote-url`, not both.
+> **Note:** Use `--server` OR `--remote-url` for single-server mode. Use `servers` in a config file for multi-server mode.
 
 ### Persistent Storage
 
@@ -397,7 +468,7 @@ CLI flags override config file values when both are specified.
 ## Programmatic API
 
 ```typescript
-import { PayGateServer, HttpMcpProxy } from 'paygate-mcp';
+import { PayGateServer } from 'paygate-mcp';
 
 // Wrap a local server (stdio)
 const server = new PayGateServer({
@@ -410,14 +481,28 @@ const server = new PayGateServer({
   },
 });
 
-// Or gate a remote server (Streamable HTTP)
-const remoteServer = new PayGateServer({
-  serverCommand: '',
-  port: 3402,
-  defaultCreditsPerCall: 5,
-}, undefined, undefined, 'https://my-mcp-server.example.com/mcp');
-
 const { port, adminKey } = await server.start();
+
+// Multi-server mode
+const multiServer = new PayGateServer(
+  { serverCommand: '', port: 3402, defaultCreditsPerCall: 1 },
+  undefined, undefined, undefined, undefined,
+  [
+    { prefix: 'fs', serverCommand: 'npx', serverArgs: ['@modelcontextprotocol/server-filesystem', '/tmp'] },
+    { prefix: 'api', remoteUrl: 'https://my-mcp-server.example.com/mcp' },
+  ]
+);
+
+// Client SDK
+import { PayGateClient } from 'paygate-mcp/client';
+
+const client = new PayGateClient({
+  url: `http://localhost:${port}`,
+  apiKey: 'pg_...',
+});
+
+const tools = await client.listTools();
+const result = await client.callTool('search', { query: 'hello' });
 ```
 
 ## Security
@@ -458,8 +543,8 @@ const { port, adminKey } = await server.start();
 - [x] Per-tool ACL — whitelist/blacklist tools per key
 - [x] Per-tool rate limits — independent limits per tool
 - [x] Key expiry (TTL) — auto-expire API keys
-- [ ] Multi-server mode — wrap N MCP servers behind one PayGate
-- [ ] Client SDK — `@paygate-mcp/client` with auto 402 retry
+- [x] Multi-server mode — wrap N MCP servers behind one PayGate
+- [x] Client SDK — `PayGateClient` with auto 402 retry
 - [ ] OAuth 2.1 — MCP spec mandates it for production
 
 ## Requirements

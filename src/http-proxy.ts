@@ -297,6 +297,17 @@ export class HttpMcpProxy extends EventEmitter {
     });
   }
 
+  /**
+   * Forward a request directly to the remote server without gating.
+   * Used by MultiServerRouter which handles gating at the router level.
+   */
+  async forwardUngated(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+    if (!this.started) {
+      return this.errorResponse(request.id, -32603, 'Proxy not started');
+    }
+    return this.forwardToServer(request);
+  }
+
   get isRunning(): boolean {
     return this.started;
   }

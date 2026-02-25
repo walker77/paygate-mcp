@@ -246,6 +246,17 @@ export class McpProxy extends EventEmitter {
     });
   }
 
+  /**
+   * Forward a request directly to the wrapped server without gating.
+   * Used by MultiServerRouter which handles gating at the router level.
+   */
+  async forwardUngated(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+    if (!this.started || !this.process) {
+      return this.errorResponse(request.id, -32603, 'Server not started');
+    }
+    return this.forwardToServer(request);
+  }
+
   get isRunning(): boolean {
     return this.started;
   }

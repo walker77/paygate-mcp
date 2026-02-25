@@ -71,6 +71,20 @@ export interface PayGateConfig {
   refundOnFailure: boolean;
 }
 
+// ─── Multi-Server ──────────────────────────────────────────────────────────
+
+export interface ServerBackendConfig {
+  /** Unique prefix for this server's tools (e.g., "filesystem", "github").
+   *  Tools are exposed as "prefix:tool_name". */
+  prefix: string;
+  /** Command to spawn the wrapped MCP server (stdio transport) */
+  serverCommand?: string;
+  /** Args for the server command */
+  serverArgs?: string[];
+  /** Remote MCP server URL (Streamable HTTP transport) */
+  remoteUrl?: string;
+}
+
 export const DEFAULT_CONFIG: PayGateConfig = {
   name: 'PayGate MCP Server',
   serverCommand: '',
