@@ -57,6 +57,7 @@ function printUsage(): void {
     --tool-price <t:n>   Per-tool price override (e.g. "search:5,generate:10")
     --import-key <k:c>   Import an existing API key with credits (e.g. "pg_abc123:100")
     --state-file <path>  Persist keys/credits to a JSON file (survives restarts)
+    --stripe-secret <s>  Stripe webhook signing secret (enables /stripe/webhook endpoint)
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -126,6 +127,7 @@ async function main(): Promise<void> {
       const adminKey = flags['admin-key'];
       const toolPricing = flags['tool-price'] ? parseToolPricing(flags['tool-price']) : {};
       const stateFile = flags['state-file'];
+      const stripeSecret = flags['stripe-secret'];
 
       const server = new PayGateServer({
         serverCommand,
@@ -136,7 +138,7 @@ async function main(): Promise<void> {
         name,
         shadowMode: !!shadowMode,
         toolPricing,
-      }, adminKey, stateFile, remoteUrl);
+      }, adminKey, stateFile, remoteUrl, stripeSecret);
 
       // Import keys if specified
       if (flags['import-key']) {
@@ -173,6 +175,7 @@ async function main(): Promise<void> {
   ║  Rate Limit: ${String(rateLimit).padEnd(3)} calls/min per key          ║
   ║  Shadow:     ${String(!!shadowMode).padEnd(5)}                            ║
   ║  Persist:    ${(stateFile ? stateFile.slice(0, 33) : 'off (in-memory)').padEnd(35)}║
+  ║  Stripe:     ${(stripeSecret ? 'enabled (/stripe/webhook)' : 'off').padEnd(35)}║
   ║                                                  ║
   ╠══════════════════════════════════════════════════╣
   ║  POST /mcp     — JSON-RPC (X-API-Key header)    ║
@@ -198,7 +201,7 @@ async function main(): Promise<void> {
     case 'version':
     case '--version':
     case '-v':
-      console.log('paygate-mcp v0.2.0');
+      console.log('paygate-mcp v0.3.0');
       break;
 
     default:

@@ -17,6 +17,7 @@ import { PayGateConfig, JsonRpcRequest, DEFAULT_CONFIG } from './types';
 import { Gate } from './gate';
 import { McpProxy } from './proxy';
 import { HttpMcpProxy } from './http-proxy';
+import { StripeWebhookHandler } from './stripe';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -30,12 +31,14 @@ export class PayGateServer {
   private server: Server | null = null;
   private readonly config: PayGateConfig;
   private readonly adminKey: string;
+  private stripeHandler: StripeWebhookHandler | null = null;
 
   constructor(
     config: Partial<PayGateConfig> & { serverCommand: string },
     adminKey?: string,
     statePath?: string,
     remoteUrl?: string,
+    stripeWebhookSecret?: string,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.adminKey = adminKey || `admin_${require('crypto').randomBytes(16).toString('hex')}`;
@@ -45,6 +48,10 @@ export class PayGateServer {
       this.proxy = new HttpMcpProxy(this.gate, remoteUrl);
     } else {
       this.proxy = new McpProxy(this.gate, this.config.serverCommand, this.config.serverArgs);
+    }
+
+    if (stripeWebhookSecret) {
+      this.stripeHandler = new StripeWebhookHandler(this.gate.store, stripeWebhookSecret);
     }
   }
 
@@ -92,8 +99,12 @@ export class PayGateServer {
         if (req.method === 'POST') return this.handleCreateKey(req, res);
         if (req.method === 'GET') return this.handleListKeys(req, res);
         break;
+      case '/keys/revoke':
+        return this.handleRevokeKey(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
+      case '/stripe/webhook':
+        return this.handleStripeWebhook(req, res);
       default:
         // Root — simple info
         if (url === '/' || url === '') {
@@ -245,6 +256,78 @@ export class PayGateServer {
     const record = this.gate.store.getKey(params.key);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ credits: record?.credits, message: `Added ${credits} credits` }));
+  }
+
+  // ─── /keys/revoke — Revoke a key ──────────────────────────────────────────
+
+  private async handleRevokeKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    const success = this.gate.store.revokeKey(params.key);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Key revoked' }));
+  }
+
+  // ─── /stripe/webhook — Stripe integration ────────────────────────────────
+
+  private async handleStripeWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    if (!this.stripeHandler) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Stripe integration not configured' }));
+      return;
+    }
+
+    const rawBody = await this.readBody(req);
+    const signature = req.headers['stripe-signature'] as string;
+
+    if (!signature) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing Stripe-Signature header' }));
+      return;
+    }
+
+    const result = this.stripeHandler.handleWebhook(rawBody, signature);
+
+    if (result.success) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } else {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ export { HttpMcpProxy } from './http-proxy';
 export { KeyStore } from './store';
 export { UsageMeter } from './meter';
 export { RateLimiter } from './rate-limiter';
+export { StripeWebhookHandler } from './stripe';
 
 export type {
   PayGateConfig,

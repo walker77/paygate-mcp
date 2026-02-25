@@ -913,3 +913,165 @@ describe('RED TEAM — HTTP Transport Security', () => {
     await proxy.stop();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PASS 6: Stripe Webhook Security
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { StripeWebhookHandler } from '../../src/stripe';
+import { createHmac as hmac } from 'crypto';
+
+describe('RED TEAM — Stripe Webhook Security', () => {
+  const SECRET = 'whsec_redteam_test_secret';
+
+  function sign(body: string, secret: string, timestamp?: number): string {
+    const ts = timestamp || Math.floor(Date.now() / 1000);
+    const sig = hmac('sha256', secret).update(`${ts}.${body}`, 'utf8').digest('hex');
+    return `t=${ts},v1=${sig}`;
+  }
+
+  test('should reject replay attacks (reused signature from old timestamp)', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+    const record = store.createKey('replay-test', 50);
+
+    const body = JSON.stringify({
+      id: 'evt_replay',
+      type: 'checkout.session.completed',
+      data: { object: { payment_status: 'paid', metadata: { paygate_api_key: record.key, paygate_credits: '1000' } } },
+    });
+
+    // Valid signature but from 10 minutes ago (outside 5 min tolerance)
+    const oldTimestamp = Math.floor(Date.now() / 1000) - 600;
+    const sig = sign(body, SECRET, oldTimestamp);
+
+    const result = handler.handleWebhook(body, sig);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Invalid signature');
+    expect(store.getKey(record.key)!.credits).toBe(50); // unchanged
+  });
+
+  test('should reject forged signatures with wrong secret', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+    const record = store.createKey('forge-test', 50);
+
+    const body = JSON.stringify({
+      id: 'evt_forge',
+      type: 'checkout.session.completed',
+      data: { object: { payment_status: 'paid', metadata: { paygate_api_key: record.key, paygate_credits: '9999' } } },
+    });
+
+    // Sign with attacker's secret, not our webhook secret
+    const sig = sign(body, 'attacker_secret');
+
+    const result = handler.handleWebhook(body, sig);
+    expect(result.success).toBe(false);
+    expect(store.getKey(record.key)!.credits).toBe(50); // unchanged
+  });
+
+  test('should reject body tampering (modify credits after signing)', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+    const record = store.createKey('tamper-test', 50);
+
+    const originalBody = JSON.stringify({
+      id: 'evt_tamper',
+      type: 'checkout.session.completed',
+      data: { object: { payment_status: 'paid', metadata: { paygate_api_key: record.key, paygate_credits: '10' } } },
+    });
+
+    const sig = sign(originalBody, SECRET);
+
+    // Attacker modifies credits from 10 to 99999
+    const tamperedBody = originalBody.replace('"10"', '"99999"');
+
+    const result = handler.handleWebhook(tamperedBody, sig);
+    expect(result.success).toBe(false);
+    expect(store.getKey(record.key)!.credits).toBe(50); // unchanged
+  });
+
+  test('should not allow credits via unpaid checkout session', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+    const record = store.createKey('unpaid-test', 50);
+
+    const body = JSON.stringify({
+      id: 'evt_unpaid',
+      type: 'checkout.session.completed',
+      data: { object: { payment_status: 'no_payment_required', metadata: { paygate_api_key: record.key, paygate_credits: '500' } } },
+    });
+    const sig = sign(body, SECRET);
+
+    const result = handler.handleWebhook(body, sig);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Payment not completed');
+    expect(store.getKey(record.key)!.credits).toBe(50);
+  });
+
+  test('should not allow negative credits via webhook', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+    const record = store.createKey('neg-test', 100);
+
+    const body = JSON.stringify({
+      id: 'evt_neg',
+      type: 'checkout.session.completed',
+      data: { object: { payment_status: 'paid', metadata: { paygate_api_key: record.key, paygate_credits: '-50' } } },
+    });
+    const sig = sign(body, SECRET);
+
+    const result = handler.handleWebhook(body, sig);
+    expect(result.success).toBe(false);
+    expect(store.getKey(record.key)!.credits).toBe(100); // unchanged
+  });
+
+  test('should reject events with no data.object', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+
+    const body = JSON.stringify({
+      id: 'evt_noobj',
+      type: 'checkout.session.completed',
+      data: {},
+    });
+    const sig = sign(body, SECRET);
+
+    const result = handler.handleWebhook(body, sig);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Malformed');
+  });
+
+  test('should not leak webhook secret in error responses', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+
+    const result = handler.handleWebhook('{}', 'bad_signature');
+
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(JSON.stringify(result)).not.toContain('whsec');
+  });
+
+  test('should handle event with massive metadata without crashing', () => {
+    const store = new KeyStore();
+    const handler = new StripeWebhookHandler(store, SECRET);
+
+    const bigMeta: Record<string, string> = {};
+    for (let i = 0; i < 1000; i++) {
+      bigMeta[`key_${i}`] = 'x'.repeat(100);
+    }
+    bigMeta['paygate_api_key'] = 'pg_nonexistent';
+    bigMeta['paygate_credits'] = '100';
+
+    const body = JSON.stringify({
+      id: 'evt_big',
+      type: 'checkout.session.completed',
+      data: { object: { payment_status: 'paid', metadata: bigMeta } },
+    });
+    const sig = sign(body, SECRET);
+
+    // Should not crash, just return error for nonexistent key
+    const result = handler.handleWebhook(body, sig);
+    expect(result.success).toBe(false);
+  });
+});

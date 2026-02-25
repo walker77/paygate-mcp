@@ -135,6 +135,7 @@ Returns active keys, usage stats, per-tool breakdown, and deny reasons.
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
+| `/stripe/webhook` | POST | Stripe Signature | Auto-top-up credits on payment |
 | `/` | GET | None | Health check |
 
 ### Free Methods
@@ -156,6 +157,7 @@ These MCP methods pass through without auth or billing:
 --tool-price <t:n>   Per-tool price (e.g. "search:5,generate:10")
 --import-key <k:c>   Import existing key with credits (e.g. "pg_abc:100")
 --state-file <path>  Persist keys/credits to a JSON file (survives restarts)
+--stripe-secret <s>  Stripe webhook signing secret (enables /stripe/webhook)
 ```
 
 > **Note:** Use `--server` OR `--remote-url`, not both.
@@ -167,6 +169,33 @@ Add `--state-file` to save API keys and credits to disk. Data survives server re
 ```bash
 npx paygate-mcp wrap --server "your-mcp-server" --state-file ~/.paygate/state.json
 ```
+
+### Stripe Integration
+
+Connect Stripe to automatically top up credits when customers pay:
+
+```bash
+npx paygate-mcp wrap \
+  --server "your-mcp-server" \
+  --state-file ~/.paygate/state.json \
+  --stripe-secret "whsec_your_stripe_webhook_secret"
+```
+
+**Setup:**
+1. Create a Stripe Checkout Session with metadata:
+   - `paygate_api_key` — the customer's API key (e.g. `pg_abc123...`)
+   - `paygate_credits` — credits to add on payment (e.g. `500`)
+2. Point your Stripe webhook to `https://your-server/stripe/webhook`
+3. Subscribe to `checkout.session.completed` and `invoice.payment_succeeded` events
+
+When a customer completes payment, credits are automatically added to their API key. Subscriptions auto-renew credits on each billing cycle.
+
+**Security:**
+- HMAC-SHA256 signature verification (Stripe's v1 scheme)
+- Timing-safe comparison to prevent timing attacks
+- 5-minute timestamp tolerance to prevent replay attacks
+- Payment status verification (only `paid` triggers credits)
+- Zero dependencies — uses Node.js built-in `crypto`
 
 ## Programmatic API
 
@@ -204,11 +233,11 @@ const { port, adminKey } = await server.start();
 - Admin key never exposed in responses
 - API keys never forwarded to remote servers (HTTP transport)
 - Rate limiting is per-key, concurrent-safe
-- Red-teamed with 42 adversarial security tests across 5 passes
+- Stripe webhook signature verification (HMAC-SHA256, timing-safe)
+- Red-teamed with 50 adversarial security tests across 6 passes
 
 ## Current Limitations
 
-- **Credits are not real money** — Credits are just integers. There is no payment processor integration yet.
 - **Single process** — No clustering or horizontal scaling.
 - **No response size limits for HTTP transport** — Large responses from remote servers are forwarded as-is.
 
@@ -216,7 +245,7 @@ const { port, adminKey } = await server.start();
 
 - [x] Persistent storage (`--state-file`)
 - [x] Streamable HTTP transport (`--remote-url`)
-- [ ] Stripe webhook integration (real payments)
+- [x] Stripe webhook integration (`--stripe-secret`)
 - [ ] Web dashboard for key management
 
 ## Requirements
