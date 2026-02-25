@@ -1,0 +1,232 @@
+/**
+ * McpProxy — Spawns a wrapped MCP server (stdio) and proxies JSON-RPC
+ * through the PayGate for tool-call gating.
+ *
+ * Architecture:
+ *   HTTP Client <--JSON-RPC over HTTP--> PayGate Proxy <--stdio--> Wrapped MCP Server
+ *
+ * Free methods (initialize, tools/list, ping, etc.) pass through without auth.
+ * tools/call requests are gated: API key + credits + rate limit.
+ */
+
+import { ChildProcess, spawn } from 'child_process';
+import { EventEmitter } from 'events';
+import { JsonRpcRequest, JsonRpcResponse, ToolCallParams } from './types';
+import { Gate } from './gate';
+
+export class McpProxy extends EventEmitter {
+  private process: ChildProcess | null = null;
+  private readonly gate: Gate;
+  private readonly serverCommand: string;
+  private readonly serverArgs: string[];
+  private pendingRequests = new Map<string | number, {
+    resolve: (value: JsonRpcResponse) => void;
+    reject: (error: Error) => void;
+    startTime: number;
+  }>();
+  private buffer = '';
+  private started = false;
+
+  constructor(gate: Gate, serverCommand: string, serverArgs: string[]) {
+    super();
+    this.gate = gate;
+    this.serverCommand = serverCommand;
+    this.serverArgs = serverArgs;
+  }
+
+  /**
+   * Start the wrapped MCP server process.
+   */
+  async start(): Promise<void> {
+    if (this.started) return;
+
+    this.process = spawn(this.serverCommand, this.serverArgs, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+
+    this.process.stdout!.on('data', (data: Buffer) => {
+      this.handleServerOutput(data.toString());
+    });
+
+    this.process.stderr!.on('data', (data: Buffer) => {
+      this.emit('server-stderr', data.toString());
+    });
+
+    this.process.on('exit', (code) => {
+      this.started = false;
+      this.emit('server-exit', code);
+      // Reject all pending requests
+      for (const [id, pending] of this.pendingRequests) {
+        pending.reject(new Error(`Server exited with code ${code}`));
+      }
+      this.pendingRequests.clear();
+    });
+
+    this.process.on('error', (error) => {
+      this.emit('server-error', error);
+    });
+
+    this.started = true;
+  }
+
+  /**
+   * Handle an incoming JSON-RPC request from the client.
+   * Gates tools/call through the PayGate. Passes other methods through.
+   */
+  async handleRequest(request: JsonRpcRequest, apiKey: string | null): Promise<JsonRpcResponse> {
+    if (!this.started || !this.process) {
+      return this.errorResponse(request.id, -32603, 'Server not started');
+    }
+
+    // Free methods pass through without auth
+    if (this.gate.isFreeMethod(request.method)) {
+      return this.forwardToServer(request);
+    }
+
+    // tools/call — gate it
+    if (request.method === 'tools/call') {
+      const toolCall = request.params as unknown as ToolCallParams;
+      if (!toolCall || !toolCall.name) {
+        return this.errorResponse(request.id, -32602, 'Invalid tool call: missing tool name');
+      }
+
+      const decision = this.gate.evaluate(apiKey, toolCall);
+
+      if (!decision.allowed) {
+        return {
+          jsonrpc: '2.0',
+          id: request.id,
+          error: {
+            code: -32000,
+            message: `Payment required: ${decision.reason}`,
+            data: {
+              creditsRequired: this.gate.getToolPrice(toolCall.name),
+              remainingCredits: decision.remainingCredits,
+            },
+          },
+        };
+      }
+
+      // Allowed — forward to wrapped server
+      const response = await this.forwardToServer(request);
+
+      // Emit for observability
+      this.emit('tool-call', {
+        tool: toolCall.name,
+        apiKey: apiKey?.slice(0, 10),
+        creditsCharged: decision.creditsCharged,
+        remainingCredits: decision.remainingCredits,
+      });
+
+      return response;
+    }
+
+    // Unknown gated method — forward but log
+    return this.forwardToServer(request);
+  }
+
+  /**
+   * Forward a JSON-RPC request to the wrapped server via stdio.
+   */
+  private forwardToServer(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+    return new Promise((resolve, reject) => {
+      if (!this.process?.stdin?.writable) {
+        reject(new Error('Server stdin not writable'));
+        return;
+      }
+
+      const id = request.id;
+
+      // Notifications (no id) — fire and forget
+      if (id === undefined || id === null) {
+        const msg = JSON.stringify(request) + '\n';
+        this.process.stdin.write(msg);
+        resolve({ jsonrpc: '2.0', result: {} });
+        return;
+      }
+
+      // Set timeout for response
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`Request ${id} timed out after 30s`));
+      }, 30_000);
+
+      this.pendingRequests.set(id, {
+        resolve: (response) => {
+          clearTimeout(timeout);
+          resolve(response);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+        startTime: Date.now(),
+      });
+
+      const msg = JSON.stringify(request) + '\n';
+      this.process.stdin.write(msg);
+    });
+  }
+
+  /**
+   * Parse JSON-RPC responses from the server's stdout.
+   * Uses newline-delimited JSON.
+   */
+  private handleServerOutput(data: string): void {
+    this.buffer += data;
+    const lines = this.buffer.split('\n');
+    this.buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      try {
+        const response = JSON.parse(trimmed) as JsonRpcResponse;
+        if (response.id !== undefined && response.id !== null) {
+          const pending = this.pendingRequests.get(response.id);
+          if (pending) {
+            this.pendingRequests.delete(response.id);
+            pending.resolve(response);
+          }
+        } else {
+          // Server-initiated notification
+          this.emit('server-notification', response);
+        }
+      } catch {
+        this.emit('parse-error', trimmed);
+      }
+    }
+  }
+
+  /**
+   * Gracefully stop the wrapped server.
+   */
+  async stop(): Promise<void> {
+    if (!this.started || !this.process) return;
+    this.started = false;
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.process?.kill('SIGKILL');
+        resolve();
+      }, 5000);
+
+      this.process!.on('exit', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+
+      this.process!.kill('SIGTERM');
+    });
+  }
+
+  get isRunning(): boolean {
+    return this.started;
+  }
+
+  private errorResponse(id: string | number | undefined, code: number, message: string): JsonRpcResponse {
+    return { jsonrpc: '2.0', id, error: { code, message } };
+  }
+}
