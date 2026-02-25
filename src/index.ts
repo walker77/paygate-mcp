@@ -18,6 +18,7 @@
 export { PayGateServer } from './server';
 export { Gate } from './gate';
 export { McpProxy } from './proxy';
+export { HttpMcpProxy } from './http-proxy';
 export { KeyStore } from './store';
 export { UsageMeter } from './meter';
 export { RateLimiter } from './rate-limiter';

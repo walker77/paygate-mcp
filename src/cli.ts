@@ -40,24 +40,30 @@ function printUsage(): void {
   paygate-mcp — Monetize any MCP server with one command.
 
   USAGE:
-    paygate-mcp wrap --server <command> [options]
+    paygate-mcp wrap --server <command> [options]     # stdio transport
+    paygate-mcp wrap --remote-url <url> [options]     # Streamable HTTP transport
 
   OPTIONS:
-    --server <cmd>      MCP server command to wrap (required)
-                        e.g. "npx @modelcontextprotocol/server-filesystem /"
-    --port <n>          HTTP port (default: 3402)
-    --price <n>         Default credits per tool call (default: 1)
-    --rate-limit <n>    Max calls/min per key (default: 60, 0=unlimited)
-    --name <s>          Server display name (default: "PayGate MCP Server")
-    --shadow            Shadow mode — log but don't enforce payment
-    --admin-key <s>     Set admin key (default: auto-generated)
-    --tool-price <t:n>  Per-tool price override (e.g. "search:5,generate:10")
-    --import-key <k:c>  Import an existing API key with credits (e.g. "pg_abc123:100")
-    --state-file <path> Persist keys/credits to a JSON file (survives restarts)
+    --server <cmd>       MCP server command to wrap via stdio (required unless --remote-url)
+                         e.g. "npx @modelcontextprotocol/server-filesystem /"
+    --remote-url <url>   Remote MCP server URL (Streamable HTTP transport)
+                         e.g. "https://my-mcp-server.example.com/mcp"
+    --port <n>           HTTP port (default: 3402)
+    --price <n>          Default credits per tool call (default: 1)
+    --rate-limit <n>     Max calls/min per key (default: 60, 0=unlimited)
+    --name <s>           Server display name (default: "PayGate MCP Server")
+    --shadow             Shadow mode — log but don't enforce payment
+    --admin-key <s>      Set admin key (default: auto-generated)
+    --tool-price <t:n>   Per-tool price override (e.g. "search:5,generate:10")
+    --import-key <k:c>   Import an existing API key with credits (e.g. "pg_abc123:100")
+    --state-file <path>  Persist keys/credits to a JSON file (survives restarts)
 
   EXAMPLES:
-    # Wrap a filesystem MCP server
+    # Wrap a local MCP server (stdio transport)
     paygate-mcp wrap --server "npx @modelcontextprotocol/server-filesystem /tmp"
+
+    # Gate a remote MCP server (Streamable HTTP transport)
+    paygate-mcp wrap --remote-url "https://my-server.example.com/mcp" --price 5
 
     # Custom pricing and rate limit
     paygate-mcp wrap --server "python my-server.py" --price 2 --rate-limit 30
@@ -90,16 +96,27 @@ async function main(): Promise<void> {
   switch (command) {
     case 'wrap': {
       const serverCmd = flags['server'];
-      if (!serverCmd) {
-        console.error('Error: --server is required.\n');
+      const remoteUrl = flags['remote-url'];
+
+      if (!serverCmd && !remoteUrl) {
+        console.error('Error: --server or --remote-url is required.\n');
         printUsage();
         process.exit(1);
       }
 
-      // Parse server command into command + args
-      const parts = serverCmd.split(/\s+/);
-      const serverCommand = parts[0];
-      const serverArgs = parts.slice(1);
+      if (serverCmd && remoteUrl) {
+        console.error('Error: use --server OR --remote-url, not both.\n');
+        process.exit(1);
+      }
+
+      // Parse server command into command + args (stdio mode)
+      let serverCommand = '';
+      let serverArgs: string[] = [];
+      if (serverCmd) {
+        const parts = serverCmd.split(/\s+/);
+        serverCommand = parts[0];
+        serverArgs = parts.slice(1);
+      }
 
       const port = parseInt(flags['port'] || '3402', 10);
       const price = parseInt(flags['price'] || '1', 10);
@@ -119,7 +136,7 @@ async function main(): Promise<void> {
         name,
         shadowMode: !!shadowMode,
         toolPricing,
-      }, adminKey, stateFile);
+      }, adminKey, stateFile, remoteUrl);
 
       // Import keys if specified
       if (flags['import-key']) {
@@ -150,7 +167,7 @@ async function main(): Promise<void> {
   ║                                                  ║
   ║  Endpoint:   http://localhost:${String(result.port).padEnd(5)}              ║
   ║  Admin Key:  ${result.adminKey.slice(0, 20)}...       ║
-  ║  Wrapping:   ${serverCmd.slice(0, 35).padEnd(35)}║
+  ║  Backend:    ${(remoteUrl ? 'HTTP → ' + remoteUrl.slice(0, 28) : 'stdio → ' + (serverCmd || '').slice(0, 27)).padEnd(35)}║
   ║                                                  ║
   ║  Pricing:    ${String(price).padEnd(3)} credit(s) per tool call       ║
   ║  Rate Limit: ${String(rateLimit).padEnd(3)} calls/min per key          ║
@@ -181,7 +198,7 @@ async function main(): Promise<void> {
     case 'version':
     case '--version':
     case '-v':
-      console.log('paygate-mcp v0.1.5');
+      console.log('paygate-mcp v0.2.0');
       break;
 
     default:

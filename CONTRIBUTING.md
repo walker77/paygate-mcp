@@ -8,7 +8,7 @@ Thanks for your interest in contributing! Here's how to get started.
 git clone https://github.com/walker77/paygate-mcp.git
 cd paygate-mcp
 npm install
-npm test        # Run all 111 tests
+npm test        # Run all 134 tests
 npm run build   # Compile TypeScript
 ```
 
@@ -24,9 +24,10 @@ npx jest --verbose          # Detailed output
 
 ```
 src/
-  cli.ts          # CLI entry point (--server, --price, --state-file, etc.)
+  cli.ts          # CLI entry point (--server, --remote-url, --price, etc.)
   server.ts       # HTTP server with admin REST API
-  proxy.ts        # JSON-RPC proxy to wrapped MCP server
+  proxy.ts        # JSON-RPC proxy to wrapped MCP server (stdio transport)
+  http-proxy.ts   # JSON-RPC proxy to remote MCP server (Streamable HTTP)
   gate.ts         # Auth + billing + rate limit evaluation
   store.ts        # API key storage (in-memory + optional file persistence)
   rate-limiter.ts # Sliding window rate limiter

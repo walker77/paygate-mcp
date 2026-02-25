@@ -16,22 +16,36 @@ import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { PayGateConfig, JsonRpcRequest, DEFAULT_CONFIG } from './types';
 import { Gate } from './gate';
 import { McpProxy } from './proxy';
+import { HttpMcpProxy } from './http-proxy';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
 
+/** Union type for both proxy backends */
+type ProxyBackend = McpProxy | HttpMcpProxy;
+
 export class PayGateServer {
   readonly gate: Gate;
-  readonly proxy: McpProxy;
+  readonly proxy: ProxyBackend;
   private server: Server | null = null;
   private readonly config: PayGateConfig;
   private readonly adminKey: string;
 
-  constructor(config: Partial<PayGateConfig> & { serverCommand: string }, adminKey?: string, statePath?: string) {
+  constructor(
+    config: Partial<PayGateConfig> & { serverCommand: string },
+    adminKey?: string,
+    statePath?: string,
+    remoteUrl?: string,
+  ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.adminKey = adminKey || `admin_${require('crypto').randomBytes(16).toString('hex')}`;
     this.gate = new Gate(this.config, statePath);
-    this.proxy = new McpProxy(this.gate, this.config.serverCommand, this.config.serverArgs);
+
+    if (remoteUrl) {
+      this.proxy = new HttpMcpProxy(this.gate, remoteUrl);
+    } else {
+      this.proxy = new McpProxy(this.gate, this.config.serverCommand, this.config.serverArgs);
+    }
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {

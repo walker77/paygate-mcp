@@ -9,6 +9,8 @@
 
 import { PayGateServer } from '../../src/server';
 import { KeyStore } from '../../src/store';
+import { Gate } from '../../src/gate';
+import { DEFAULT_CONFIG } from '../../src/types';
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -692,5 +694,222 @@ describe('RED TEAM — Persistence Security', () => {
     } finally {
       cleanup(statePath);
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PASS 5: HTTP Transport Security
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import { HttpMcpProxy } from '../../src/http-proxy';
+import { createServer as createHttpServer, Server as HttpServer, IncomingMessage as HttpReq, ServerResponse as HttpRes } from 'http';
+
+describe('RED TEAM — HTTP Transport Security', () => {
+  let mockServer: HttpServer;
+  let mockPort: number;
+  let mockHandler: ((req: HttpReq, res: HttpRes) => void) | null = null;
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => {
+      mockServer = createHttpServer((req, res) => {
+        if (mockHandler) { mockHandler(req, res); return; }
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', () => {
+          const p = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: p.id, result: {} }));
+        });
+      });
+      mockServer.listen(0, () => {
+        mockPort = (mockServer.address() as any).port;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      mockServer.closeAllConnections?.();
+      mockServer.close(() => resolve());
+    });
+  });
+
+  afterEach(() => { mockHandler = null; });
+
+  function makeGate() {
+    return new Gate({ ...DEFAULT_CONFIG, defaultCreditsPerCall: 1 });
+  }
+
+  test('should not leak API keys to remote server headers', async () => {
+    let capturedHeaders: Record<string, string | string[] | undefined> = {};
+    mockHandler = (req, res) => {
+      capturedHeaders = req.headers;
+      let body = '';
+      req.on('data', (c) => { body += c.toString(); });
+      req.on('end', () => {
+        const p = JSON.parse(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: p.id, result: {} }));
+      });
+    };
+
+    const gate = makeGate();
+    const record = gate.store.createKey('test', 100);
+    const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+    await proxy.start();
+
+    await proxy.handleRequest({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'test_tool', arguments: {} },
+    }, record.key);
+
+    // API key should NOT be forwarded to the remote server
+    expect(capturedHeaders['x-api-key']).toBeUndefined();
+    expect(JSON.stringify(capturedHeaders)).not.toContain(record.key);
+    await proxy.stop();
+  });
+
+  test('should not forward admin key to remote server', async () => {
+    let capturedHeaders: Record<string, string | string[] | undefined> = {};
+    mockHandler = (req, res) => {
+      capturedHeaders = req.headers;
+      let body = '';
+      req.on('data', (c) => { body += c.toString(); });
+      req.on('end', () => {
+        const p = JSON.parse(body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: p.id, result: {} }));
+      });
+    };
+
+    const gate = makeGate();
+    const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+    await proxy.start();
+
+    await proxy.handleRequest({
+      jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
+    }, null);
+
+    expect(capturedHeaders['x-admin-key']).toBeUndefined();
+    await proxy.stop();
+  });
+
+  test('should handle malicious SSE data from remote server', async () => {
+    mockHandler = (_req, res) => {
+      let body = '';
+      _req.on('data', (c) => { body += c.toString(); });
+      _req.on('end', () => {
+        // Malicious: SSE with script injection
+        const sseBody = `data: <script>alert('xss')</script>\n\ndata: {"jsonrpc":"2.0","id":1,"result":{"safe":"yes"}}\n\n`;
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(sseBody);
+      });
+    };
+
+    const gate = makeGate();
+    const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+    await proxy.start();
+
+    const response = await proxy.handleRequest({
+      jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
+    }, null);
+
+    // Should still return valid JSON-RPC, not crash
+    expect(response.jsonrpc).toBe('2.0');
+    await proxy.stop();
+  });
+
+  test('should handle remote server returning massive response', async () => {
+    mockHandler = (_req, res) => {
+      let body = '';
+      _req.on('data', (c) => { body += c.toString(); });
+      _req.on('end', () => {
+        const p = JSON.parse(body);
+        // 1MB response
+        const bigData = 'x'.repeat(1_000_000);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: p.id, result: { data: bigData } }));
+      });
+    };
+
+    const gate = makeGate();
+    const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+    await proxy.start();
+
+    const response = await proxy.handleRequest({
+      jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
+    }, null);
+
+    // Should handle large responses without crashing
+    expect(response.jsonrpc).toBe('2.0');
+    expect(response.result).toBeDefined();
+    await proxy.stop();
+  });
+
+  test('should not crash on remote SSRF-style redirect URL', async () => {
+    const gate = makeGate();
+    // Use a port that is almost certainly refused (fast failure) instead of
+    // 169.254.169.254 which can hang for 30s waiting for a timeout.
+    const proxy = new HttpMcpProxy(gate, 'http://127.0.0.1:1/latest/meta-data/');
+    await proxy.start();
+
+    const response = await proxy.handleRequest({
+      jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
+    }, null);
+
+    // Should return error, not crash or expose metadata
+    expect(response.error).toBeDefined();
+    expect(response.error!.message).toContain('Remote server error');
+    await proxy.stop();
+  });
+
+  test('should handle remote server that closes connection abruptly', async () => {
+    mockHandler = (req, res) => {
+      // Destroy connection without sending response
+      req.socket.destroy();
+    };
+
+    const gate = makeGate();
+    const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+    await proxy.start();
+
+    const response = await proxy.handleRequest({
+      jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
+    }, null);
+
+    expect(response.error).toBeDefined();
+    expect(response.error!.message).toContain('Remote server error');
+    await proxy.stop();
+  });
+
+  test('should deduct credits even if remote server returns error response', async () => {
+    mockHandler = (_req, res) => {
+      let body = '';
+      _req.on('data', (c) => { body += c.toString(); });
+      _req.on('end', () => {
+        const p = JSON.parse(body);
+        // Return a JSON-RPC error from the "tool"
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0', id: p.id,
+          error: { code: -32000, message: 'Tool failed' },
+        }));
+      });
+    };
+
+    const gate = makeGate();
+    const record = gate.store.createKey('test', 100);
+    const proxy = new HttpMcpProxy(gate, `http://localhost:${mockPort}/mcp`);
+    await proxy.start();
+
+    await proxy.handleRequest({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'failing_tool', arguments: {} },
+    }, record.key);
+
+    // Credits should still be deducted (tool was called, it just errored)
+    expect(gate.store.getKey(record.key)!.credits).toBe(99);
+    await proxy.stop();
   });
 });
