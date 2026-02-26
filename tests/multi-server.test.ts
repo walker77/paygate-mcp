@@ -49,7 +49,7 @@ function httpRequest(port: number, reqPath: string, options: {
 
 describe('MultiServerRouter — Unit Tests', () => {
   it('should reject duplicate prefixes', () => {
-    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, refundOnFailure: false });
+    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, webhookSecret: null, refundOnFailure: false });
     expect(() => new MultiServerRouter(gate, [
       { prefix: 'dup', serverCommand: 'node', serverArgs: [MOCK_SERVER_A] },
       { prefix: 'dup', serverCommand: 'node', serverArgs: [MOCK_SERVER_B] },
@@ -58,7 +58,7 @@ describe('MultiServerRouter — Unit Tests', () => {
   });
 
   it('should reject empty prefix', () => {
-    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, refundOnFailure: false });
+    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, webhookSecret: null, refundOnFailure: false });
     expect(() => new MultiServerRouter(gate, [
       { prefix: '', serverCommand: 'node', serverArgs: [MOCK_SERVER_A] },
     ])).toThrow('Invalid server prefix');
@@ -66,7 +66,7 @@ describe('MultiServerRouter — Unit Tests', () => {
   });
 
   it('should reject prefix containing separator', () => {
-    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, refundOnFailure: false });
+    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, webhookSecret: null, refundOnFailure: false });
     expect(() => new MultiServerRouter(gate, [
       { prefix: 'has:colon', serverCommand: 'node', serverArgs: [MOCK_SERVER_A] },
     ])).toThrow('Invalid server prefix');
@@ -74,7 +74,7 @@ describe('MultiServerRouter — Unit Tests', () => {
   });
 
   it('should reject server without transport', () => {
-    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, refundOnFailure: false });
+    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, webhookSecret: null, refundOnFailure: false });
     expect(() => new MultiServerRouter(gate, [
       { prefix: 'nope' },
     ])).toThrow('needs either serverCommand or remoteUrl');
@@ -82,7 +82,7 @@ describe('MultiServerRouter — Unit Tests', () => {
   });
 
   it('should reject server with both transports', () => {
-    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, refundOnFailure: false });
+    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, webhookSecret: null, refundOnFailure: false });
     expect(() => new MultiServerRouter(gate, [
       { prefix: 'both', serverCommand: 'node', serverArgs: [MOCK_SERVER_A], remoteUrl: 'http://localhost:9999' },
     ])).toThrow('cannot have both');
@@ -90,7 +90,7 @@ describe('MultiServerRouter — Unit Tests', () => {
   });
 
   it('should report correct prefixes and backend count', () => {
-    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, refundOnFailure: false });
+    const gate = new Gate({ name: 'test', serverCommand: '', serverArgs: [], port: 0, defaultCreditsPerCall: 1, toolPricing: {}, globalRateLimitPerMin: 60, freeMethods: ['initialize', 'tools/list', 'ping'], shadowMode: false, webhookUrl: null, webhookSecret: null, refundOnFailure: false });
     const router = new MultiServerRouter(gate, [
       { prefix: 'alpha', serverCommand: 'node', serverArgs: [MOCK_SERVER_A] },
       { prefix: 'beta', serverCommand: 'node', serverArgs: [MOCK_SERVER_B] },

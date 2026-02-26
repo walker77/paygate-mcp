@@ -31,7 +31,9 @@ export class Gate {
     this.store = new KeyStore(statePath);
     this.rateLimiter = new RateLimiter(config.globalRateLimitPerMin);
     this.meter = new UsageMeter();
-    this.webhook = config.webhookUrl ? new WebhookEmitter(config.webhookUrl) : null;
+    this.webhook = config.webhookUrl ? new WebhookEmitter(config.webhookUrl, {
+      secret: config.webhookSecret || null,
+    }) : null;
     this.quotaTracker = new QuotaTracker();
   }
 

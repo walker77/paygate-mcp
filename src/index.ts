@@ -25,6 +25,7 @@ export { UsageMeter } from './meter';
 export { RateLimiter } from './rate-limiter';
 export { StripeWebhookHandler } from './stripe';
 export { WebhookEmitter } from './webhook';
+export type { WebhookAdminEvent, WebhookEvent } from './webhook';
 export { QuotaTracker } from './quota';
 export { OAuthProvider } from './oauth';
 export type { OAuthClientRecord, OAuthTokenRecord, OAuthServerMetadata, OAuthConfig } from './oauth';

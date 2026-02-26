@@ -46,6 +46,8 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
 - **Key Rotation** — Rotate API keys without losing credits, ACLs, or quotas
 - **Rate Limit Headers** — `X-RateLimit-*` and `X-Credits-Remaining` on every `/mcp` response
+- **Webhook Signatures** — HMAC-SHA256 signed webhook payloads (`X-PayGate-Signature`) for tamper-proof delivery
+- **Admin Lifecycle Events** — Webhook notifications for key.created, key.revoked, key.rotated, key.topup
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -305,6 +307,7 @@ These MCP methods pass through without auth or billing:
 --state-file <path>  Persist keys/credits to a JSON file (survives restarts)
 --stripe-secret <s>  Stripe webhook signing secret (enables /stripe/webhook)
 --webhook-url <url>  POST batched usage events to this URL
+--webhook-secret <s> HMAC-SHA256 secret for signing webhook payloads
 --refund-on-failure  Refund credits when downstream tool call fails
 --config <path>      Load settings from a JSON config file
 ```
@@ -459,6 +462,51 @@ npx paygate-mcp wrap --server "node server.js" --webhook-url "https://billing.ex
 ```
 
 Events are batched (up to 10 per POST) and flushed every 5 seconds. Each event includes tool name, credits charged, API key, and timestamp. Fire-and-forget with one retry on failure.
+
+#### Webhook Signatures (HMAC-SHA256)
+
+Sign webhook payloads for tamper-proof delivery:
+
+```bash
+npx paygate-mcp wrap --server "node server.js" \
+  --webhook-url "https://billing.example.com/events" \
+  --webhook-secret "whsec_your_secret_here"
+```
+
+When `--webhook-secret` is set, every webhook POST includes an `X-PayGate-Signature` header:
+
+```
+X-PayGate-Signature: t=1709123456,v1=a1b2c3d4...
+```
+
+**Verifying signatures** (Node.js example):
+```typescript
+import { WebhookEmitter } from 'paygate-mcp';
+
+const signature = req.headers['x-paygate-signature'];
+const [tPart, v1Part] = signature.split(',');
+const timestamp = tPart.split('=')[1];
+const sig = v1Part.split('=')[1];
+
+// Reconstruct signed payload: timestamp.body
+const signedPayload = `${timestamp}.${rawBody}`;
+const isValid = WebhookEmitter.verify(signedPayload, sig, 'whsec_your_secret_here');
+```
+
+The signature covers `timestamp.body` to prevent replay attacks. Use timing-safe comparison (built into `WebhookEmitter.verify`).
+
+#### Admin Lifecycle Events
+
+When webhooks are enabled, admin operations also fire webhook events:
+
+| Event Type | Trigger | Metadata |
+|------------|---------|----------|
+| `key.created` | POST /keys | keyMasked, name, credits |
+| `key.topup` | POST /topup | keyMasked, creditsAdded, newBalance |
+| `key.revoked` | POST /keys/revoke | keyMasked |
+| `key.rotated` | POST /keys/rotate | oldKeyMasked, newKeyMasked |
+
+Admin events appear in the `adminEvents` array of the webhook payload (separate from usage `events`). Both arrays can be present in the same batch.
 
 ### Usage Quotas
 
@@ -781,6 +829,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - Rate limiting is per-key, concurrent-safe
 - Stripe webhook signature verification (HMAC-SHA256, timing-safe)
 - Dashboard uses safe DOM methods (textContent/createElement) — no innerHTML
+- Webhook HMAC-SHA256 signatures with timing-safe verification
 - Webhook URLs masked in status output
 - Spending limits enforced with integer arithmetic (no float bypass)
 - Per-tool ACL enforcement (whitelist + blacklist, sanitized inputs)
@@ -825,6 +874,8 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Prometheus metrics — /metrics endpoint with counters, gauges, and uptime
 - [x] Key rotation — Rotate API keys preserving credits, ACLs, quotas, and spending limits
 - [x] Rate limit headers — X-RateLimit-* and X-Credits-Remaining on /mcp responses
+- [x] Webhook signatures — HMAC-SHA256 signed payloads with timing-safe verification
+- [x] Admin lifecycle events — Webhook notifications for key management operations
 - [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements

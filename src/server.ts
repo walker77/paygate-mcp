@@ -595,6 +595,9 @@ export class PayGateServer {
       deniedTools: record.deniedTools,
       expiresAt: record.expiresAt,
     });
+    this.gate.webhook?.emitAdmin('key.created', 'admin', {
+      keyMasked: maskKeyForAudit(record.key), name, credits,
+    });
 
     res.writeHead(201, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -664,6 +667,9 @@ export class PayGateServer {
       creditsAdded: credits,
       newBalance: record?.credits,
     });
+    this.gate.webhook?.emitAdmin('key.topup', 'admin', {
+      keyMasked: maskKeyForAudit(params.key), creditsAdded: credits, newBalance: record?.credits,
+    });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ credits: record?.credits, message: `Added ${credits} credits` }));
@@ -705,6 +711,9 @@ export class PayGateServer {
     this.audit.log('key.revoked', 'admin', `Key revoked`, {
       keyMasked: maskKeyForAudit(params.key),
     });
+    this.gate.webhook?.emitAdmin('key.revoked', 'admin', {
+      keyMasked: maskKeyForAudit(params.key),
+    });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Key revoked' }));
@@ -744,6 +753,10 @@ export class PayGateServer {
     }
 
     this.audit.log('key.rotated', 'admin', `Key rotated`, {
+      oldKeyMasked: maskKeyForAudit(params.key),
+      newKeyMasked: maskKeyForAudit(rotated.key),
+    });
+    this.gate.webhook?.emitAdmin('key.rotated', 'admin', {
       oldKeyMasked: maskKeyForAudit(params.key),
       newKeyMasked: maskKeyForAudit(rotated.key),
     });

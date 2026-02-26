@@ -82,6 +82,8 @@ export interface PayGateConfig {
   shadowMode: boolean;
   /** Webhook URL to POST usage events to. Null = disabled. */
   webhookUrl: string | null;
+  /** Secret for HMAC-SHA256 webhook signatures. Null = unsigned. */
+  webhookSecret: string | null;
   /** Refund credits when downstream tool call fails. Default: false. */
   refundOnFailure: boolean;
   /** Global usage quota defaults (daily/monthly limits). Null = unlimited. */
@@ -124,6 +126,7 @@ export const DEFAULT_CONFIG: PayGateConfig = {
   freeMethods: ['initialize', 'initialized', 'ping', 'notifications/initialized', 'tools/list', 'resources/list', 'prompts/list'],
   shadowMode: false,
   webhookUrl: null,
+  webhookSecret: null,
   refundOnFailure: false,
 };
 

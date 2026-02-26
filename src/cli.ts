@@ -69,6 +69,7 @@ function printUsage(): void {
     --state-file <path>    Persist keys/credits to a JSON file (survives restarts)
     --stripe-secret <s>    Stripe webhook signing secret (enables /stripe/webhook endpoint)
     --webhook-url <url>    POST usage events to this URL (batched)
+    --webhook-secret <s>   HMAC-SHA256 secret for webhook signatures
     --refund-on-failure    Refund credits when downstream tool call fails
 
   EXAMPLES:
@@ -124,6 +125,7 @@ interface ConfigFile {
   stateFile?: string;
   stripeWebhookSecret?: string;
   webhookUrl?: string;
+  webhookSecret?: string;
   refundOnFailure?: boolean;
   importKeys?: Record<string, number>;
   /** Multi-server mode: wrap multiple MCP servers with tool prefix routing */
@@ -203,6 +205,7 @@ async function main(): Promise<void> {
       const stateFile = flags['state-file'] || fileConfig.stateFile;
       const stripeSecret = flags['stripe-secret'] || fileConfig.stripeWebhookSecret;
       const webhookUrl = flags['webhook-url'] || fileConfig.webhookUrl || null;
+      const webhookSecret = flags['webhook-secret'] || fileConfig.webhookSecret || null;
       const refundOnFailure = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || fileConfig.refundOnFailure || false;
 
       // Parse global quota from config file
@@ -223,6 +226,7 @@ async function main(): Promise<void> {
         shadowMode: !!shadowMode,
         toolPricing,
         webhookUrl,
+        webhookSecret,
         refundOnFailure: !!refundOnFailure,
         globalQuota,
         oauth: fileConfig.oauth,
@@ -285,6 +289,7 @@ async function main(): Promise<void> {
   ║  Stripe:     ${(stripeSecret ? 'enabled (/stripe/webhook)' : 'off').padEnd(35)}║
   ║  Refund:     ${String(!!refundOnFailure).padEnd(35)}║
   ║  Webhook:    ${(webhookUrl ? webhookUrl.slice(0, 33) : 'off').padEnd(35)}║
+  ║  Signed:     ${(webhookSecret ? 'HMAC-SHA256' : 'off').padEnd(35)}║
   ║                                                  ║
   ╠══════════════════════════════════════════════════╣
   ║  POST /mcp       — JSON-RPC (X-API-Key header)  ║

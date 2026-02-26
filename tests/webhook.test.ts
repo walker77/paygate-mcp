@@ -43,8 +43,7 @@ describe('WebhookEmitter', () => {
   it('should batch and send events on flush', (done) => {
     const emitter = new WebhookEmitter(
       `http://localhost:${serverPort}/hook`,
-      10,
-      60000, // long interval so we control flush manually
+      { batchSize: 10, flushIntervalMs: 60000 }, // long interval so we control flush manually
     );
 
     emitter.emit(makeEvent({ tool: 'tool-a' }));
@@ -66,8 +65,7 @@ describe('WebhookEmitter', () => {
   it('should auto-flush when batch size is reached', (done) => {
     const emitter = new WebhookEmitter(
       `http://localhost:${serverPort}/hook`,
-      3, // batch size of 3
-      60000,
+      { batchSize: 3, flushIntervalMs: 60000 },
     );
 
     emitter.emit(makeEvent());
@@ -86,8 +84,7 @@ describe('WebhookEmitter', () => {
   it('should flush remaining events on destroy', (done) => {
     const emitter = new WebhookEmitter(
       `http://localhost:${serverPort}/hook`,
-      100, // large batch so no auto-flush
-      60000,
+      { batchSize: 100, flushIntervalMs: 60000 },
     );
 
     emitter.emit(makeEvent());
@@ -104,7 +101,7 @@ describe('WebhookEmitter', () => {
 
   it('should not crash on failed delivery', (done) => {
     // Point at a port that's not listening
-    const emitter = new WebhookEmitter('http://localhost:1/bad', 10, 60000);
+    const emitter = new WebhookEmitter('http://localhost:1/bad', { batchSize: 10, flushIntervalMs: 60000 });
     emitter.emit(makeEvent());
     emitter.flush();
 
@@ -118,8 +115,7 @@ describe('WebhookEmitter', () => {
   it('should not send when buffer is empty', () => {
     const emitter = new WebhookEmitter(
       `http://localhost:${serverPort}/hook`,
-      10,
-      60000,
+      { batchSize: 10, flushIntervalMs: 60000 },
     );
 
     emitter.flush(); // nothing to send
