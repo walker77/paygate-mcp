@@ -12,6 +12,7 @@ export type AuditEventType =
   // Key management
   | 'key.created'
   | 'key.revoked'
+  | 'key.rotated'
   | 'key.topup'
   | 'key.acl_updated'
   | 'key.expiry_updated'

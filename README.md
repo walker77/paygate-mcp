@@ -44,6 +44,8 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment` and `/pricing`
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
+- **Key Rotation** — Rotate API keys without losing credits, ACLs, or quotas
+- **Rate Limit Headers** — `X-RateLimit-*` and `X-Credits-Remaining` on every `/mcp` response
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -259,6 +261,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys` | GET | `X-Admin-Key` | List all keys (masked, with expiry status) |
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
+| `/keys/rotate` | POST | `X-Admin-Key` | Rotate key (new key, same credits/ACL/quotas) |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
 | `/keys/expiry` | POST | `X-Admin-Key` | Set or remove key expiry (TTL) |
 | `/keys/quota` | POST | `X-Admin-Key` | Set usage quota (daily/monthly limits) |
@@ -662,6 +665,32 @@ paygate_uptime_seconds 3600
 
 The `/metrics` endpoint is **public** (no auth required) for easy Prometheus scraping.
 
+### Key Rotation
+
+Rotate an API key without losing credits, ACLs, quotas, or spending limits:
+
+```bash
+curl -X POST http://localhost:3402/keys/rotate \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_oldkey..."}'
+# → { "message": "Key rotated", "newKey": "pg_newkey...", "name": "my-key", "credits": 500 }
+```
+
+The old key is immediately invalidated. All state (credits, totalSpent, totalCalls, ACL, quota, expiry, spending limit) transfers to the new key. Use this for periodic key rotation policies, compromised key response, or key migration.
+
+### Rate Limit Response Headers
+
+Every `/mcp` response includes rate limit and credits headers when an API key is provided:
+
+```
+X-RateLimit-Limit: 100        # Max calls per window
+X-RateLimit-Remaining: 87     # Calls remaining in current window
+X-RateLimit-Reset: 45         # Seconds until window resets
+X-Credits-Remaining: 4500     # Credits remaining on the key
+```
+
+When a tool has a per-tool rate limit, the headers reflect that tool's limit (not the global limit). These headers are CORS-exposed so browser-based agents can read them.
+
 ### Config File Mode
 
 Load all settings from a JSON file instead of CLI flags:
@@ -794,6 +823,8 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Audit log — Structured audit trail with retention, query API, CSV/JSON export
 - [x] Registry/discovery — Agent-discoverable pricing (/.well-known/mcp-payment, /pricing, tools/list _pricing)
 - [x] Prometheus metrics — /metrics endpoint with counters, gauges, and uptime
+- [x] Key rotation — Rotate API keys preserving credits, ACLs, quotas, and spending limits
+- [x] Rate limit headers — X-RateLimit-* and X-Credits-Remaining on /mcp responses
 - [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements

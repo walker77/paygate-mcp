@@ -168,7 +168,7 @@ export class PayGateServer {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -189,6 +189,8 @@ export class PayGateServer {
         break;
       case '/keys/revoke':
         return this.handleRevokeKey(req, res);
+      case '/keys/rotate':
+        return this.handleRotateKey(req, res);
       case '/keys/acl':
         return this.handleSetAcl(req, res);
       case '/keys/expiry':
@@ -323,13 +325,16 @@ export class PayGateServer {
       }
     }
 
+    // Build rate limit + credits headers for tools/call responses
+    const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
+
     // Check if client accepts SSE
     const accept = req.headers['accept'] || '';
     const wantsSse = accept.includes('text/event-stream');
 
     if (wantsSse) {
       // Return response as SSE stream
-      writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+      writeSseHeaders(res, { 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
       writeSseEvent(res, response, 'message');
       res.end();
     } else {
@@ -337,6 +342,7 @@ export class PayGateServer {
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Mcp-Session-Id': sessionId,
+        ...rateLimitHeaders,
       });
       res.end(JSON.stringify(response));
     }
@@ -439,6 +445,47 @@ export class PayGateServer {
     return apiKey;
   }
 
+  /**
+   * Build rate limit response headers for /mcp responses.
+   * Returns X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining.
+   */
+  private buildRateLimitHeaders(apiKey: string | null, request: JsonRpcRequest): Record<string, string> {
+    const headers: Record<string, string> = {};
+
+    if (!apiKey) return headers;
+
+    const keyRecord = this.gate.store.getKey(apiKey);
+    if (!keyRecord) return headers;
+
+    // Credits remaining
+    headers['X-Credits-Remaining'] = String(keyRecord.credits);
+
+    // Rate limit info — use per-tool limit if this is a tools/call, else global
+    const toolName = request.method === 'tools/call'
+      ? ((request.params as Record<string, unknown>)?.name as string) || null
+      : null;
+
+    const toolPricing = toolName ? this.config.toolPricing[toolName] : undefined;
+    const perToolLimit = toolPricing?.rateLimitPerMin || 0;
+    const globalLimit = this.config.globalRateLimitPerMin;
+
+    // Pick the most specific limit
+    if (perToolLimit > 0 && toolName) {
+      const compositeKey = `${apiKey}:tool:${toolName}`;
+      const result = this.gate.rateLimiter.checkCustom(compositeKey, perToolLimit);
+      headers['X-RateLimit-Limit'] = String(perToolLimit);
+      headers['X-RateLimit-Remaining'] = String(Math.max(0, result.remaining));
+      headers['X-RateLimit-Reset'] = String(Math.ceil(result.resetInMs / 1000));
+    } else if (globalLimit > 0) {
+      const result = this.gate.rateLimiter.check(apiKey);
+      headers['X-RateLimit-Limit'] = String(globalLimit);
+      headers['X-RateLimit-Remaining'] = String(Math.max(0, result.remaining));
+      headers['X-RateLimit-Reset'] = String(Math.ceil(result.resetInMs / 1000));
+    }
+
+    return headers;
+  }
+
   // ─── / — Root info ──────────────────────────────────────────────────────────
 
   private handleRoot(_req: IncomingMessage, res: ServerResponse): void {
@@ -454,6 +501,7 @@ export class PayGateServer {
         createKey: 'POST /keys — Create API key (requires X-Admin-Key)',
         listKeys: 'GET /keys — List API keys (requires X-Admin-Key)',
         revokeKey: 'POST /keys/revoke — Revoke a key (requires X-Admin-Key)',
+        rotateKey: 'POST /keys/rotate — Rotate a key (requires X-Admin-Key)',
         setAcl: 'POST /keys/acl — Set tool ACL (requires X-Admin-Key)',
         setExpiry: 'POST /keys/expiry — Set key expiry (requires X-Admin-Key)',
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
@@ -660,6 +708,53 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Key revoked' }));
+  }
+
+  // ─── /keys/rotate — Rotate API key ─────────────────────────────────────────
+
+  private async handleRotateKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    const rotated = this.gate.store.rotateKey(params.key);
+    if (!rotated) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      return;
+    }
+
+    this.audit.log('key.rotated', 'admin', `Key rotated`, {
+      oldKeyMasked: maskKeyForAudit(params.key),
+      newKeyMasked: maskKeyForAudit(rotated.key),
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      message: 'Key rotated',
+      newKey: rotated.key,
+      name: rotated.name,
+      credits: rotated.credits,
+    }));
   }
 
   // ─── /keys/acl — Set tool ACL ──────────────────────────────────────────────

@@ -212,6 +212,35 @@ export class KeyStore {
   }
 
   /**
+   * Rotate an API key — generate a new key string while preserving all
+   * credits, ACL, quotas, spending limits, and metadata. The old key is
+   * immediately invalidated.
+   */
+  rotateKey(oldKey: string): ApiKeyRecord | null {
+    const record = this.keys.get(oldKey);
+    if (!record || !record.active) return null;
+
+    // Generate new key
+    const newKey = `pg_${randomBytes(24).toString('hex')}`;
+
+    // Create new record with all state transferred
+    const rotated: ApiKeyRecord = {
+      ...record,
+      key: newKey,
+      // Keep everything: credits, totalSpent, totalCalls, lastUsedAt,
+      // allowedTools, deniedTools, expiresAt, spendingLimit, quota, etc.
+    };
+
+    // Deactivate old key and insert new one
+    record.active = false;
+    this.keys.set(oldKey, record);
+    this.keys.set(newKey, rotated);
+    this.save();
+
+    return rotated;
+  }
+
+  /**
    * List all keys (with key values masked). Includes expiry status.
    */
   listKeys(): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> {
