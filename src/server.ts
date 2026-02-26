@@ -301,6 +301,13 @@ export class PayGateServer {
         if (req.method === 'GET') return this.handleGetAlerts(req, res);
         if (req.method === 'POST') return this.handleConfigureAlerts(req, res);
         break;
+      // ─── Webhook admin endpoints ─────────────────────────────────────
+      case '/webhooks/dead-letter':
+        if (req.method === 'GET') return this.handleGetDeadLetters(req, res);
+        if (req.method === 'DELETE') return this.handleClearDeadLetters(req, res);
+        break;
+      case '/webhooks/stats':
+        return this.handleWebhookStats(req, res);
       // ─── Team management endpoints ────────────────────────────────────
       case '/teams':
         if (req.method === 'GET') return this.handleListTeams(req, res);
@@ -642,6 +649,8 @@ export class PayGateServer {
         metrics: 'GET /metrics — Prometheus metrics (public)',
         analytics: 'GET /analytics — Usage analytics with time-series data (requires X-Admin-Key)',
         alerts: 'GET /alerts — Get pending alerts + POST /alerts — Configure alert rules (requires X-Admin-Key)',
+        webhookDeadLetters: 'GET /webhooks/dead-letter — View failed webhook deliveries + DELETE to clear (requires X-Admin-Key)',
+        webhookStats: 'GET /webhooks/stats — Webhook delivery statistics (requires X-Admin-Key)',
         teams: 'GET /teams — List teams + POST /teams — Create team (requires X-Admin-Key)',
         teamsUpdate: 'POST /teams/update — Update team (requires X-Admin-Key)',
         teamsDelete: 'POST /teams/delete — Delete team (requires X-Admin-Key)',
@@ -1842,6 +1851,75 @@ export class PayGateServer {
     res.end(JSON.stringify({
       rules: params.rules,
       message: `${params.rules.length} alert rule(s) configured`,
+    }));
+  }
+
+  // ─── /webhooks/dead-letter — View/clear dead letter queue ────────────────
+
+  private handleGetDeadLetters(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ deadLetters: [], count: 0, message: 'No webhook configured' }));
+      return;
+    }
+
+    const deadLetters = this.gate.webhook.getDeadLetters();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      deadLetters,
+      count: deadLetters.length,
+    }));
+  }
+
+  private handleClearDeadLetters(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ cleared: 0, message: 'No webhook configured' }));
+      return;
+    }
+
+    const cleared = this.gate.webhook.clearDeadLetters();
+
+    this.audit.log('webhook.dead_letter_cleared', 'admin', `Cleared ${cleared} dead letter entries`, {
+      cleared,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      cleared,
+      message: `Cleared ${cleared} dead letter entries`,
+    }));
+  }
+
+  // ─── /webhooks/stats — Webhook delivery statistics ──────────────────────
+
+  private handleWebhookStats(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        configured: false,
+        message: 'No webhook configured',
+      }));
+      return;
+    }
+
+    const stats = this.gate.webhook.getRetryStats();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      configured: true,
+      maxRetries: this.gate.webhook.maxRetries,
+      ...stats,
     }));
   }
 

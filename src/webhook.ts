@@ -2,12 +2,15 @@
  * Webhook — Fire-and-forget HTTP POST of events to an external URL.
  *
  * Events are batched (max 10, flush every 5s) to reduce overhead.
- * Failed deliveries are retried once, then dropped (no queue bloat).
+ * Failed deliveries are retried with exponential backoff (1s, 2s, 4s, 8s, 16s).
+ * After maxRetries exhausted, events move to a dead-letter queue for inspection.
  *
  * Supports:
  *   - Usage events (tool calls, denials)
  *   - Admin lifecycle events (key.created, key.revoked, key.rotated, key.topup)
  *   - HMAC-SHA256 signatures for payload verification (X-PayGate-Signature header)
+ *   - Exponential backoff retry queue with configurable max retries
+ *   - Dead-letter queue for permanently failed deliveries (max 1000 entries)
  */
 
 import { createHmac } from 'crypto';
@@ -30,6 +33,33 @@ function isAdminEvent(event: WebhookEvent): event is WebhookAdminEvent {
   return 'type' in event && typeof (event as WebhookAdminEvent).type === 'string';
 }
 
+// ─── Dead Letter Entry ──────────────────────────────────────────────────────
+
+export interface DeadLetterEntry {
+  /** Events that permanently failed */
+  events: WebhookEvent[];
+  /** Number of attempts made */
+  attempts: number;
+  /** Last error message or HTTP status */
+  lastError: string;
+  /** When the first attempt was made */
+  firstAttempt: string;
+  /** When the last attempt was made */
+  lastAttempt: string;
+  /** Target webhook URL */
+  url: string;
+}
+
+// ─── Retry Queue Entry ─────────────────────────────────────────────────────
+
+interface RetryEntry {
+  events: WebhookEvent[];
+  attempt: number;
+  nextRetryAt: number;
+  firstAttempt: string;
+  lastError: string;
+}
+
 // ─── WebhookEmitter Class ───────────────────────────────────────────────────
 
 export class WebhookEmitter {
@@ -38,22 +68,47 @@ export class WebhookEmitter {
   private readonly isHttps: boolean;
   private buffer: WebhookEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
   private readonly batchSize: number;
   private readonly flushIntervalMs: number;
+  readonly maxRetries: number;
+  private readonly baseDelayMs: number;
+
+  /** Entries waiting for retry with exponential backoff */
+  private retryQueue: RetryEntry[] = [];
+
+  /** Permanently failed deliveries (capped at maxDeadLetters) */
+  private deadLetters: DeadLetterEntry[] = [];
+  private readonly maxDeadLetters: number;
+
+  /** Counts for monitoring */
+  private _totalDelivered = 0;
+  private _totalFailed = 0;
+  private _totalRetries = 0;
 
   constructor(url: string, options?: {
     secret?: string | null;
     batchSize?: number;
     flushIntervalMs?: number;
+    maxRetries?: number;
+    baseDelayMs?: number;
+    maxDeadLetters?: number;
   }) {
     this.url = url;
     this.secret = options?.secret || null;
     this.isHttps = url.startsWith('https://');
     this.batchSize = options?.batchSize || 10;
     this.flushIntervalMs = options?.flushIntervalMs || 5000;
+    this.maxRetries = options?.maxRetries ?? 5;
+    this.baseDelayMs = options?.baseDelayMs ?? 1000;
+    this.maxDeadLetters = options?.maxDeadLetters ?? 1000;
 
     this.timer = setInterval(() => this.flush(), this.flushIntervalMs);
-    if (this.timer.unref) this.timer.unref(); // Don't block process exit
+    if (this.timer.unref) this.timer.unref();
+
+    // Process retry queue every second
+    this.retryTimer = setInterval(() => this.processRetryQueue(), 1000);
+    if (this.retryTimer.unref) this.retryTimer.unref();
   }
 
   /**
@@ -85,7 +140,7 @@ export class WebhookEmitter {
   flush(): void {
     if (this.buffer.length === 0) return;
     const batch = this.buffer.splice(0, this.batchSize);
-    this.send(batch, 1);
+    this.send(batch, 0, new Date().toISOString());
   }
 
   /**
@@ -109,7 +164,115 @@ export class WebhookEmitter {
     return result === 0;
   }
 
-  private send(events: WebhookEvent[], retriesLeft: number): void {
+  // ─── Retry Queue ────────────────────────────────────────────────────────────
+
+  /**
+   * Process the retry queue: send any entries whose nextRetryAt has passed.
+   */
+  private processRetryQueue(): void {
+    const now = Date.now();
+    const ready: RetryEntry[] = [];
+    const remaining: RetryEntry[] = [];
+
+    for (const entry of this.retryQueue) {
+      if (entry.nextRetryAt <= now) {
+        ready.push(entry);
+      } else {
+        remaining.push(entry);
+      }
+    }
+
+    this.retryQueue = remaining;
+
+    for (const entry of ready) {
+      this._totalRetries++;
+      this.send(entry.events, entry.attempt, entry.firstAttempt, entry.lastError);
+    }
+  }
+
+  /**
+   * Schedule a batch for retry with exponential backoff.
+   */
+  private scheduleRetry(events: WebhookEvent[], attempt: number, firstAttempt: string, lastError: string): void {
+    if (attempt >= this.maxRetries) {
+      // Exhausted retries — move to dead letter queue
+      this.addDeadLetter(events, attempt, lastError, firstAttempt);
+      return;
+    }
+
+    const delayMs = this.baseDelayMs * Math.pow(2, attempt);
+    this.retryQueue.push({
+      events,
+      attempt: attempt + 1,
+      nextRetryAt: Date.now() + delayMs,
+      firstAttempt,
+      lastError,
+    });
+  }
+
+  /**
+   * Add a permanently failed delivery to the dead letter queue.
+   */
+  private addDeadLetter(events: WebhookEvent[], attempts: number, lastError: string, firstAttempt: string): void {
+    this._totalFailed++;
+
+    const entry: DeadLetterEntry = {
+      events,
+      attempts,
+      lastError,
+      firstAttempt,
+      lastAttempt: new Date().toISOString(),
+      url: this.url,
+    };
+
+    this.deadLetters.push(entry);
+
+    // Cap the dead letter queue size
+    if (this.deadLetters.length > this.maxDeadLetters) {
+      this.deadLetters = this.deadLetters.slice(-this.maxDeadLetters);
+    }
+  }
+
+  // ─── Dead Letter API ────────────────────────────────────────────────────────
+
+  /**
+   * Get all dead letter entries.
+   */
+  getDeadLetters(): DeadLetterEntry[] {
+    return [...this.deadLetters];
+  }
+
+  /**
+   * Clear dead letter queue. Returns number of entries cleared.
+   */
+  clearDeadLetters(): number {
+    const count = this.deadLetters.length;
+    this.deadLetters = [];
+    return count;
+  }
+
+  /**
+   * Get retry queue stats.
+   */
+  getRetryStats(): {
+    pendingRetries: number;
+    deadLetterCount: number;
+    totalDelivered: number;
+    totalFailed: number;
+    totalRetries: number;
+  } {
+    return {
+      pendingRetries: this.retryQueue.length,
+      deadLetterCount: this.deadLetters.length,
+      totalDelivered: this._totalDelivered,
+      totalFailed: this._totalFailed,
+      totalRetries: this._totalRetries,
+    };
+  }
+
+  // ─── Send ──────────────────────────────────────────────────────────────────
+
+  private send(events: WebhookEvent[], attempt: number, firstAttempt: string, previousError?: string): void {
     // Separate events by type for the payload
     const usageEvents: UsageEvent[] = [];
     const adminEvents: WebhookAdminEvent[] = [];
@@ -133,7 +296,8 @@ export class WebhookEmitter {
     try {
       parsed = new URL(this.url);
     } catch {
-      // Invalid URL — drop silently (don't crash the server)
+      // Invalid URL — send to dead letter
+      this.addDeadLetter(events, attempt, 'Invalid webhook URL', firstAttempt);
       return;
     }
 
@@ -151,6 +315,11 @@ export class WebhookEmitter {
       headers['X-PayGate-Signature'] = `t=${timestamp},v1=${signature}`;
     }
 
+    // Add retry attempt header for observability
+    if (attempt > 0) {
+      headers['X-PayGate-Retry'] = attempt;
+    }
+
     const reqFn = this.isHttps ? httpsRequest : httpRequest;
 
     const req = reqFn({
@@ -163,19 +332,22 @@ export class WebhookEmitter {
     }, (res) => {
       // Drain response to free socket
       res.resume();
-      if (res.statusCode && res.statusCode >= 400 && retriesLeft > 0) {
-        setTimeout(() => this.send(events, retriesLeft - 1), 2000);
+      if (res.statusCode && res.statusCode >= 400) {
+        const errorMsg = `HTTP ${res.statusCode}`;
+        this.scheduleRetry(events, attempt, firstAttempt, errorMsg);
+      } else {
+        this._totalDelivered++;
       }
     });
 
-    req.on('error', () => {
-      if (retriesLeft > 0) {
-        setTimeout(() => this.send(events, retriesLeft - 1), 2000);
-      }
+    req.on('error', (err: Error) => {
+      const errorMsg = err.message || 'Connection error';
+      this.scheduleRetry(events, attempt, firstAttempt, errorMsg);
     });
 
     req.on('timeout', () => {
       req.destroy();
+      this.scheduleRetry(events, attempt, firstAttempt, 'Timeout (10s)');
     });
 
     req.write(body);
@@ -186,6 +358,10 @@ export class WebhookEmitter {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.retryTimer) {
+      clearInterval(this.retryTimer);
+      this.retryTimer = null;
     }
     this.flush(); // Send remaining events
   }

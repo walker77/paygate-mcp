@@ -41,6 +41,7 @@ export class Gate {
     this.meter = new UsageMeter();
     this.webhook = config.webhookUrl ? new WebhookEmitter(config.webhookUrl, {
       secret: config.webhookSecret || null,
+      maxRetries: config.webhookMaxRetries ?? 5,
     }) : null;
     this.quotaTracker = new QuotaTracker();
   }

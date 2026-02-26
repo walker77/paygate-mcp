@@ -54,6 +54,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Alert Webhooks** — Configurable alerts for spending thresholds, low credits, quota warnings, key expiry, rate limit spikes
 - **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
 - **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, persistent usage audit trail, real-time pub/sub notifications, and admin API sync
+- **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring and clearing
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -481,7 +482,28 @@ POST usage events to any external URL for billing, alerting, or analytics:
 npx paygate-mcp wrap --server "node server.js" --webhook-url "https://billing.example.com/events"
 ```
 
-Events are batched (up to 10 per POST) and flushed every 5 seconds. Each event includes tool name, credits charged, API key, and timestamp. Fire-and-forget with one retry on failure.
+Events are batched (up to 10 per POST) and flushed every 5 seconds. Each event includes tool name, credits charged, API key, and timestamp.
+
+#### Retry Queue & Dead Letters
+
+Failed webhook deliveries are retried with exponential backoff (1s, 2s, 4s, 8s, 16s — configurable up to `--webhook-retries` attempts). After all retries are exhausted, events move to a dead letter queue for admin inspection.
+
+```bash
+# Custom max retries (default: 5)
+npx paygate-mcp wrap --server "node server.js" \
+  --webhook-url "https://billing.example.com/events" \
+  --webhook-retries 10
+```
+
+**Admin endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/webhooks/stats` | GET | Delivery statistics (delivered, failed, pending retries, dead letters) |
+| `/webhooks/dead-letter` | GET | List permanently failed deliveries with error details |
+| `/webhooks/dead-letter` | DELETE | Clear dead letter queue |
+
+Retry attempts include an `X-PayGate-Retry` header with the attempt number for observability.
 
 #### Webhook Signatures (HMAC-SHA256)
 

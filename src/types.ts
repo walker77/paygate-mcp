@@ -84,6 +84,8 @@ export interface PayGateConfig {
   webhookUrl: string | null;
   /** Secret for HMAC-SHA256 webhook signatures. Null = unsigned. */
   webhookSecret: string | null;
+  /** Maximum retries for failed webhook deliveries. Default: 5. */
+  webhookMaxRetries?: number;
   /** Refund credits when downstream tool call fails. Default: false. */
   refundOnFailure: boolean;
   /** Global usage quota defaults (daily/monthly limits). Null = unlimited. */
@@ -133,6 +135,7 @@ export const DEFAULT_CONFIG: PayGateConfig = {
   shadowMode: false,
   webhookUrl: null,
   webhookSecret: null,
+  webhookMaxRetries: 5,
   refundOnFailure: false,
 };
 

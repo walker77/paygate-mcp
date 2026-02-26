@@ -39,6 +39,8 @@ export type AuditEventType =
   // Admin
   | 'admin.auth_failed'
   | 'admin.alerts_configured'
+  // Webhook
+  | 'webhook.dead_letter_cleared'
   // Billing
   | 'billing.refund';
 

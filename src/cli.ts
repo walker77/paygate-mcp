@@ -70,6 +70,7 @@ function printUsage(): void {
     --stripe-secret <s>    Stripe webhook signing secret (enables /stripe/webhook endpoint)
     --webhook-url <url>    POST usage events to this URL (batched)
     --webhook-secret <s>   HMAC-SHA256 secret for webhook signatures
+    --webhook-retries <n>  Max retries for failed webhook deliveries (default: 5)
     --refund-on-failure    Refund credits when downstream tool call fails
     --redis-url <url>      Redis URL for distributed state (e.g. "redis://localhost:6379")
 
@@ -127,6 +128,7 @@ interface ConfigFile {
   stripeWebhookSecret?: string;
   webhookUrl?: string;
   webhookSecret?: string;
+  webhookMaxRetries?: number;
   refundOnFailure?: boolean;
   importKeys?: Record<string, number>;
   /** Multi-server mode: wrap multiple MCP servers with tool prefix routing */
@@ -209,6 +211,7 @@ async function main(): Promise<void> {
       const stripeSecret = flags['stripe-secret'] || fileConfig.stripeWebhookSecret;
       const webhookUrl = flags['webhook-url'] || fileConfig.webhookUrl || null;
       const webhookSecret = flags['webhook-secret'] || fileConfig.webhookSecret || null;
+      const webhookMaxRetries = Math.max(0, Math.floor(Number(flags['webhook-retries'] || fileConfig.webhookMaxRetries) || 5));
       const refundOnFailure = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || fileConfig.refundOnFailure || false;
       const redisUrl = flags['redis-url'] || fileConfig.redisUrl || undefined;
 
@@ -231,6 +234,7 @@ async function main(): Promise<void> {
         toolPricing,
         webhookUrl,
         webhookSecret,
+        webhookMaxRetries,
         refundOnFailure: !!refundOnFailure,
         globalQuota,
         oauth: fileConfig.oauth,
