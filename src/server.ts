@@ -421,6 +421,8 @@ export class PayGateServer {
         if (req.method === 'GET') return this.handleGetDeadLetters(req, res);
         if (req.method === 'DELETE') return this.handleClearDeadLetters(req, res);
         break;
+      case '/webhooks/replay':
+        return this.handleWebhookReplay(req, res);
       case '/webhooks/stats':
         return this.handleWebhookStats(req, res);
       case '/webhooks/filters':
@@ -922,6 +924,7 @@ export class PayGateServer {
         analytics: 'GET /analytics — Usage analytics with time-series data (requires X-Admin-Key)',
         alerts: 'GET /alerts — Get pending alerts + POST /alerts — Configure alert rules (requires X-Admin-Key)',
         webhookDeadLetters: 'GET /webhooks/dead-letter — View failed webhook deliveries + DELETE to clear (requires X-Admin-Key)',
+        webhookReplay: 'POST /webhooks/replay — Replay dead letter webhook events (requires X-Admin-Key)',
         webhookStats: 'GET /webhooks/stats — Webhook delivery statistics (requires X-Admin-Key)',
         webhookFilters: 'GET|POST /webhooks/filters — List or create webhook filter rules (requires X-Admin-Key)',
         updateWebhookFilter: 'POST /webhooks/filters/update — Update a webhook filter rule (requires X-Admin-Key)',
@@ -2691,6 +2694,58 @@ export class PayGateServer {
     res.end(JSON.stringify({
       cleared,
       message: `Cleared ${cleared} dead letter entries`,
+    }));
+  }
+
+  // ─── /webhooks/replay — Replay dead letter events ───────────────────────
+
+  private async handleWebhookReplay(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ replayed: 0, message: 'No webhook configured' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: { indices?: number[] } = {};
+    if (body.trim()) {
+      try {
+        params = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+    }
+
+    const indices = Array.isArray(params.indices) ? params.indices.filter(i => typeof i === 'number') : undefined;
+    const deadLetterCount = this.gate.webhook.getDeadLetters().length;
+
+    if (deadLetterCount === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ replayed: 0, remaining: 0, message: 'Dead letter queue is empty' }));
+      return;
+    }
+
+    const replayed = this.gate.webhook.replayDeadLetters(indices && indices.length > 0 ? indices : undefined);
+    const remaining = this.gate.webhook.getDeadLetters().length;
+
+    this.audit.log('webhook.replayed', 'admin', `Replayed ${replayed} dead letter entries`, {
+      replayed, remaining, indices: indices || 'all',
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      replayed,
+      remaining,
+      message: `Replayed ${replayed} dead letter entries`,
     }));
   }
 

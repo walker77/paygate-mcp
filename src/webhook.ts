@@ -252,6 +252,39 @@ export class WebhookEmitter {
   }
 
   /**
+   * Replay dead letter entries by re-queuing them for delivery.
+   * Removes replayed entries from the dead letter queue.
+   * @param indices - Specific indices to replay. If empty, replay all.
+   * @returns Number of entries replayed.
+   */
+  replayDeadLetters(indices?: number[]): number {
+    if (this.deadLetters.length === 0) return 0;
+
+    let toReplay: DeadLetterEntry[];
+    if (indices && indices.length > 0) {
+      // Deduplicate and validate indices
+      const validIndices = [...new Set(indices)].filter(i => i >= 0 && i < this.deadLetters.length);
+      toReplay = validIndices.map(i => this.deadLetters[i]);
+      // Remove replayed entries (reverse order to preserve indices)
+      const sortedIndices = [...validIndices].sort((a, b) => b - a);
+      for (const i of sortedIndices) {
+        this.deadLetters.splice(i, 1);
+      }
+    } else {
+      // Replay all
+      toReplay = [...this.deadLetters];
+      this.deadLetters = [];
+    }
+
+    // Re-queue each entry for immediate delivery (attempt 0 = fresh start)
+    for (const entry of toReplay) {
+      this.send(entry.events, 0, new Date().toISOString());
+    }
+
+    return toReplay.length;
+  }
+
+  /**
    * Get retry queue stats.
    */
   getRetryStats(): {

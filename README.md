@@ -54,7 +54,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Alert Webhooks** — Configurable alerts for spending thresholds, low credits, quota warnings, key expiry, rate limit spikes
 - **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
 - **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, persistent usage audit trail, real-time pub/sub notifications, and admin API sync
-- **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring and clearing
+- **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring, clearing, and replaying
 - **Health Check + Graceful Shutdown** — `GET /health` public endpoint with status, uptime, version, in-flight requests, Redis & webhook stats; `gracefulStop()` drains in-flight requests before teardown
 - **Config Validation + Dry Run** — `paygate-mcp validate --config paygate.json` catches misconfigurations before starting; `--dry-run` discovers tools, prints pricing table, then exits
 - **Batch Tool Calls** — `tools/call_batch` method for calling multiple tools in one request with all-or-nothing billing, aggregate credit checks, and parallel execution
@@ -341,6 +341,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/webhooks/filters` | POST | `X-Admin-Key` | Create a webhook filter rule |
 | `/webhooks/filters/update` | POST | `X-Admin-Key` | Update a webhook filter rule |
 | `/webhooks/filters/delete` | POST | `X-Admin-Key` | Delete a webhook filter rule |
+| `/webhooks/replay` | POST | `X-Admin-Key` | Replay dead letter webhook events (all or by index) |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
 
@@ -658,8 +659,27 @@ npx paygate-mcp wrap --server "node server.js" \
 | `/webhooks/stats` | GET | Delivery statistics (delivered, failed, pending retries, dead letters) |
 | `/webhooks/dead-letter` | GET | List permanently failed deliveries with error details |
 | `/webhooks/dead-letter` | DELETE | Clear dead letter queue |
+| `/webhooks/replay` | POST | Replay dead letter events (all or by index) |
 
 Retry attempts include an `X-PayGate-Retry` header with the attempt number for observability.
+
+#### Webhook Event Replay
+
+Replay permanently failed webhook events from the dead letter queue:
+
+```bash
+# Replay all dead letter entries
+curl -X POST http://localhost:3402/webhooks/replay \
+  -H "X-Admin-Key: $ADMIN_KEY"
+
+# Replay specific entries by index
+curl -X POST http://localhost:3402/webhooks/replay \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "indices": [0, 2, 5] }'
+```
+
+Replayed entries are removed from the dead letter queue and re-queued for fresh delivery (attempt counter resets to 0). If delivery fails again, they follow the normal retry/dead-letter flow.
 
 #### Webhook Signatures (HMAC-SHA256)
 
@@ -2087,6 +2107,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Credit transfers — Atomically transfer credits between API keys with validation and audit trail
 - [x] Bulk key operations — Execute multiple create/topup/revoke operations in one request with per-operation error handling
 - [x] Key import/export — Export keys (JSON/CSV) for backup/migration, import with conflict resolution (skip, overwrite, error modes)
+- [x] Webhook event replay — Replay dead letter entries (all or by index) with fresh delivery attempt and audit trail
 
 ## Requirements
 
