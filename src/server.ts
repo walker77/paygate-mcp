@@ -228,7 +228,8 @@ export class PayGateServer {
     // Plugin manager for extensible middleware hooks
     this.plugins = new PluginManager();
     this.gate.pluginManager = this.plugins;
-    this.groups = new KeyGroupManager();
+    const groupsStatePath = statePath ? statePath.replace(/\.json$/, '-groups.json') : undefined;
+    this.groups = new KeyGroupManager(groupsStatePath);
     this.gate.groupManager = this.groups;
     this.metrics.registerGauge('paygate_plugins_total', 'Number of registered plugins', () => {
       return this.plugins.count;
@@ -2923,6 +2924,7 @@ export class PayGateServer {
       });
 
       this.audit.log('group.created', 'admin', `Group created: ${group.name}`, { groupId: group.id, name: group.name });
+      this.groups.saveToFile();
       if (this.redisSync) this.redisSync.saveGroup(group).catch(() => {});
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -2977,6 +2979,7 @@ export class PayGateServer {
       });
 
       this.audit.log('group.updated', 'admin', `Group updated: ${group.name}`, { groupId: group.id });
+      this.groups.saveToFile();
       if (this.redisSync) this.redisSync.saveGroup(group).catch(() => {});
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3018,6 +3021,7 @@ export class PayGateServer {
     }
 
     this.audit.log('group.deleted', 'admin', `Group deleted: ${groupId}`, { groupId });
+    this.groups.saveToFile();
     if (this.redisSync) {
       this.redisSync.deleteGroup(groupId).catch(() => {});
       this.redisSync.saveGroupAssignments().catch(() => {});
@@ -3067,6 +3071,7 @@ export class PayGateServer {
       this.audit.log('group.key_assigned', 'admin', `Key assigned to group ${groupId}`, {
         keyMasked: maskKeyForAudit(apiKey), groupId,
       });
+      this.groups.saveToFile();
       if (this.redisSync) {
         this.redisSync.saveGroupAssignments().catch(() => {});
         this.syncKeyMutation(apiKey);
@@ -3117,6 +3122,7 @@ export class PayGateServer {
     }
 
     this.audit.log('group.key_removed', 'admin', `Key removed from group`, { keyMasked: maskKeyForAudit(apiKey) });
+    this.groups.saveToFile();
     if (this.redisSync) {
       this.redisSync.saveGroupAssignments().catch(() => {});
       this.syncKeyMutation(apiKey);

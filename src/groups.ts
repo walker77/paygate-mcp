@@ -14,6 +14,7 @@
  */
 
 import { randomBytes } from 'crypto';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { QuotaConfig, ToolPricing } from './types';
 
 // ─── Group Types ─────────────────────────────────────────────────────────────
@@ -83,6 +84,13 @@ export class KeyGroupManager {
   private groups = new Map<string, KeyGroupRecord>();
   /** Reverse index: apiKey → groupId */
   private keyToGroup = new Map<string, string>();
+  /** File path for state persistence (null = no persistence) */
+  private readonly filePath: string | null;
+
+  constructor(filePath?: string) {
+    this.filePath = filePath || null;
+    if (this.filePath) this.loadFromFile();
+  }
 
   // ─── CRUD ────────────────────────────────────────────────────────────────
 
@@ -324,6 +332,24 @@ export class KeyGroupManager {
       toolPricing,
       maxSpendingLimit,
     };
+  }
+
+  // ─── File Persistence ────────────────────────────────────────────────────
+
+  /** Load groups from state file (called in constructor). */
+  private loadFromFile(): void {
+    if (!this.filePath || !existsSync(this.filePath)) return;
+    try {
+      const raw = readFileSync(this.filePath, 'utf-8');
+      const data = JSON.parse(raw);
+      this.load(data);
+    } catch { /* ignore corrupted file */ }
+  }
+
+  /** Save groups to state file. */
+  saveToFile(): void {
+    if (!this.filePath) return;
+    writeFileSync(this.filePath, JSON.stringify(this.serialize(), null, 2));
   }
 
   // ─── Serialization (for state file persistence) ──────────────────────────

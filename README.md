@@ -69,7 +69,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
 - **Shadow Mode** — Log everything without enforcing payment (for testing)
-- **Persistent Storage** — Keys and credits survive restarts with `--state-file`
+- **Persistent Storage** — Keys, credits, admin keys, and groups survive restarts with `--state-file`
 - **Zero Dependencies** — No external npm packages. Uses only Node.js built-ins.
 
 ## Usage
@@ -1626,7 +1626,9 @@ const policy = server.groups.resolvePolicy(apiKey, keyRecord);
 // { allowedTools, deniedTools, rateLimitPerMin, quota, ipAllowlist, toolPricing, maxSpendingLimit }
 ```
 
-**Redis sync:** When running with `--redis-url`, group definitions and key assignments are automatically persisted to Redis and synced across instances via pub/sub. All group CRUD operations and assignment changes propagate in real-time to other PayGate processes.
+**File persistence:** When using `--state-file`, group definitions and key assignments are automatically saved to a `*-groups.json` file alongside the main state file. Groups survive restarts without needing Redis.
+
+**Redis sync:** When running with `--redis-url`, group definitions and key assignments are additionally persisted to Redis and synced across instances via pub/sub. All group CRUD operations and assignment changes propagate in real-time to other PayGate processes.
 
 ### Horizontal Scaling (Redis)
 
