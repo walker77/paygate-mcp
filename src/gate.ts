@@ -118,6 +118,16 @@ export class Gate {
       return { allowed: false, reason, creditsCharged: 0, remainingCredits: 0 };
     }
 
+    // Step 2b: Suspended key?
+    if (keyRecord.suspended) {
+      const reason = 'key_suspended';
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason, keyRecord.namespace);
+      if (this.config.shadowMode) {
+        return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+      return { allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
+    }
+
     // Resolve group policy (if key belongs to a group)
     const groupPolicy = this.groupManager ? this.groupManager.resolvePolicy(apiKey, keyRecord) : null;
 
@@ -313,6 +323,22 @@ export class Gate {
         totalCredits: 0,
         decisions: calls.map(() => ({ allowed: false, reason, creditsCharged: 0, remainingCredits: 0 })),
         remainingCredits: 0,
+        reason,
+        failedIndex: 0,
+      };
+    }
+
+    // Step 2b: Suspended key?
+    if (keyRecord.suspended) {
+      const reason = 'key_suspended';
+      if (this.config.shadowMode) {
+        return this.shadowBatchResult(calls, `shadow:${reason}`);
+      }
+      return {
+        allAllowed: false,
+        totalCredits: 0,
+        decisions: calls.map(() => ({ allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits })),
+        remainingCredits: keyRecord.credits,
         reason,
         failedIndex: 0,
       };

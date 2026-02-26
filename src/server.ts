@@ -372,6 +372,10 @@ export class PayGateServer {
         break;
       case '/keys/revoke':
         return this.handleRevokeKey(req, res);
+      case '/keys/suspend':
+        return this.handleSuspendKey(req, res);
+      case '/keys/resume':
+        return this.handleResumeKey(req, res);
       case '/keys/rotate':
         return this.handleRotateKey(req, res);
       case '/keys/acl':
@@ -913,7 +917,9 @@ export class PayGateServer {
         status: 'GET /status — Usage data JSON (requires X-Admin-Key)',
         createKey: 'POST /keys — Create API key (requires X-Admin-Key)',
         listKeys: 'GET /keys — List API keys (requires X-Admin-Key)',
-        revokeKey: 'POST /keys/revoke — Revoke a key (requires X-Admin-Key)',
+        revokeKey: 'POST /keys/revoke — Revoke a key permanently (requires X-Admin-Key)',
+        suspendKey: 'POST /keys/suspend — Temporarily suspend a key (requires X-Admin-Key)',
+        resumeKey: 'POST /keys/resume — Resume a suspended key (requires X-Admin-Key)',
         rotateKey: 'POST /keys/rotate — Rotate a key (requires X-Admin-Key)',
         setAcl: 'POST /keys/acl — Set tool ACL (requires X-Admin-Key)',
         setExpiry: 'POST /keys/expiry — Set key expiry (requires X-Admin-Key)',
@@ -1614,6 +1620,136 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Key revoked' }));
+  }
+
+  // ─── /keys/suspend — Temporarily suspend a key ─────────────────────────────
+
+  private async handleSuspendKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; reason?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    const record = this.gate.store.getKeyRaw(params.key);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    if (!record.active) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot suspend a revoked key' }));
+      return;
+    }
+
+    if (record.suspended) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key is already suspended' }));
+      return;
+    }
+
+    const success = this.gate.store.suspendKey(params.key);
+    if (!success) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to suspend key' }));
+      return;
+    }
+    this.syncKeyMutation(params.key);
+
+    this.audit.log('key.suspended', 'admin', `Key suspended${params.reason ? ': ' + params.reason : ''}`, {
+      keyMasked: maskKeyForAudit(params.key),
+      reason: params.reason || null,
+    });
+    this.emitWebhookAdmin('key.suspended', 'admin', {
+      keyMasked: maskKeyForAudit(params.key),
+      reason: params.reason || null,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Key suspended', suspended: true }));
+  }
+
+  // ─── /keys/resume — Resume a suspended key ────────────────────────────────
+
+  private async handleResumeKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    const record = this.gate.store.getKeyRaw(params.key);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    if (!record.active) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot resume a revoked key' }));
+      return;
+    }
+
+    if (!record.suspended) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key is not suspended' }));
+      return;
+    }
+
+    const success = this.gate.store.resumeKey(params.key);
+    if (!success) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to resume key' }));
+      return;
+    }
+    this.syncKeyMutation(params.key);
+
+    this.audit.log('key.resumed', 'admin', 'Key resumed', {
+      keyMasked: maskKeyForAudit(params.key),
+    });
+    this.emitWebhookAdmin('key.resumed', 'admin', {
+      keyMasked: maskKeyForAudit(params.key),
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Key resumed', suspended: false }));
   }
 
   // ─── /keys/rotate — Rotate API key ─────────────────────────────────────────

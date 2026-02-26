@@ -70,6 +70,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Bulk Key Operations** — Execute multiple key operations (create, topup, revoke) in a single request with per-operation error handling and index tracking
 - **Key Import/Export** — Export all API keys for backup/migration (JSON or CSV) and import with conflict resolution (skip, overwrite, error modes)
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
+- **Key Suspension** — Temporarily disable API keys without revoking them — suspended keys are denied at the gate but can be resumed, and admin operations (topup, ACL, etc.) still work on suspended keys
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -288,7 +289,9 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys/bulk` | POST | `X-Admin-Key` | Execute multiple key operations (create, topup, revoke) in one request |
 | `/keys/export` | GET | `X-Admin-Key` | Export all API keys for backup/migration (JSON or CSV) |
 | `/keys/import` | POST | `X-Admin-Key` | Import API keys from backup with conflict resolution |
-| `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
+| `/keys/revoke` | POST | `X-Admin-Key` | Permanently revoke an API key |
+| `/keys/suspend` | POST | `X-Admin-Key` | Temporarily suspend a key (reversible) |
+| `/keys/resume` | POST | `X-Admin-Key` | Resume a suspended key |
 | `/keys/rotate` | POST | `X-Admin-Key` | Rotate key (new key, same credits/ACL/quotas) |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
 | `/keys/expiry` | POST | `X-Admin-Key` | Set or remove key expiry (TTL) |
@@ -1022,6 +1025,30 @@ curl -X POST http://localhost:3402/keys/rotate \
 ```
 
 The old key is immediately invalidated. All state (credits, totalSpent, totalCalls, ACL, quota, expiry, spending limit) transfers to the new key. Use this for periodic key rotation policies, compromised key response, or key migration.
+
+### Key Suspension & Resumption
+
+Temporarily disable an API key without permanently revoking it. Suspended keys are denied at the gate (`key_suspended` reason), but admin operations (topup, ACL, quota, tags, etc.) still work — making this ideal for investigating abuse, pausing billing, or temporary lockouts:
+
+```bash
+# Suspend a key (with optional reason for audit trail)
+curl -X POST http://localhost:3402/keys/suspend \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_abc123...", "reason": "investigating abuse"}'
+# → { "message": "Key suspended", "suspended": true }
+
+# Resume a suspended key
+curl -X POST http://localhost:3402/keys/resume \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_abc123..."}'
+# → { "message": "Key resumed", "suspended": false }
+```
+
+**Suspension vs Revocation:**
+- **Suspend** — Reversible. Key remains active but is denied at the gate. Admin operations still work. Use for temporary lockouts.
+- **Revoke** — Permanent. Key is deactivated and cannot be restored. Use for compromised or decommissioned keys.
+
+Suspension fires `key.suspended` and `key.resumed` audit events and webhook notifications. Shadow mode allows suspended keys through (with `shadow:key_suspended` reason) for testing.
 
 ### IP Allowlisting
 

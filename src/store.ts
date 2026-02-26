@@ -378,6 +378,30 @@ export class KeyStore {
   }
 
   /**
+   * Suspend an API key (temporarily disable). Unlike revocation, suspension is reversible.
+   * Returns false if key not found or already revoked (inactive).
+   */
+  suspendKey(key: string): boolean {
+    const record = this.keys.get(key);
+    if (!record || !record.active) return false;
+    record.suspended = true;
+    this.save();
+    return true;
+  }
+
+  /**
+   * Resume a suspended API key. Returns false if key not found, not active, or not suspended.
+   */
+  resumeKey(key: string): boolean {
+    const record = this.keys.get(key);
+    if (!record || !record.active) return false;
+    if (!record.suspended) return false;
+    record.suspended = false;
+    this.save();
+    return true;
+  }
+
+  /**
    * Rotate an API key — generate a new key string while preserving all
    * credits, ACL, quotas, spending limits, and metadata. The old key is
    * immediately invalidated.
@@ -482,6 +506,7 @@ export class KeyStore {
         ipAllowlist: Array.isArray(record.ipAllowlist) ? record.ipAllowlist.filter(t => typeof t === 'string') : [],
         namespace: String(record.namespace || 'default'),
         group: record.group,
+        suspended: record.suspended || false,
         autoTopup: record.autoTopup,
         autoTopupTodayCount: Number(record.autoTopupTodayCount) || 0,
         autoTopupLastResetDay: record.autoTopupLastResetDay || new Date().toISOString().slice(0, 10),
@@ -636,6 +661,8 @@ export class KeyStore {
           // Backfill v3.2.0 auto-topup tracking
           if (record.autoTopupTodayCount === undefined) record.autoTopupTodayCount = 0;
           if (!record.autoTopupLastResetDay) record.autoTopupLastResetDay = new Date().toISOString().slice(0, 10);
+          // Backfill v4.4.0 suspended field (undefined = not suspended)
+          // No explicit backfill needed — undefined treated as false
           this.keys.set(key, record);
         }
       }

@@ -190,6 +190,8 @@ export interface ApiKeyRecord {
   namespace: string;
   /** Key group ID. Keys in a group inherit group policies. Undefined = no group. */
   group?: string;
+  /** Whether the key is temporarily suspended. Suspended keys are denied but can be resumed (unlike revocation which is permanent). */
+  suspended?: boolean;
   /** Auto-topup configuration. Undefined = disabled. */
   autoTopup?: {
     /** Trigger auto-topup when credits drop below this threshold. */
