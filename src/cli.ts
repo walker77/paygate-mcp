@@ -71,6 +71,7 @@ function printUsage(): void {
     --webhook-url <url>    POST usage events to this URL (batched)
     --webhook-secret <s>   HMAC-SHA256 secret for webhook signatures
     --refund-on-failure    Refund credits when downstream tool call fails
+    --redis-url <url>      Redis URL for distributed state (e.g. "redis://localhost:6379")
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -142,6 +143,8 @@ interface ConfigFile {
     refreshTokenTtl?: number;
     scopes?: string[];
   };
+  /** Redis URL for distributed state */
+  redisUrl?: string;
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -207,6 +210,7 @@ async function main(): Promise<void> {
       const webhookUrl = flags['webhook-url'] || fileConfig.webhookUrl || null;
       const webhookSecret = flags['webhook-secret'] || fileConfig.webhookSecret || null;
       const refundOnFailure = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || fileConfig.refundOnFailure || false;
+      const redisUrl = flags['redis-url'] || fileConfig.redisUrl || undefined;
 
       // Parse global quota from config file
       const globalQuota = fileConfig.globalQuota ? {
@@ -230,7 +234,7 @@ async function main(): Promise<void> {
         refundOnFailure: !!refundOnFailure,
         globalQuota,
         oauth: fileConfig.oauth,
-      }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers);
+      }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Import keys from CLI flags
       if (flags['import-key']) {
@@ -290,6 +294,7 @@ async function main(): Promise<void> {
   ║  Refund:     ${String(!!refundOnFailure).padEnd(35)}║
   ║  Webhook:    ${(webhookUrl ? webhookUrl.slice(0, 33) : 'off').padEnd(35)}║
   ║  Signed:     ${(webhookSecret ? 'HMAC-SHA256' : 'off').padEnd(35)}║
+  ║  Redis:      ${(redisUrl ? redisUrl.slice(0, 33) : 'off (in-memory)').padEnd(35)}║
   ║                                                  ║
   ╠══════════════════════════════════════════════════╣
   ║  POST /mcp       — JSON-RPC (X-API-Key header)  ║

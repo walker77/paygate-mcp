@@ -38,6 +38,8 @@ import { getDashboardHtml } from './dashboard';
 import { AnalyticsEngine } from './analytics';
 import { AlertEngine, Alert } from './alerts';
 import { TeamManager } from './teams';
+import { RedisClient, parseRedisUrl } from './redis-client';
+import { RedisSync } from './redis-sync';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -81,6 +83,8 @@ export class PayGateServer {
   readonly alerts: AlertEngine;
   /** Team/organization manager */
   readonly teams: TeamManager;
+  /** Redis sync adapter for distributed state (null if not using Redis) */
+  readonly redisSync: RedisSync | null = null;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -94,6 +98,7 @@ export class PayGateServer {
     remoteUrl?: string,
     stripeWebhookSecret?: string,
     servers?: ServerBackendConfig[],
+    redisUrl?: string,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.adminKey = adminKey || `admin_${require('crypto').randomBytes(16).toString('hex')}`;
@@ -175,9 +180,22 @@ export class PayGateServer {
     this.gate.teamRecorder = (apiKey: string, credits: number) => {
       this.teams.recordUsage(apiKey, credits);
     };
+
+    // Redis distributed state (if configured)
+    if (redisUrl) {
+      const redisOpts = parseRedisUrl(redisUrl);
+      const redisClient = new RedisClient(redisOpts);
+      (this as any).redisSync = new RedisSync(redisClient, this.gate.store);
+    }
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
+    // Initialize Redis sync before starting (loads state from Redis)
+    if (this.redisSync) {
+      await this.redisSync.init();
+      console.log('[paygate] Redis distributed state enabled');
+    }
+
     await this.handler.start();
 
     return new Promise((resolve, reject) => {
@@ -629,6 +647,7 @@ export class PayGateServer {
       },
       shadowMode: this.config.shadowMode,
       oauth: !!this.oauth,
+      redis: !!this.redisSync,
     }));
   }
 
@@ -2168,6 +2187,9 @@ export class PayGateServer {
     this.oauth?.destroy();
     this.sessions.destroy();
     this.audit.destroy();
+    if (this.redisSync) {
+      await this.redisSync.destroy();
+    }
     if (this.server) {
       return new Promise((resolve) => {
         this.server!.close(() => resolve());

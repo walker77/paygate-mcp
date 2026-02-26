@@ -53,6 +53,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Usage Analytics** — Time-series analytics API with tool breakdown, top consumers, and trend comparison
 - **Alert Webhooks** — Configurable alerts for spending thresholds, low credits, quota warnings, key expiry, rate limit spikes
 - **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
+- **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -327,6 +328,7 @@ These MCP methods pass through without auth or billing:
 --webhook-url <url>  POST batched usage events to this URL
 --webhook-secret <s> HMAC-SHA256 secret for signing webhook payloads
 --refund-on-failure  Refund credits when downstream tool call fails
+--redis-url <url>    Redis URL for distributed state (e.g. "redis://localhost:6379")
 --config <path>      Load settings from a JSON config file
 ```
 
@@ -923,6 +925,69 @@ X-Credits-Remaining: 4500     # Credits remaining on the key
 
 When a tool has a per-tool rate limit, the headers reflect that tool's limit (not the global limit). These headers are CORS-exposed so browser-based agents can read them.
 
+### Horizontal Scaling (Redis)
+
+Enable Redis-backed state for multi-process deployments. Multiple PayGate instances share API keys, credits, and usage data through Redis:
+
+```bash
+# Single instance with Redis persistence
+npx paygate-mcp wrap --server "your-mcp-server" --redis-url "redis://localhost:6379"
+
+# With password and database
+npx paygate-mcp wrap --server "your-mcp-server" \
+  --redis-url "redis://:mypassword@redis.internal:6379/2"
+```
+
+Or in a config file:
+```json
+{
+  "serverCommand": "your-mcp-server",
+  "redisUrl": "redis://localhost:6379"
+}
+```
+
+**Architecture: Write-Through Cache**
+
+PayGate uses a write-through cache pattern for maximum performance:
+
+- **Reads** — Served from in-memory KeyStore (zero latency, no Redis round-trip)
+- **Writes** — Propagated to Redis for cross-process shared state
+- **Credit deduction** — Uses Redis Lua scripts for atomic check-and-deduct (prevents double-spend across processes)
+- **Periodic sync** — Local caches refresh from Redis every 5 seconds to pick up changes from other instances
+
+This means Gate.evaluate() stays synchronous and fast, while credit operations remain atomic across your entire fleet.
+
+**What Gets Synced**
+
+| State | Redis Key Pattern | Sync Method |
+|-------|-------------------|-------------|
+| API keys | `pg:key:<keyId>` (Hash) | Write-through + periodic refresh |
+| Key registry | `pg:keys` (Set) | Write-through |
+| Credit deduction | `pg:key:<keyId>` | Atomic Lua script |
+| Credit top-up | `pg:key:<keyId>` | Atomic Lua script |
+
+**Deployment Pattern**
+
+```
+                    ┌──────────────┐
+                    │   Redis 7+   │
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+        ┌─────┴─────┐ ┌───┴───┐ ┌─────┴─────┐
+        │ PayGate 1 │ │  PG 2 │ │ PayGate 3 │
+        └─────┬─────┘ └───┬───┘ └─────┬─────┘
+              │            │            │
+        ┌─────┴────────────┴────────────┴─────┐
+        │          Load Balancer               │
+        └──────────────────────────────────────┘
+```
+
+**Graceful Fallback** — If Redis is temporarily unavailable, PayGate falls back to local in-memory operations. On reconnect, state syncs automatically.
+
+**Zero Dependencies** — The Redis client uses Node.js `net.Socket` with raw RESP protocol encoding. No `ioredis`, no `redis` package — pure built-in networking.
+
 ### Config File Mode
 
 Load all settings from a JSON file instead of CLI flags:
@@ -953,6 +1018,7 @@ Example `paygate.json`:
     "accessTokenTtl": 3600,
     "scopes": ["tools:*"]
   },
+  "redisUrl": "redis://localhost:6379",
   "importKeys": {
     "pg_abc123def456": 500
   }
@@ -987,6 +1053,13 @@ const multiServer = new PayGateServer(
     { prefix: 'fs', serverCommand: 'npx', serverArgs: ['@modelcontextprotocol/server-filesystem', '/tmp'] },
     { prefix: 'api', remoteUrl: 'https://my-mcp-server.example.com/mcp' },
   ]
+);
+
+// With Redis for horizontal scaling
+const redisServer = new PayGateServer(
+  { serverCommand: 'npx', serverArgs: ['my-mcp-server'], port: 3402, defaultCreditsPerCall: 1 },
+  undefined, undefined, undefined, undefined, undefined,
+  'redis://localhost:6379'
 );
 
 // Client SDK
@@ -1028,12 +1101,15 @@ const result = await client.callTool('search', { query: 'hello' });
 - Team budgets enforce integer arithmetic (no float bypass)
 - Keys masked in team usage summaries (first 7 + last 4 chars only)
 - Team quota resets atomic at UTC day/month boundaries
+- Redis credit deduction uses Lua scripts for atomic check-and-deduct (no double-spend)
+- Redis auth supported via password in URL (redis://:password@host:port)
+- Graceful Redis fallback — local operations continue if Redis disconnects
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
 
-- **Single process** — No clustering or horizontal scaling.
 - **No response size limits for HTTP transport** — Large responses from remote servers are forwarded as-is.
+- **Redis sync is eventual** — Cross-process state refreshes every 5 seconds (credit deduction is always atomic).
 
 ## Roadmap
 
@@ -1068,7 +1144,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Usage analytics — Time-series analytics API with tool breakdown, trends, and top consumers
 - [x] Alert webhooks — Configurable threshold alerts (spending, credits, quota, expiry, rate limits)
 - [x] Team management — Group API keys with shared budgets, quotas, and usage tracking
-- [ ] Horizontal scaling — Redis-backed state for multi-process deployments
+- [x] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements
 
