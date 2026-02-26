@@ -241,6 +241,8 @@ export interface ApiKeyRecord {
   quotaLastResetDay: string;
   /** Last monthly quota reset (ISO month string YYYY-MM). */
   quotaLastResetMonth: string;
+  /** Timestamped notes/comments attached to this key. */
+  notes?: Array<{ timestamp: string; author: string; text: string }>;
 }
 
 // ─── Metering ───────────────────────────────────────────────────────────────────

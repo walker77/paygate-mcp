@@ -87,7 +87,10 @@ export type AuditEventType =
   | 'config.export'
   // Maintenance
   | 'maintenance.enabled'
-  | 'maintenance.disabled';
+  | 'maintenance.disabled'
+  // Key notes
+  | 'key.note_added'
+  | 'key.note_deleted';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

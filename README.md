@@ -96,6 +96,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Health Score** — `GET /keys/health?key=...` returns composite health score (0–100) with weighted component breakdown: balance health (30%), quota utilization (25%), rate limit pressure (20%), error rate (25%) — status levels (healthy/good/caution/warning/critical), key issue detection (revoked/suspended/expired/expiring/zero credits), alias support
 - **Maintenance Mode** — `POST /maintenance` enables/disables maintenance mode with custom message — `/mcp` returns 503 to clients while admin endpoints stay operational, `GET /maintenance` checks status, `GET /health` reflects maintenance state, full audit trail
 - **Admin Event Stream** — `GET /admin/events` SSE endpoint streams real-time audit events to admin clients — tool calls, denials, key operations, maintenance changes, all with optional `?types=` filter for event type filtering, keepalive pings, multi-client support
+- **Key Notes** — `POST /keys/notes` adds timestamped notes to API keys, `GET /keys/notes?key=...` lists notes, `DELETE /keys/notes?key=...&index=N` removes notes — max 50 per key, 1000 char limit, works on suspended/revoked keys, alias support, audit trail
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1929,6 +1930,39 @@ data: {"id":43,"timestamp":"2025-03-15T14:30:01.000Z","type":"gate.allow","actor
 ```
 
 Every audit event (tool calls, denials, key operations, maintenance, alerts) is broadcast in real-time. Use `?types=` to filter by comma-separated event types. Supports multiple concurrent admin clients. Keepalive pings every 15s prevent connection timeouts. Connections are cleaned up automatically on disconnect.
+
+### Key Notes
+
+Attach timestamped notes to API keys for operational tracking:
+
+```bash
+# Add a note
+curl -X POST http://localhost:3402/keys/notes \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "text": "Increased credits per customer request #1234"}'
+
+# List notes
+curl "http://localhost:3402/keys/notes?key=pg_..." -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Delete a note by index
+curl -X DELETE "http://localhost:3402/keys/notes?key=pg_...&index=0" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response (list):**
+
+```json
+{
+  "key": "pg_abc1...2345",
+  "notes": [
+    { "timestamp": "2025-03-15T14:30:00.000Z", "author": "admin", "text": "Increased credits per customer request #1234" },
+    { "timestamp": "2025-03-16T09:00:00.000Z", "author": "admin", "text": "Upgraded to premium tier" }
+  ],
+  "count": 2
+}
+```
+
+Max 50 notes per key, 1000 characters per note. Works on suspended and revoked keys. Supports aliases. All add/delete operations recorded in audit trail (`key.note_added` / `key.note_deleted`).
 
 ### IP Allowlisting
 

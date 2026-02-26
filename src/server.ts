@@ -564,6 +564,13 @@ export class PayGateServer {
         return this.handleCloneKey(req, res);
       case '/keys/alias':
         return this.handleSetAlias(req, res);
+      case '/keys/notes':
+        if (req.method === 'GET') return this.handleGetNotes(req, res);
+        if (req.method === 'POST') return this.handleAddNote(req, res);
+        if (req.method === 'DELETE') return this.handleDeleteNote(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
       case '/keys/rotate':
         return this.handleRotateKey(req, res);
       case '/keys/acl':
@@ -1228,6 +1235,7 @@ export class PayGateServer {
         configExport: 'GET /config — Export running config with sensitive values masked (requires X-Admin-Key)',
         maintenance: 'GET /maintenance — Check status + POST to enable/disable maintenance mode (requires X-Admin-Key)',
         adminEvents: 'GET /admin/events — Real-time SSE stream of server events (requires X-Admin-Key, Accept: text/event-stream)',
+        keyNotes: 'GET /keys/notes?key=... — List notes + POST to add + DELETE to remove (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4291,6 +4299,146 @@ export class PayGateServer {
         this.adminEventKeepAliveTimer = null;
       }
     });
+  }
+
+  // ─── /keys/notes — Timestamped notes on API keys ─────────────────────────
+
+  private handleGetNotes(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keyParam = params.get('key');
+
+    if (!keyParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+
+    const record = this.gate.store.resolveKeyRaw(keyParam);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const notes = record.notes || [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ key: maskKeyForAudit(record.key), notes, count: notes.length }));
+  }
+
+  private handleAddNote(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk; });
+    req.on('end', () => {
+      let params: { key?: string; text?: string };
+      try {
+        params = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+
+      if (!params.key || typeof params.key !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: key' }));
+        return;
+      }
+      if (!params.text || typeof params.text !== 'string' || !params.text.trim()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: text (non-empty string)' }));
+        return;
+      }
+      if (params.text.length > 1000) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Note text must be 1000 characters or less' }));
+        return;
+      }
+
+      const record = this.gate.store.resolveKeyRaw(params.key);
+      if (!record) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key not found' }));
+        return;
+      }
+
+      if (!record.notes) record.notes = [];
+
+      // Cap at 50 notes per key
+      if (record.notes.length >= 50) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Maximum 50 notes per key reached. Delete old notes first.' }));
+        return;
+      }
+
+      const note = {
+        timestamp: new Date().toISOString(),
+        author: 'admin',
+        text: params.text.trim(),
+      };
+      record.notes.push(note);
+      this.gate.store.save();
+
+      this.audit.log('key.note_added', 'admin', `Note added to key`, {
+        key: maskKeyForAudit(record.key),
+        text: note.text.slice(0, 100),
+      });
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ note, count: record.notes.length }));
+    });
+  }
+
+  private handleDeleteNote(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keyParam = params.get('key');
+    const indexParam = params.get('index');
+
+    if (!keyParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+    if (indexParam === null || indexParam === undefined) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: index' }));
+      return;
+    }
+
+    const record = this.gate.store.resolveKeyRaw(keyParam);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const notes = record.notes || [];
+    const index = parseInt(indexParam, 10);
+    if (isNaN(index) || index < 0 || index >= notes.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Invalid index: ${indexParam}. Must be 0-${notes.length - 1}` }));
+      return;
+    }
+
+    const deleted = notes.splice(index, 1)[0];
+    record.notes = notes;
+    this.gate.store.save();
+
+    this.audit.log('key.note_deleted', 'admin', `Note deleted from key`, {
+      key: maskKeyForAudit(record.key),
+      text: deleted.text.slice(0, 100),
+      index,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ deleted, remaining: notes.length }));
   }
 
   // ─── /config/reload — Hot reload configuration from file ─────────────────
