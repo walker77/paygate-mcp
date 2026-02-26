@@ -29,6 +29,10 @@ export class Gate {
   teamChecker?: (apiKey: string, credits: number) => { allowed: boolean; reason?: string };
   /** Optional team usage recorder injected by server. */
   teamRecorder?: (apiKey: string, credits: number) => void;
+  /** Optional hook called after every usage event is recorded (for Redis sync). */
+  onUsageEvent?: (event: UsageEvent) => void;
+  /** Optional hook called after credits are deducted (for Redis sync). */
+  onCreditsDeducted?: (apiKey: string, amount: number) => void;
 
   constructor(config: PayGateConfig, statePath?: string) {
     this.config = config;
@@ -172,6 +176,7 @@ export class Gate {
 
     // Step 9: ALLOW — deduct credits, record usage, and update quotas
     this.store.deductCredits(apiKey, creditsRequired);
+    this.onCreditsDeducted?.(apiKey, creditsRequired);
     this.rateLimiter.record(apiKey);
     // Record per-tool rate limit usage
     if (toolPricing?.rateLimitPerMin && toolPricing.rateLimitPerMin > 0) {
@@ -322,5 +327,6 @@ export class Gate {
     };
     this.meter.record(event);
     this.webhook?.emit(event);
+    this.onUsageEvent?.(event);
   }
 }

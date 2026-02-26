@@ -185,7 +185,16 @@ export class PayGateServer {
     if (redisUrl) {
       const redisOpts = parseRedisUrl(redisUrl);
       const redisClient = new RedisClient(redisOpts);
-      (this as any).redisSync = new RedisSync(redisClient, this.gate.store);
+      const sync = new RedisSync(redisClient, this.gate.store);
+      (this as any).redisSync = sync;
+
+      // Wire Redis hooks: fire-and-forget async operations on every gate event
+      this.gate.onUsageEvent = (event) => {
+        sync.recordUsage(event).catch(() => {});
+      };
+      this.gate.onCreditsDeducted = (apiKey, amount) => {
+        sync.atomicDeduct(apiKey, amount).catch(() => {});
+      };
     }
   }
 

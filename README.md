@@ -955,7 +955,7 @@ PayGate uses a write-through cache pattern for maximum performance:
 - **Credit deduction** — Uses Redis Lua scripts for atomic check-and-deduct (prevents double-spend across processes)
 - **Periodic sync** — Local caches refresh from Redis every 5 seconds to pick up changes from other instances
 
-This means Gate.evaluate() stays synchronous and fast, while credit operations remain atomic across your entire fleet.
+This means Gate.evaluate() stays synchronous and fast, while credit operations remain atomic across your entire fleet. The server automatically wires Redis hooks into the gate — every usage event and credit deduction flows to Redis without any code changes.
 
 **What Gets Synced**
 

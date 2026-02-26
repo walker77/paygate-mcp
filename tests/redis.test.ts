@@ -402,6 +402,207 @@ describe('Rate Limiter Lua script', () => {
   });
 });
 
+// ─── Gate hook wiring tests ──────────────────────────────────────────────────
+
+describe('Gate Redis hooks', () => {
+  it('should have onUsageEvent hook property', () => {
+    const { Gate } = require('../src/gate');
+    const gate = new Gate({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port: 0,
+      defaultCreditsPerCall: 1,
+      globalRateLimitPerMin: 60,
+      freeMethods: ['initialize', 'ping'],
+      toolPricing: {},
+      shadowMode: false,
+      webhookUrl: null,
+      webhookSecret: null,
+      refundOnFailure: false,
+      name: 'test',
+    });
+    expect(gate.onUsageEvent).toBeUndefined();
+    // Should be settable
+    const events: any[] = [];
+    gate.onUsageEvent = (event: any) => events.push(event);
+    expect(typeof gate.onUsageEvent).toBe('function');
+  });
+
+  it('should have onCreditsDeducted hook property', () => {
+    const { Gate } = require('../src/gate');
+    const gate = new Gate({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port: 0,
+      defaultCreditsPerCall: 1,
+      globalRateLimitPerMin: 60,
+      freeMethods: ['initialize', 'ping'],
+      toolPricing: {},
+      shadowMode: false,
+      webhookUrl: null,
+      webhookSecret: null,
+      refundOnFailure: false,
+      name: 'test',
+    });
+    expect(gate.onCreditsDeducted).toBeUndefined();
+    const deductions: any[] = [];
+    gate.onCreditsDeducted = (key: string, amt: number) => deductions.push({ key, amt });
+    expect(typeof gate.onCreditsDeducted).toBe('function');
+  });
+
+  it('should fire onUsageEvent when gate evaluates', () => {
+    const { Gate } = require('../src/gate');
+    const gate = new Gate({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port: 0,
+      defaultCreditsPerCall: 1,
+      globalRateLimitPerMin: 60,
+      freeMethods: ['initialize', 'ping'],
+      toolPricing: {},
+      shadowMode: false,
+      webhookUrl: null,
+      webhookSecret: null,
+      refundOnFailure: false,
+      name: 'test',
+    });
+
+    const events: any[] = [];
+    gate.onUsageEvent = (event: any) => events.push(event);
+
+    // Create a key and evaluate
+    const record = gate.store.createKey('test-key', 100);
+    gate.evaluate(record.key, { name: 'search', arguments: {} });
+
+    // Should have recorded at least one usage event
+    expect(events.length).toBe(1);
+    expect(events[0].tool).toBe('search');
+    expect(events[0].allowed).toBe(true);
+    expect(events[0].creditsCharged).toBe(1);
+  });
+
+  it('should fire onCreditsDeducted when gate allows', () => {
+    const { Gate } = require('../src/gate');
+    const gate = new Gate({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port: 0,
+      defaultCreditsPerCall: 5,
+      globalRateLimitPerMin: 60,
+      freeMethods: ['initialize', 'ping'],
+      toolPricing: {},
+      shadowMode: false,
+      webhookUrl: null,
+      webhookSecret: null,
+      refundOnFailure: false,
+      name: 'test',
+    });
+
+    const deductions: any[] = [];
+    gate.onCreditsDeducted = (key: string, amt: number) => deductions.push({ key, amt });
+
+    const record = gate.store.createKey('test-key', 100);
+    gate.evaluate(record.key, { name: 'search', arguments: {} });
+
+    expect(deductions.length).toBe(1);
+    expect(deductions[0].key).toBe(record.key);
+    expect(deductions[0].amt).toBe(5);
+  });
+
+  it('should NOT fire onCreditsDeducted when gate denies', () => {
+    const { Gate } = require('../src/gate');
+    const gate = new Gate({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port: 0,
+      defaultCreditsPerCall: 1,
+      globalRateLimitPerMin: 60,
+      freeMethods: ['initialize', 'ping'],
+      toolPricing: {},
+      shadowMode: false,
+      webhookUrl: null,
+      webhookSecret: null,
+      refundOnFailure: false,
+      name: 'test',
+    });
+
+    const deductions: any[] = [];
+    gate.onCreditsDeducted = (key: string, amt: number) => deductions.push({ key, amt });
+
+    // Evaluate with no key (should deny)
+    gate.evaluate(null, { name: 'search', arguments: {} });
+
+    expect(deductions.length).toBe(0);
+  });
+
+  it('should fire onUsageEvent for denied calls too', () => {
+    const { Gate } = require('../src/gate');
+    const gate = new Gate({
+      serverCommand: 'echo',
+      serverArgs: ['test'],
+      port: 0,
+      defaultCreditsPerCall: 1,
+      globalRateLimitPerMin: 60,
+      freeMethods: ['initialize', 'ping'],
+      toolPricing: {},
+      shadowMode: false,
+      webhookUrl: null,
+      webhookSecret: null,
+      refundOnFailure: false,
+      name: 'test',
+    });
+
+    const events: any[] = [];
+    gate.onUsageEvent = (event: any) => events.push(event);
+
+    // Evaluate with no key (denied)
+    gate.evaluate(null, { name: 'search', arguments: {} });
+
+    expect(events.length).toBe(1);
+    expect(events[0].allowed).toBe(false);
+    expect(events[0].denyReason).toBe('missing_api_key');
+  });
+
+  it('server should wire hooks when redisUrl is provided', () => {
+    const server = new PayGateServer(
+      {
+        serverCommand: 'echo',
+        serverArgs: ['test'],
+        port: 0,
+        defaultCreditsPerCall: 1,
+        globalRateLimitPerMin: 60,
+      },
+      'admin_test123',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'redis://localhost:6379'
+    );
+
+    // Hooks should be set
+    expect(server.gate.onUsageEvent).toBeDefined();
+    expect(server.gate.onCreditsDeducted).toBeDefined();
+  });
+
+  it('server should NOT wire hooks when no redisUrl', () => {
+    const server = new PayGateServer(
+      {
+        serverCommand: 'echo',
+        serverArgs: ['test'],
+        port: 0,
+        defaultCreditsPerCall: 1,
+        globalRateLimitPerMin: 60,
+      },
+      'admin_test123'
+    );
+
+    // Hooks should be undefined
+    expect(server.gate.onUsageEvent).toBeUndefined();
+    expect(server.gate.onCreditsDeducted).toBeUndefined();
+  });
+});
+
 // ─── CLI config tests ────────────────────────────────────────────────────────
 
 describe('CLI --redis-url', () => {
