@@ -70,6 +70,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Bulk Key Operations** — Execute multiple key operations (create, topup, revoke) in a single request with per-operation error handling and index tracking
 - **Key Import/Export** — Export all API keys for backup/migration (JSON or CSV) and import with conflict resolution (skip, overwrite, error modes)
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
+- **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
 - **Shadow Mode** — Log everything without enforcing payment (for testing)
@@ -342,6 +343,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/webhooks/filters/update` | POST | `X-Admin-Key` | Update a webhook filter rule |
 | `/webhooks/filters/delete` | POST | `X-Admin-Key` | Delete a webhook filter rule |
 | `/webhooks/replay` | POST | `X-Admin-Key` | Replay dead letter webhook events (all or by index) |
+| `/config/reload` | POST | `X-Admin-Key` | Hot-reload config file (pricing, rate limits, webhooks, quotas) |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
 
@@ -1973,6 +1975,49 @@ Example `paygate.json`:
 ```
 
 CLI flags override config file values when both are specified.
+
+### Config Hot Reload
+
+Reload pricing, rate limits, webhooks, quotas, and behavior flags from your config file without restarting the server:
+
+```bash
+# Reload from the config file used at startup
+curl -X POST http://localhost:3402/config/reload \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# One-time reload from a different config file
+curl -X POST http://localhost:3402/config/reload \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"configPath": "/path/to/updated-config.json"}'
+```
+
+**Hot-reloadable fields** (take effect immediately):
+- `defaultCreditsPerCall`, `toolPricing` — pricing changes
+- `globalRateLimitPerMin` — rate limit adjustment
+- `shadowMode`, `refundOnFailure` — behavior flags
+- `freeMethods` — free method list
+- `globalQuota` — daily/monthly call and credit limits
+- `webhookUrl`, `webhookSecret`, `webhookMaxRetries` — webhook infrastructure (rebuilt)
+- `alertRules` — alert thresholds and rules
+
+**Non-reloadable fields** (reported as skipped, require restart):
+- `serverCommand`, `serverArgs` — backend MCP server process
+- `port` — listening port
+- `oauth` — OAuth 2.1 configuration
+
+Response includes changed fields, skipped fields, and any validation warnings:
+```json
+{
+  "ok": true,
+  "changed": ["defaultCreditsPerCall", "globalRateLimitPerMin"],
+  "skipped": [],
+  "warnings": [],
+  "message": "Config reloaded: 2 fields updated"
+}
+```
+
+The config file is validated before applying changes — invalid configs are rejected with detailed error messages and zero changes applied.
 
 ## Programmatic API
 

@@ -18,7 +18,7 @@ interface WindowEntry {
 
 export class RateLimiter {
   private readonly windowMs: number;
-  private readonly maxCalls: number;
+  private maxCalls: number;
   private windows = new Map<string, WindowEntry>();
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -32,6 +32,29 @@ export class RateLimiter {
     if (maxCallsPerMin > 0) {
       this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
     }
+  }
+
+  /**
+   * Update the global rate limit at runtime. Takes effect immediately.
+   */
+  setGlobalLimit(maxCallsPerMin: number): void {
+    this.maxCalls = maxCallsPerMin;
+
+    // Start cleanup interval if we now have a limit but didn't before
+    if (maxCallsPerMin > 0 && !this.cleanupInterval) {
+      this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
+      if (this.cleanupInterval.unref) this.cleanupInterval.unref();
+    }
+    // Stop cleanup interval if limit is now unlimited
+    if (maxCallsPerMin <= 0 && this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+  }
+
+  /** Get the current global limit */
+  get globalLimit(): number {
+    return this.maxCalls;
   }
 
   check(key: string): RateLimitResult {

@@ -274,6 +274,11 @@ async function main(): Promise<void> {
         oauth: fileConfig.oauth,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
+      // Wire config file path for hot-reload support
+      if (flags['config']) {
+        server.setConfigPath(flags['config']);
+      }
+
       // Import keys from CLI flags
       if (flags['import-key']) {
         const pairs = flags['import-key'].split(',');

@@ -17,6 +17,7 @@ import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG } from './types';
+import { validateConfig, ValidatableConfig } from './config-validator';
 
 /** Read version from package.json at runtime */
 const PKG_VERSION = (() => {
@@ -106,6 +107,8 @@ export class PayGateServer {
   private draining = false;
   /** Number of in-flight /mcp requests */
   private inflight = 0;
+  /** Config file path for hot reload (null if not using config file) */
+  private configPath: string | null = null;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -268,6 +271,14 @@ export class PayGateServer {
       // Wire group manager for Redis sync
       sync.groupManager = this.groups;
     }
+  }
+
+  /**
+   * Set the config file path for hot-reload support.
+   * Called by CLI after parsing --config flag.
+   */
+  setConfigPath(path: string): void {
+    this.configPath = path;
   }
 
   /**
@@ -481,6 +492,9 @@ export class PayGateServer {
         return this.handleAssignKeyToGroup(req, res);
       case '/groups/remove':
         return this.handleRemoveKeyFromGroup(req, res);
+      // ─── Config hot reload ──────────────────────────────────────────
+      case '/config/reload':
+        return this.handleConfigReload(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -948,6 +962,7 @@ export class PayGateServer {
         deleteGroup: 'POST /groups/delete — Delete a key group (requires X-Admin-Key)',
         assignKeyToGroup: 'POST /groups/assign — Assign a key to a group (requires X-Admin-Key)',
         removeKeyFromGroup: 'POST /groups/remove — Remove a key from a group (requires X-Admin-Key)',
+        configReload: 'POST /config/reload — Hot reload config from file (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -2746,6 +2761,146 @@ export class PayGateServer {
       replayed,
       remaining,
       message: `Replayed ${replayed} dead letter entries`,
+    }));
+  }
+
+  // ─── /config/reload — Hot reload configuration from file ─────────────────
+
+  private async handleConfigReload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    // Parse optional body (may provide configPath override)
+    let body: Record<string, unknown> = {};
+    try {
+      const raw = await this.readBody(req);
+      if (raw.trim()) {
+        body = JSON.parse(raw);
+      }
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    const filePath = (body.configPath as string) || this.configPath;
+    if (!filePath) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'No config file path available. Start with --config or provide configPath in request body.',
+      }));
+      return;
+    }
+
+    // Read and parse config file
+    let fileConfig: Record<string, unknown>;
+    try {
+      const raw = readFileSync(filePath, 'utf-8');
+      fileConfig = JSON.parse(raw);
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: `Failed to read config file: ${(err as Error).message}`,
+      }));
+      return;
+    }
+
+    // Validate the loaded config
+    const diags = validateConfig(fileConfig as ValidatableConfig);
+    const errors = diags.filter(d => d.level === 'error');
+    if (errors.length > 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'Config validation failed',
+        diagnostics: errors.map(d => ({ field: d.field, message: d.message })),
+      }));
+      return;
+    }
+
+    // Build a config patch from the file (only hot-reloadable fields)
+    const patch: Partial<PayGateConfig> = {};
+    if (fileConfig.defaultCreditsPerCall !== undefined) {
+      patch.defaultCreditsPerCall = Number(fileConfig.defaultCreditsPerCall);
+    }
+    if (fileConfig.toolPricing !== undefined) {
+      patch.toolPricing = fileConfig.toolPricing as PayGateConfig['toolPricing'];
+    }
+    if (fileConfig.globalRateLimitPerMin !== undefined) {
+      patch.globalRateLimitPerMin = Number(fileConfig.globalRateLimitPerMin);
+    }
+    if (fileConfig.shadowMode !== undefined) {
+      patch.shadowMode = !!fileConfig.shadowMode;
+    }
+    if (fileConfig.refundOnFailure !== undefined) {
+      patch.refundOnFailure = !!fileConfig.refundOnFailure;
+    }
+    if (fileConfig.freeMethods !== undefined) {
+      patch.freeMethods = fileConfig.freeMethods as string[];
+    }
+    if (fileConfig.webhookUrl !== undefined) {
+      patch.webhookUrl = (fileConfig.webhookUrl as string) || null;
+    }
+    if (fileConfig.webhookSecret !== undefined) {
+      patch.webhookSecret = (fileConfig.webhookSecret as string) || null;
+    }
+    if (fileConfig.webhookMaxRetries !== undefined) {
+      patch.webhookMaxRetries = Number(fileConfig.webhookMaxRetries);
+    }
+    if (fileConfig.globalQuota !== undefined) {
+      const q = fileConfig.globalQuota as Record<string, number>;
+      patch.globalQuota = {
+        dailyCallLimit: Math.max(0, Math.floor(Number(q.dailyCallLimit) || 0)),
+        monthlyCallLimit: Math.max(0, Math.floor(Number(q.monthlyCallLimit) || 0)),
+        dailyCreditLimit: Math.max(0, Math.floor(Number(q.dailyCreditLimit) || 0)),
+        monthlyCreditLimit: Math.max(0, Math.floor(Number(q.monthlyCreditLimit) || 0)),
+      };
+    }
+    if (fileConfig.alertRules !== undefined) {
+      patch.alertRules = fileConfig.alertRules as PayGateConfig['alertRules'];
+    }
+
+    // Apply the patch to the gate (mutates shared config object)
+    const changed = this.gate.updateConfig(patch);
+
+    // Update alert engine if rules changed
+    if (changed.includes('alertRules') && patch.alertRules) {
+      this.alerts.setRules(patch.alertRules);
+    }
+
+    // Update stored config path only if not already set (body override is one-time)
+    if (!this.configPath && filePath) {
+      this.configPath = filePath;
+    }
+
+    // Fields that were skipped (not hot-reloadable)
+    const skipped: string[] = [];
+    if (fileConfig.serverCommand !== undefined) skipped.push('serverCommand');
+    if (fileConfig.serverArgs !== undefined) skipped.push('serverArgs');
+    if (fileConfig.port !== undefined) skipped.push('port');
+    if (fileConfig.oauth !== undefined) skipped.push('oauth');
+
+    // Audit
+    this.audit.log('config.reloaded', 'admin', `Config reloaded from ${filePath}: ${changed.length} field(s) changed`, {
+      filePath,
+      changed,
+      skipped,
+    });
+
+    const warnings = diags.filter(d => d.level === 'warning');
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      reloaded: true,
+      changed,
+      skipped,
+      message: changed.length > 0
+        ? `Config reloaded: ${changed.join(', ')} updated`
+        : 'Config reloaded: no changes detected',
+      ...(warnings.length > 0 ? { warnings: warnings.map(w => ({ field: w.field, message: w.message })) } : {}),
     }));
   }
 

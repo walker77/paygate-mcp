@@ -26,9 +26,9 @@ export class Gate {
   readonly rateLimiter: RateLimiter;
   readonly meter: UsageMeter;
   /** Default webhook emitter (backward compat). Use webhookRouter for filtered routing. */
-  readonly webhook: WebhookEmitter | null;
+  webhook: WebhookEmitter | null;
   /** Webhook router with filter rules. Routes events to multiple destinations. */
-  readonly webhookRouter: WebhookRouter | null;
+  webhookRouter: WebhookRouter | null;
   readonly quotaTracker: QuotaTracker;
   private readonly config: PayGateConfig;
   /** Optional plugin manager for extensible hooks. */
@@ -761,6 +761,115 @@ export class Gate {
     this.onAutoTopup?.(apiKey, amount, record.credits);
 
     return true;
+  }
+
+  /**
+   * Hot-reload mutable config fields at runtime.
+   * Updates pricing, rate limits, shadow mode, webhooks, quotas, and refund policy.
+   * Returns a list of field names that actually changed.
+   *
+   * Fields that CANNOT be hot-reloaded (require restart):
+   *   serverCommand, serverArgs, port, oauth
+   */
+  updateConfig(patch: Partial<PayGateConfig>): string[] {
+    const changed: string[] = [];
+
+    // ─── Pricing ──────────────────────────────────────────────────────────
+    if (patch.defaultCreditsPerCall !== undefined && patch.defaultCreditsPerCall !== this.config.defaultCreditsPerCall) {
+      this.config.defaultCreditsPerCall = patch.defaultCreditsPerCall;
+      changed.push('defaultCreditsPerCall');
+    }
+    if (patch.toolPricing !== undefined) {
+      const oldJson = JSON.stringify(this.config.toolPricing);
+      const newJson = JSON.stringify(patch.toolPricing);
+      if (oldJson !== newJson) {
+        this.config.toolPricing = patch.toolPricing;
+        changed.push('toolPricing');
+      }
+    }
+
+    // ─── Rate limit ───────────────────────────────────────────────────────
+    if (patch.globalRateLimitPerMin !== undefined && patch.globalRateLimitPerMin !== this.config.globalRateLimitPerMin) {
+      this.config.globalRateLimitPerMin = patch.globalRateLimitPerMin;
+      this.rateLimiter.setGlobalLimit(patch.globalRateLimitPerMin);
+      changed.push('globalRateLimitPerMin');
+    }
+
+    // ─── Behavior flags ───────────────────────────────────────────────────
+    if (patch.shadowMode !== undefined && patch.shadowMode !== this.config.shadowMode) {
+      this.config.shadowMode = patch.shadowMode;
+      changed.push('shadowMode');
+    }
+    if (patch.refundOnFailure !== undefined && patch.refundOnFailure !== this.config.refundOnFailure) {
+      this.config.refundOnFailure = patch.refundOnFailure;
+      changed.push('refundOnFailure');
+    }
+    if (patch.freeMethods !== undefined) {
+      const oldJson = JSON.stringify(this.config.freeMethods);
+      const newJson = JSON.stringify(patch.freeMethods);
+      if (oldJson !== newJson) {
+        this.config.freeMethods = patch.freeMethods;
+        changed.push('freeMethods');
+      }
+    }
+
+    // ─── Quotas ───────────────────────────────────────────────────────────
+    if (patch.globalQuota !== undefined) {
+      const oldJson = JSON.stringify(this.config.globalQuota);
+      const newJson = JSON.stringify(patch.globalQuota);
+      if (oldJson !== newJson) {
+        this.config.globalQuota = patch.globalQuota;
+        changed.push('globalQuota');
+      }
+    }
+
+    // ─── Webhook ──────────────────────────────────────────────────────────
+    const webhookChanged =
+      (patch.webhookUrl !== undefined && patch.webhookUrl !== this.config.webhookUrl) ||
+      (patch.webhookSecret !== undefined && patch.webhookSecret !== this.config.webhookSecret) ||
+      (patch.webhookMaxRetries !== undefined && patch.webhookMaxRetries !== this.config.webhookMaxRetries);
+
+    if (webhookChanged) {
+      // Update config fields
+      if (patch.webhookUrl !== undefined) this.config.webhookUrl = patch.webhookUrl;
+      if (patch.webhookSecret !== undefined) this.config.webhookSecret = patch.webhookSecret;
+      if (patch.webhookMaxRetries !== undefined) this.config.webhookMaxRetries = patch.webhookMaxRetries;
+
+      // Destroy old webhook infrastructure
+      if (this.webhookRouter) {
+        this.webhookRouter.destroy();
+      } else if (this.webhook) {
+        this.webhook.destroy();
+      }
+
+      // Rebuild webhook if URL is configured
+      if (this.config.webhookUrl || (this.config.webhookFilters && this.config.webhookFilters.length > 0)) {
+        this.webhookRouter = new WebhookRouter({
+          defaultUrl: this.config.webhookUrl,
+          defaultSecret: this.config.webhookSecret || null,
+          maxRetries: this.config.webhookMaxRetries ?? 5,
+          filters: this.config.webhookFilters || [],
+        });
+        this.webhook = this.webhookRouter.defaultWebhook;
+      } else {
+        this.webhookRouter = null;
+        this.webhook = null;
+      }
+
+      changed.push('webhook');
+    }
+
+    // ─── Alert rules ──────────────────────────────────────────────────────
+    if (patch.alertRules !== undefined) {
+      const oldJson = JSON.stringify(this.config.alertRules);
+      const newJson = JSON.stringify(patch.alertRules);
+      if (oldJson !== newJson) {
+        this.config.alertRules = patch.alertRules;
+        changed.push('alertRules');
+      }
+    }
+
+    return changed;
   }
 
   destroy(): void {

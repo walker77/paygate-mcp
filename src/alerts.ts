@@ -56,7 +56,7 @@ export interface AlertEngineConfig {
 // ─── Engine ───────────────────────────────────────────────────────────────────
 
 export class AlertEngine {
-  private readonly rules: AlertRule[];
+  private rules: AlertRule[];
   private readonly dryRun: boolean;
   /** Map of "alertType:keyPrefix" → last alert timestamp */
   private readonly cooldowns = new Map<string, number>();
@@ -68,6 +68,13 @@ export class AlertEngine {
   constructor(config?: AlertEngineConfig) {
     this.rules = config?.rules || [];
     this.dryRun = config?.dryRun || false;
+  }
+
+  /**
+   * Replace alert rules at runtime (for config hot-reload).
+   */
+  setRules(rules: AlertRule[]): void {
+    this.rules = rules;
   }
 
   /**
