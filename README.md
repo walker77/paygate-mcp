@@ -87,6 +87,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Config Export** — `GET /config` returns the running server configuration with sensitive values masked (webhook secrets → `***`, server commands → `***`, webhook URLs → scheme+host only) — admin auth required, includes audit trail
 - **Trusted Proxies** — Configure trusted proxy IPs/CIDRs for accurate `X-Forwarded-For` extraction — walks the header right-to-left, skipping trusted proxies to find the real client IP, supports exact IPs and CIDR ranges (IPv4), backward compatible (first IP) when not configured
 - **Key Listing Pagination** — Enhanced `GET /keys` with cursor-based pagination (`limit`/`offset`), sorting (`sortBy`/`order`), and filtering by namespace, group, active/suspended/expired status, name prefix, and credit range — backward compatible (returns flat array when no pagination params used)
+- **Key Statistics** — `GET /keys/stats` returns aggregate statistics across all keys — total/active/suspended/expired/revoked counts, credit aggregates (allocated/spent/remaining), total calls, namespace and group breakdowns, optional `?namespace=` filter
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1613,6 +1614,38 @@ curl "http://localhost:3402/keys?limit=50&namePrefix=prod-" -H "X-Admin-Key: YOU
 ```
 
 **Backward compatible:** Without any pagination/filter/sort params, `GET /keys` returns the same flat array as before.
+
+### Key Statistics
+
+`GET /keys/stats` returns aggregate statistics across all keys:
+
+```bash
+# Get all key statistics
+curl http://localhost:3402/keys/stats -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by namespace
+curl "http://localhost:3402/keys/stats?namespace=prod" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "total": 150,
+  "active": 120,
+  "suspended": 10,
+  "expired": 15,
+  "revoked": 5,
+  "totalCreditsAllocated": 500000,
+  "totalCreditsSpent": 125000,
+  "totalCreditsRemaining": 375000,
+  "totalCalls": 84200,
+  "byNamespace": { "prod": 80, "staging": 50, "default": 20 },
+  "byGroup": { "enterprise": 30, "starter": 45 }
+}
+```
+
+When `?namespace=` is provided, all counts/aggregates are scoped to that namespace, and a `filteredByNamespace` field is included in the response.
 
 ### IP Allowlisting
 

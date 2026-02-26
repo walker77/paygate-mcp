@@ -549,6 +549,8 @@ export class PayGateServer {
         return this.handleKeyUsage(req, res);
       case '/keys/expiring':
         return this.handleKeysExpiring(req, res);
+      case '/keys/stats':
+        return this.handleKeyStats(req, res);
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1120,6 +1122,7 @@ export class PayGateServer {
         autoTopup: 'POST /keys/auto-topup — Configure auto-topup for a key (requires X-Admin-Key)',
         keyUsage: 'GET /keys/usage?key=... — Per-key usage breakdown (requires X-Admin-Key)',
         keysExpiring: 'GET /keys/expiring?within=86400 — List keys expiring within N seconds (requires X-Admin-Key)',
+        keyStats: 'GET /keys/stats — Aggregate key statistics (requires X-Admin-Key)',
         keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
         deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
@@ -2745,6 +2748,79 @@ export class PayGateServer {
       scanner: this.expiryScanner.status,
       keys: expiring,
     }, null, 2));
+  }
+
+  // ─── /keys/stats — Aggregate key statistics ────────────────────────────────
+
+  private handleKeyStats(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const namespace = params.get('namespace') || undefined;
+
+    const allKeys = this.gate.store.getAllRecords();
+    let total = 0;
+    let active = 0;
+    let suspended = 0;
+    let expired = 0;
+    let revoked = 0;
+    let totalCreditsAllocated = 0;
+    let totalCreditsSpent = 0;
+    let totalCalls = 0;
+    const byNamespace: Record<string, number> = {};
+    const byGroup: Record<string, number> = {};
+
+    for (const record of allKeys) {
+      if (namespace && record.namespace !== namespace) continue;
+
+      total++;
+      totalCreditsAllocated += record.credits;
+      totalCreditsSpent += record.totalSpent;
+      totalCalls += record.totalCalls;
+
+      const isExpired = record.expiresAt ? new Date(record.expiresAt).getTime() <= Date.now() : false;
+
+      if (!record.active) {
+        revoked++;
+      } else if (record.suspended) {
+        suspended++;
+      } else if (isExpired) {
+        expired++;
+      } else {
+        active++;
+      }
+
+      // Count by namespace
+      const ns = record.namespace || 'default';
+      byNamespace[ns] = (byNamespace[ns] || 0) + 1;
+
+      // Count by group
+      if (record.group) {
+        byGroup[record.group] = (byGroup[record.group] || 0) + 1;
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      total,
+      active,
+      suspended,
+      expired,
+      revoked,
+      totalCreditsAllocated,
+      totalCreditsSpent,
+      totalCreditsRemaining: totalCreditsAllocated - totalCreditsSpent,
+      totalCalls,
+      byNamespace,
+      byGroup,
+      ...(namespace ? { filteredByNamespace: namespace } : {}),
+    }));
   }
 
   // ─── /keys/auto-topup — Configure auto-topup ────────────────────────────────
