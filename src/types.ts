@@ -164,6 +164,8 @@ export interface ApiKeyRecord {
   tags: Record<string, string>;
   /** IP allowlist: restrict which IPs can use this key. Empty = all IPs allowed. */
   ipAllowlist: string[];
+  /** Tenant namespace for multi-tenant isolation. Default = 'default'. */
+  namespace: string;
   /** Quota tracking: calls today (UTC). Reset daily. */
   quotaDailyCalls: number;
   /** Quota tracking: calls this month (UTC). Reset monthly. */
@@ -189,6 +191,8 @@ export interface UsageEvent {
   allowed: boolean;
   denyReason?: string;
   durationMs?: number;
+  /** Tenant namespace (from the API key). */
+  namespace?: string;
 }
 
 export interface UsageSummary {

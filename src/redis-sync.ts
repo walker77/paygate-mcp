@@ -577,6 +577,7 @@ export class RedisSync {
     fields.push('quotaMonthlyCredits', String(record.quotaMonthlyCredits));
     fields.push('quotaLastResetDay', record.quotaLastResetDay);
     fields.push('quotaLastResetMonth', record.quotaLastResetMonth);
+    fields.push('namespace', record.namespace || 'default');
     return fields;
   }
 
@@ -604,6 +605,7 @@ export class RedisSync {
       quotaMonthlyCredits: parseInt(hash.quotaMonthlyCredits, 10) || 0,
       quotaLastResetDay: hash.quotaLastResetDay || new Date().toISOString().slice(0, 10),
       quotaLastResetMonth: hash.quotaLastResetMonth || new Date().toISOString().slice(0, 7),
+      namespace: hash.namespace || 'default',
     };
   }
 }

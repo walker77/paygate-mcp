@@ -58,6 +58,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Health Check + Graceful Shutdown** — `GET /health` public endpoint with status, uptime, version, in-flight requests, Redis & webhook stats; `gracefulStop()` drains in-flight requests before teardown
 - **Config Validation + Dry Run** — `paygate-mcp validate --config paygate.json` catches misconfigurations before starting; `--dry-run` discovers tools, prints pricing table, then exits
 - **Batch Tool Calls** — `tools/call_batch` method for calling multiple tools in one request with all-or-nothing billing, aggregate credit checks, and parallel execution
+- **Multi-Tenant Namespaces** — Isolate API keys and usage data by tenant with namespace-filtered admin endpoints, analytics, and usage export
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -304,6 +305,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/teams/assign` | POST | `X-Admin-Key` | Assign an API key to a team |
 | `/teams/remove` | POST | `X-Admin-Key` | Remove an API key from a team |
 | `/teams/usage` | GET | `X-Admin-Key` | Team usage summary with member breakdown |
+| `/namespaces` | GET | `X-Admin-Key` | List all namespaces with key/credit/spending stats |
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
@@ -1102,6 +1104,70 @@ if (!result.allAllowed) {
 }
 ```
 
+### Multi-Tenant Namespaces
+
+Isolate API keys and usage data by tenant. Each key belongs to a `namespace` (default: `"default"`). All admin endpoints support namespace filtering for tenant-scoped views.
+
+**Create a key in a namespace:**
+
+```bash
+curl -X POST http://localhost:3402/keys \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "acme-agent", "credits": 1000, "namespace": "acme-corp"}'
+```
+
+**List keys filtered by namespace:**
+
+```bash
+curl http://localhost:3402/keys?namespace=acme-corp \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**List all namespaces with stats:**
+
+```bash
+curl http://localhost:3402/namespaces \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+Returns:
+
+```json
+{
+  "namespaces": [
+    { "namespace": "acme-corp", "keyCount": 3, "activeKeys": 2, "totalCredits": 2500, "totalSpent": 480 },
+    { "namespace": "beta-inc", "keyCount": 1, "activeKeys": 1, "totalCredits": 500, "totalSpent": 120 }
+  ],
+  "count": 2
+}
+```
+
+**Namespace-filtered status, usage, and analytics:**
+
+```bash
+# Status filtered to one namespace
+curl http://localhost:3402/status?namespace=acme-corp -H "X-Admin-Key: ..."
+
+# Usage events filtered by namespace
+curl http://localhost:3402/usage?namespace=acme-corp -H "X-Admin-Key: ..."
+
+# Analytics filtered by namespace
+curl "http://localhost:3402/analytics?namespace=acme-corp&from=2025-01-01" -H "X-Admin-Key: ..."
+
+# Search keys by tag within a namespace
+curl -X POST http://localhost:3402/keys/search \
+  -H "X-Admin-Key: ..." -H "Content-Type: application/json" \
+  -d '{"tags": {"env": "prod"}, "namespace": "acme-corp"}'
+```
+
+Namespace rules:
+- Alphanumeric + hyphens only, max 50 characters, case-insensitive (stored lowercase)
+- Defaults to `"default"` if omitted or invalid
+- Old keys automatically backfilled to `"default"` on state file load
+- Usage events carry the key's namespace for cross-cutting analytics
+- Namespaces are implicit — created automatically when a key is assigned to one
+
 ### Horizontal Scaling (Redis)
 
 Enable Redis-backed state for multi-process deployments. Multiple PayGate instances share API keys, credits, and usage data through Redis:
@@ -1343,6 +1409,8 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Alert webhooks — Configurable threshold alerts (spending, credits, quota, expiry, rate limits)
 - [x] Team management — Group API keys with shared budgets, quotas, and usage tracking
 - [x] Horizontal scaling — Redis-backed state for multi-process deployments
+- [x] Batch tool calls — `tools/call_batch` with all-or-nothing billing and parallel execution
+- [x] Multi-tenant namespaces — Isolate API keys and usage data by tenant with namespace-filtered endpoints
 
 ## Requirements
 

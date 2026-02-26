@@ -4,9 +4,10 @@
  * Endpoints:
  *   POST /mcp     — JSON-RPC endpoint (MCP Streamable HTTP transport)
  *   GET  /status  — Dashboard / usage summary
- *   POST /keys    — Create API key
- *   GET  /keys    — List API keys
+ *   POST /keys    — Create API key (supports namespace param)
+ *   GET  /keys    — List API keys (supports ?namespace= filter)
  *   POST /topup   — Add credits to a key
+ *   GET  /namespaces — List all namespaces with stats
  *
  * API key is sent via X-API-Key header on /mcp endpoint.
  * Admin endpoints (/keys, /topup, /status) require X-Admin-Key header.
@@ -337,6 +338,9 @@ export class PayGateServer {
         return this.handleTeamRemoveKey(req, res);
       case '/teams/usage':
         return this.handleTeamUsage(req, res);
+      // ─── Multi-tenant namespace endpoints ──────────────────────────────
+      case '/namespaces':
+        return this.handleListNamespaces(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -754,8 +758,14 @@ export class PayGateServer {
   private handleStatus(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(req, res)) return;
 
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const namespace = params.get('namespace') || undefined;
+
+    const status = this.gate.getStatus(namespace);
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(this.gate.getStatus(), null, 2));
+    res.end(JSON.stringify(status, null, 2));
   }
 
   // ─── /health — Public health check ─────────────────────────────────────────
@@ -805,7 +815,7 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const body = await this.readBody(req);
-    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number }; tags?: Record<string, string>; ipAllowlist?: string[] };
+    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number }; tags?: Record<string, string>; ipAllowlist?: string[]; namespace?: string };
     try {
       params = JSON.parse(body);
     } catch {
@@ -849,6 +859,7 @@ export class PayGateServer {
       quota,
       tags: params.tags,
       ipAllowlist: params.ipAllowlist,
+      namespace: params.namespace,
     });
 
     // Sync new key to Redis (if configured)
@@ -879,6 +890,7 @@ export class PayGateServer {
       expiresAt: record.expiresAt,
       tags: record.tags,
       ipAllowlist: record.ipAllowlist,
+      namespace: record.namespace,
       message: 'Save this key — it cannot be retrieved later.',
     }));
   }
@@ -888,8 +900,12 @@ export class PayGateServer {
   private handleListKeys(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(req, res)) return;
 
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const namespace = params.get('namespace') || undefined;
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(this.gate.store.listKeys(), null, 2));
+    res.end(JSON.stringify(this.gate.store.listKeys(namespace), null, 2));
   }
 
   // ─── /topup — Add credits ───────────────────────────────────────────────────
@@ -1349,7 +1365,7 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const body = await this.readBody(req);
-    let params: { tags?: Record<string, string> };
+    let params: { tags?: Record<string, string>; namespace?: string };
     try {
       params = JSON.parse(body);
     } catch {
@@ -1364,7 +1380,7 @@ export class PayGateServer {
       return;
     }
 
-    const results = this.gate.store.listKeysByTag(params.tags);
+    const results = this.gate.store.listKeysByTag(params.tags, params.namespace);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ keys: results, count: results.length }));
@@ -1491,8 +1507,9 @@ export class PayGateServer {
     const params = new URLSearchParams(queryStr);
     const since = params.get('since') || undefined;
     const format = params.get('format') || 'json';
+    const namespace = params.get('namespace') || undefined;
 
-    const events = this.gate.meter.getEvents(since);
+    const events = this.gate.meter.getEvents(since, namespace);
 
     if (format === 'csv') {
       // CSV export
@@ -1901,8 +1918,9 @@ export class PayGateServer {
     const to = params.get('to') || undefined;
     const granularity = (params.get('granularity') || 'hourly') as 'hourly' | 'daily';
     const topN = params.get('top') ? parseInt(params.get('top')!, 10) : 10;
+    const namespace = params.get('namespace') || undefined;
 
-    const events = this.gate.meter.getEvents();
+    const events = this.gate.meter.getEvents(undefined, namespace);
     const report = this.analytics.report(events, { from, to, granularity, topN });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2401,6 +2419,22 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(summary));
+  }
+
+  // ─── /namespaces — List all namespaces ──────────────────────────────────────
+
+  private handleListNamespaces(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const namespaces = this.gate.store.listNamespaces();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ namespaces, count: namespaces.length }, null, 2));
   }
 
   /**

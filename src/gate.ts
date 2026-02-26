@@ -79,7 +79,7 @@ export class Gate {
     if (clientIp && keyRecord.ipAllowlist.length > 0) {
       if (!this.store.checkIp(apiKey, clientIp)) {
         const reason = `ip_not_allowed: ${clientIp} not in allowlist`;
-        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason);
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason, keyRecord.namespace);
         if (this.config.shadowMode) {
           return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
         }
@@ -90,7 +90,7 @@ export class Gate {
     // Step 3: Tool ACL check
     const aclResult = this.checkToolAcl(keyRecord, toolName);
     if (!aclResult.allowed) {
-      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, aclResult.reason);
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, aclResult.reason, keyRecord.namespace);
       if (this.config.shadowMode) {
         return { allowed: true, reason: `shadow:${aclResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
       }
@@ -100,7 +100,7 @@ export class Gate {
     // Step 4: Global rate limit?
     const rateResult = this.rateLimiter.check(apiKey);
     if (!rateResult.allowed) {
-      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, rateResult.reason);
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, rateResult.reason, keyRecord.namespace);
       if (this.config.shadowMode) {
         return { allowed: true, reason: `shadow:${rateResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
       }
@@ -114,7 +114,7 @@ export class Gate {
       const toolRateResult = this.rateLimiter.checkCustom(compositeKey, toolPricing.rateLimitPerMin);
       if (!toolRateResult.allowed) {
         const reason = `tool_rate_limited: ${toolName} limited to ${toolPricing.rateLimitPerMin} calls/min`;
-        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason);
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason, keyRecord.namespace);
         if (this.config.shadowMode) {
           return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
         }
@@ -124,7 +124,7 @@ export class Gate {
 
     // Step 6: Sufficient credits?
     if (!this.store.hasCredits(apiKey, creditsRequired)) {
-      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, 'insufficient_credits');
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, 'insufficient_credits', keyRecord.namespace);
       if (this.config.shadowMode) {
         return { allowed: true, reason: 'shadow:insufficient_credits', creditsCharged: 0, remainingCredits: keyRecord.credits };
       }
@@ -140,7 +140,7 @@ export class Gate {
     if (keyRecord.spendingLimit > 0) {
       const wouldSpend = keyRecord.totalSpent + creditsRequired;
       if (wouldSpend > keyRecord.spendingLimit) {
-        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, 'spending_limit_exceeded');
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, 'spending_limit_exceeded', keyRecord.namespace);
         if (this.config.shadowMode) {
           return { allowed: true, reason: 'shadow:spending_limit_exceeded', creditsCharged: 0, remainingCredits: keyRecord.credits };
         }
@@ -156,7 +156,7 @@ export class Gate {
     // Step 8: Usage quota check (daily/monthly limits)
     const quotaResult = this.quotaTracker.check(keyRecord, creditsRequired, this.config.globalQuota);
     if (!quotaResult.allowed) {
-      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, quotaResult.reason);
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, quotaResult.reason, keyRecord.namespace);
       if (this.config.shadowMode) {
         return { allowed: true, reason: `shadow:${quotaResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
       }
@@ -167,7 +167,7 @@ export class Gate {
     if (this.teamChecker) {
       const teamResult = this.teamChecker(apiKey, creditsRequired);
       if (!teamResult.allowed) {
-        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, teamResult.reason);
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, teamResult.reason, keyRecord.namespace);
         if (this.config.shadowMode) {
           return { allowed: true, reason: `shadow:${teamResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
         }
@@ -192,7 +192,7 @@ export class Gate {
     this.store.save();
 
     const remaining = this.store.getKey(apiKey)?.credits ?? 0;
-    this.recordEvent(apiKey, keyRecord.name, toolName, creditsRequired, true);
+    this.recordEvent(apiKey, keyRecord.name, toolName, creditsRequired, true, undefined, keyRecord.namespace);
 
     return { allowed: true, creditsCharged: creditsRequired, remainingCredits: remaining };
   }
@@ -448,7 +448,7 @@ export class Gate {
 
     // Record usage events for each call
     for (let i = 0; i < calls.length; i++) {
-      this.recordEvent(apiKey, keyRecord.name, calls[i].name, perCallCredits[i], true);
+      this.recordEvent(apiKey, keyRecord.name, calls[i].name, perCallCredits[i], true, undefined, keyRecord.namespace);
     }
 
     return {
@@ -546,14 +546,16 @@ export class Gate {
   /**
    * Get full status for dashboard.
    */
-  getStatus() {
+  getStatus(namespace?: string) {
     return {
       name: this.config.name,
       shadowMode: this.config.shadowMode,
       activeKeys: this.store.activeKeyCount,
-      keys: this.store.listKeys(),
-      usage: this.meter.getSummary(),
+      keys: this.store.listKeys(namespace),
+      usage: this.meter.getSummary(undefined, namespace),
       eventCount: this.meter.eventCount,
+      namespaces: this.store.listNamespaces(),
+      ...(namespace ? { filteredNamespace: namespace } : {}),
       config: {
         defaultCreditsPerCall: this.config.defaultCreditsPerCall,
         globalRateLimitPerMin: this.config.globalRateLimitPerMin,
@@ -578,7 +580,7 @@ export class Gate {
       this.quotaTracker.unrecord(keyRecord, credits);
       this.store.save();
     }
-    this.recordEvent(apiKey, keyRecord?.name || 'unknown', toolName, -credits, true, 'refund');
+    this.recordEvent(apiKey, keyRecord?.name || 'unknown', toolName, -credits, true, 'refund', keyRecord?.namespace);
   }
 
   /** Whether refund-on-failure is enabled */
@@ -594,6 +596,7 @@ export class Gate {
   private recordEvent(
     apiKey: string, keyName: string, tool: string,
     creditsCharged: number, allowed: boolean, denyReason?: string,
+    namespace?: string,
   ): void {
     const event: UsageEvent = {
       timestamp: new Date().toISOString(),
@@ -603,6 +606,7 @@ export class Gate {
       creditsCharged,
       allowed,
       denyReason,
+      namespace,
     };
     this.meter.record(event);
     this.webhook?.emit(event);

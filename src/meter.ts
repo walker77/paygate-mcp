@@ -20,13 +20,19 @@ export class UsageMeter {
     }
   }
 
-  getEvents(since?: string): UsageEvent[] {
-    if (!since) return [...this.events];
-    return this.events.filter(e => e.timestamp >= since);
+  getEvents(since?: string, namespace?: string): UsageEvent[] {
+    let events = this.events;
+    if (since) {
+      events = events.filter(e => e.timestamp >= since);
+    }
+    if (namespace) {
+      events = events.filter(e => e.namespace === namespace);
+    }
+    return [...events];
   }
 
-  getSummary(since?: string): UsageSummary {
-    const events = this.getEvents(since);
+  getSummary(since?: string, namespace?: string): UsageSummary {
+    const events = this.getEvents(since, namespace);
     const summary: UsageSummary = {
       totalCalls: 0,
       totalCreditsSpent: 0,

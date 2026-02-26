@@ -271,6 +271,7 @@ describe('AlertEngine', () => {
       quotaLastResetMonth: new Date().toISOString().slice(0, 7),
       tags: {},
       ipAllowlist: [],
+      namespace: 'default',
       ...overrides,
     };
   }

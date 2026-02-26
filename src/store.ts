@@ -66,6 +66,16 @@ export class KeyStore {
   }
 
   /**
+   * Sanitize namespace: max 50 chars, lowercase, alphanumeric + hyphens.
+   * Defaults to 'default'.
+   */
+  private sanitizeNamespace(ns?: string): string {
+    if (!ns || typeof ns !== 'string') return 'default';
+    const sanitized = ns.trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 50);
+    return sanitized || 'default';
+  }
+
+  /**
    * Sanitize IP allowlist: max 100 entries, trimmed, basic format validation.
    */
   private sanitizeIpList(ips?: string[]): string[] {
@@ -86,6 +96,7 @@ export class KeyStore {
     quota?: QuotaConfig;
     tags?: Record<string, string>;
     ipAllowlist?: string[];
+    namespace?: string;
   }): ApiKeyRecord {
     const key = `pg_${randomBytes(24).toString('hex')}`;
     const today = new Date().toISOString().slice(0, 10);
@@ -106,6 +117,7 @@ export class KeyStore {
       quota: options?.quota,
       tags: this.sanitizeTags(options?.tags),
       ipAllowlist: this.sanitizeIpList(options?.ipAllowlist),
+      namespace: this.sanitizeNamespace(options?.namespace),
       quotaDailyCalls: 0,
       quotaMonthlyCalls: 0,
       quotaDailyCredits: 0,
@@ -313,9 +325,12 @@ export class KeyStore {
   /**
    * List keys filtered by tag. Returns keys where ALL specified tag key-value pairs match.
    */
-  listKeysByTag(tags: Record<string, string>): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> {
+  listKeysByTag(tags: Record<string, string>, namespace?: string): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> {
     const result: Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> = [];
     for (const record of this.keys.values()) {
+      // Filter by namespace if specified
+      if (namespace && record.namespace !== namespace) continue;
+
       // Check all tag filters match
       let match = true;
       for (const [k, v] of Object.entries(tags)) {
@@ -375,10 +390,12 @@ export class KeyStore {
 
   /**
    * List all keys (with key values masked). Includes expiry status.
+   * Optionally filter by namespace.
    */
-  listKeys(): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> {
+  listKeys(namespace?: string): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> {
     const result: Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> = [];
     for (const record of this.keys.values()) {
+      if (namespace && record.namespace !== namespace) continue;
       const { key, ...rest } = record;
       result.push({
         ...rest,
@@ -387,6 +404,26 @@ export class KeyStore {
       });
     }
     return result;
+  }
+
+  /**
+   * List all unique namespaces with summary stats.
+   */
+  listNamespaces(): Array<{ namespace: string; keyCount: number; activeKeys: number; totalCredits: number; totalSpent: number }> {
+    const nsMap = new Map<string, { keyCount: number; activeKeys: number; totalCredits: number; totalSpent: number }>();
+    for (const record of this.keys.values()) {
+      const ns = record.namespace || 'default';
+      let entry = nsMap.get(ns);
+      if (!entry) {
+        entry = { keyCount: 0, activeKeys: 0, totalCredits: 0, totalSpent: 0 };
+        nsMap.set(ns, entry);
+      }
+      entry.keyCount++;
+      if (record.active) entry.activeKeys++;
+      entry.totalCredits += record.credits;
+      entry.totalSpent += record.totalSpent;
+    }
+    return Array.from(nsMap.entries()).map(([namespace, stats]) => ({ namespace, ...stats }));
   }
 
   /**
@@ -410,6 +447,7 @@ export class KeyStore {
     quota?: QuotaConfig;
     tags?: Record<string, string>;
     ipAllowlist?: string[];
+    namespace?: string;
   }): ApiKeyRecord {
     const today = new Date().toISOString().slice(0, 10);
     const month = new Date().toISOString().slice(0, 7);
@@ -429,6 +467,7 @@ export class KeyStore {
       quota: options?.quota,
       tags: this.sanitizeTags(options?.tags),
       ipAllowlist: this.sanitizeIpList(options?.ipAllowlist),
+      namespace: this.sanitizeNamespace(options?.namespace),
       quotaDailyCalls: 0,
       quotaMonthlyCalls: 0,
       quotaDailyCredits: 0,
@@ -496,6 +535,8 @@ export class KeyStore {
           // Backfill v1.7.0 fields
           if (!record.tags || typeof record.tags !== 'object') record.tags = {};
           if (!Array.isArray(record.ipAllowlist)) record.ipAllowlist = [];
+          // Backfill v2.9.0 namespace
+          if (!record.namespace) record.namespace = 'default';
           this.keys.set(key, record);
         }
       }
