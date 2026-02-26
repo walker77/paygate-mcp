@@ -66,6 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Plugin System** — Extensible middleware hooks for custom billing logic, request/response transformation, custom endpoints, and lifecycle management
 - **Key Groups** — Policy templates that apply shared ACL, rate limits, pricing overrides, IP allowlists, and quotas to groups of API keys with automatic inheritance and key-level override support
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
+- **Credit Transfers** — Atomically transfer credits between API keys with validation, audit trail, and webhook events
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -280,6 +281,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys` | POST | `X-Admin-Key` | Create API key (with ACL, expiry, quota, credits) |
 | `/keys` | GET | `X-Admin-Key` | List all keys (masked, with expiry status) |
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
+| `/keys/transfer` | POST | `X-Admin-Key` | Transfer credits between API keys |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
 | `/keys/rotate` | POST | `X-Admin-Key` | Rotate key (new key, same credits/ACL/quotas) |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
@@ -478,6 +480,32 @@ curl -X POST http://localhost:3402/keys/expiry \
 ```
 
 Expired keys return a clear `api_key_expired` error. Admins can extend or remove expiry at any time.
+
+### Credit Transfers
+
+Atomically transfer credits between API keys:
+
+```bash
+curl -X POST http://localhost:3402/keys/transfer \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "from": "pg_source_key", "to": "pg_dest_key", "credits": 500, "memo": "Monthly allocation" }'
+```
+
+Response:
+```json
+{
+  "transferred": 500,
+  "from": { "keyMasked": "pg_sour...key1", "balance": 500 },
+  "to": { "keyMasked": "pg_dest...key2", "balance": 700 },
+  "memo": "Monthly allocation",
+  "message": "Transferred 500 credits"
+}
+```
+
+**Validation:** Both keys must exist, be active (not revoked/expired), and the source must have sufficient credits. Fractional credits are floored to integers. Self-transfers are rejected.
+
+**Audit trail:** Every transfer logs a `key.credits_transferred` audit event with masked keys, amount, balances, and memo.
 
 ### Spending Limits
 
@@ -1961,6 +1989,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Usage-based auto-topup — Automatically refill credits when balance drops below threshold with daily limits
 - [x] Admin API key management — Multiple admin keys with role-based permissions (super_admin, admin, viewer)
 - [x] Webhook filters — Route events to multiple destinations by event type and key prefix with independent retry queues
+- [x] Credit transfers — Atomically transfer credits between API keys with validation and audit trail
 
 ## Requirements
 

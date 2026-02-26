@@ -379,6 +379,8 @@ export class PayGateServer {
         return this.handleSetAutoTopup(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
+      case '/keys/transfer':
+        return this.handleCreditTransfer(req, res);
       case '/balance':
         return this.handleBalance(req, res);
       case '/limits':
@@ -894,6 +896,7 @@ export class PayGateServer {
         setAcl: 'POST /keys/acl — Set tool ACL (requires X-Admin-Key)',
         setExpiry: 'POST /keys/expiry — Set key expiry (requires X-Admin-Key)',
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
+        transfer: 'POST /keys/transfer — Transfer credits between keys (requires X-Admin-Key)',
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
         setQuota: 'POST /keys/quota — Set usage quota (requires X-Admin-Key)',
@@ -1162,6 +1165,116 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ credits: record?.credits, message: `Added ${credits} credits` }));
+  }
+
+  // ─── /keys/transfer — Transfer credits between keys ─────────────────────
+
+  private async handleCreditTransfer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { from?: string; to?: string; credits?: number; memo?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.from || !params.to) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing "from" and "to" API keys' }));
+      return;
+    }
+
+    if (params.from === params.to) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot transfer credits to the same key' }));
+      return;
+    }
+
+    const credits = Math.floor(Number(params.credits));
+    if (!Number.isFinite(credits) || credits <= 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Credits must be a positive integer' }));
+      return;
+    }
+
+    // Validate source key exists and has enough credits
+    const sourceRecord = this.gate.store.getKey(params.from);
+    if (!sourceRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Source key not found' }));
+      return;
+    }
+    if (sourceRecord.credits < credits) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: `Insufficient credits: source has ${sourceRecord.credits}, need ${credits}`,
+      }));
+      return;
+    }
+
+    // Validate destination key exists (getKey returns null for revoked/expired keys)
+    const destRecord = this.gate.store.getKey(params.to);
+    if (!destRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Destination key not found' }));
+      return;
+    }
+
+    // Perform transfer atomically (deduct from source, add to destination)
+    if (this.redisSync) {
+      // Redis atomic transfer: deduct first, then add
+      const deducted = await this.redisSync.atomicDeduct(params.from, credits);
+      if (!deducted) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Redis deduction failed (insufficient credits or key not found)' }));
+        return;
+      }
+      await this.redisSync.atomicTopup(params.to, credits);
+    } else {
+      // Local store: deduct and add
+      sourceRecord.credits -= credits;
+      destRecord.credits += credits;
+      this.gate.store.save();
+    }
+
+    const fromBalance = this.gate.store.getKey(params.from)?.credits ?? 0;
+    const toBalance = this.gate.store.getKey(params.to)?.credits ?? 0;
+    const memo = params.memo || '';
+
+    this.audit.log('key.credits_transferred', 'admin', `Transferred ${credits} credits`, {
+      fromKeyMasked: maskKeyForAudit(params.from),
+      toKeyMasked: maskKeyForAudit(params.to),
+      credits,
+      fromBalance,
+      toBalance,
+      memo,
+    });
+    this.emitWebhookAdmin('key.credits_transferred', 'admin', {
+      fromKeyMasked: maskKeyForAudit(params.from),
+      toKeyMasked: maskKeyForAudit(params.to),
+      credits,
+      fromBalance,
+      toBalance,
+      memo,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      transferred: credits,
+      from: { keyMasked: maskKeyForAudit(params.from), balance: fromBalance },
+      to: { keyMasked: maskKeyForAudit(params.to), balance: toBalance },
+      memo: memo || undefined,
+      message: `Transferred ${credits} credits`,
+    }));
   }
 
   // ─── /keys/revoke — Revoke a key ──────────────────────────────────────────
