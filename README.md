@@ -62,6 +62,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Scoped Tokens** — Issue short-lived `pgt_` tokens scoped to specific tools with auto-expiry (max 24h), HMAC-SHA256 signed, zero server-side state
 - **Token Revocation List** — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis cross-instance sync, and admin API
 - **Usage-Based Auto-Topup** — Automatically add credits when balance drops below a threshold with configurable daily limits, audit trail, webhook events, and Redis sync
+- **Admin API Key Management** — Multiple admin keys with role-based permissions (super_admin, admin, viewer), file persistence, audit trail, and safety guards
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -285,6 +286,9 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys/ip` | POST | `X-Admin-Key` | Set IP allowlist (CIDR + exact match) |
 | `/keys/search` | POST | `X-Admin-Key` | Search keys by tag values |
 | `/keys/auto-topup` | POST | `X-Admin-Key` | Configure or disable auto-topup for a key |
+| `/admin/keys` | GET | `X-Admin-Key` (super_admin) | List all admin keys (masked) |
+| `/admin/keys` | POST | `X-Admin-Key` (super_admin) | Create a new admin key with role |
+| `/admin/keys/revoke` | POST | `X-Admin-Key` (super_admin) | Revoke an admin key |
 | `/limits` | POST | `X-Admin-Key` | Set spending limit on a key |
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
@@ -1383,6 +1387,54 @@ gate.onAutoTopup = (apiKey, amount, newBalance) => {
 const result = gate.evaluate(record.key, { name: 'expensive-tool' });
 ```
 
+### Admin API Key Management
+
+Manage multiple admin keys with role-based permissions. The bootstrap admin key (from constructor or CLI) is always a `super_admin`.
+
+**Roles:**
+| Role | Description |
+|------|-------------|
+| `super_admin` | Full access, including admin key management |
+| `admin` | All API key and system operations, but cannot manage admin keys |
+| `viewer` | Read-only access to status, usage, analytics, audit, etc. |
+
+**Create an admin key (super_admin only):**
+
+```bash
+curl -X POST http://localhost:3402/admin/keys \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "CI Bot", "role": "admin"}'
+# Returns: { "key": "ak_...", "name": "CI Bot", "role": "admin", "createdAt": "..." }
+```
+
+**List admin keys (super_admin only):**
+
+```bash
+curl http://localhost:3402/admin/keys \
+  -H "X-Admin-Key: $ADMIN_KEY"
+# Returns masked keys with roles, status, and last used timestamps
+```
+
+**Revoke an admin key (super_admin only):**
+
+```bash
+curl -X POST http://localhost:3402/admin/keys/revoke \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "ak_..."}'
+```
+
+**Behavior:**
+- The default role for `POST /admin/keys` is `admin` if not specified.
+- Cannot revoke your own admin key (safety guard).
+- Cannot revoke the last `super_admin` key (safety guard).
+- `viewer` keys can access all read-only endpoints (GET) but are denied write operations (POST).
+- `admin` keys can create/revoke/rotate API keys, manage teams, tokens, etc. but cannot manage admin keys.
+- Admin keys are persisted to a separate file (`*-admin.json`) alongside the state file.
+- All operations are logged in the audit trail (`admin_key.created`, `admin_key.revoked`).
+- Webhook events are fired for admin key lifecycle changes.
+
 ### Horizontal Scaling (Redis)
 
 Enable Redis-backed state for multi-process deployments. Multiple PayGate instances share API keys, credits, and usage data through Redis:
@@ -1629,6 +1681,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Scoped tokens — Short-lived `pgt_` tokens with tool ACL narrowing, HMAC-SHA256 signed, zero server-side state
 - [x] Token revocation list — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis sync
 - [x] Usage-based auto-topup — Automatically refill credits when balance drops below threshold with daily limits
+- [x] Admin API key management — Multiple admin keys with role-based permissions (super_admin, admin, viewer)
 
 ## Requirements
 

@@ -42,6 +42,7 @@ import { TeamManager } from './teams';
 import { RedisClient, parseRedisUrl } from './redis-client';
 import { RedisSync } from './redis-sync';
 import { ScopedTokenManager } from './tokens';
+import { AdminKeyManager, AdminRole, ROLE_HIERARCHY } from './admin-keys';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -68,7 +69,10 @@ export class PayGateServer {
   readonly router: MultiServerRouter | null;
   private server: Server | null = null;
   private readonly config: PayGateConfig;
-  private readonly adminKey: string;
+  /** Admin key manager (multiple keys with role-based permissions) */
+  readonly adminKeys: AdminKeyManager;
+  /** The bootstrap admin key (from constructor or auto-generated) */
+  private readonly bootstrapAdminKey: string;
   private stripeHandler: StripeWebhookHandler | null = null;
   /** OAuth 2.1 provider (null if OAuth is not enabled) */
   readonly oauth: OAuthProvider | null = null;
@@ -112,7 +116,13 @@ export class PayGateServer {
     redisUrl?: string,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.adminKey = adminKey || `admin_${require('crypto').randomBytes(16).toString('hex')}`;
+    this.bootstrapAdminKey = adminKey || `admin_${require('crypto').randomBytes(16).toString('hex')}`;
+
+    // Admin key manager with file persistence (separate from API key state)
+    const adminStatePath = statePath ? statePath.replace(/\.json$/, '-admin.json') : undefined;
+    this.adminKeys = new AdminKeyManager(adminStatePath);
+    this.adminKeys.bootstrap(this.bootstrapAdminKey);
+
     this.gate = new Gate(this.config, statePath);
 
     // Multi-server mode: use Router
@@ -163,6 +173,9 @@ export class PayGateServer {
     this.metrics.registerGauge('paygate_total_credits_available', 'Total credits across all active keys', () => {
       return this.gate.store.listKeys().filter(k => k.active).reduce((sum, k) => sum + k.credits, 0);
     });
+    this.metrics.registerGauge('paygate_admin_keys_total', 'Number of active admin keys', () => {
+      return this.adminKeys.activeCount;
+    });
 
     // Analytics engine
     this.analytics = new AnalyticsEngine();
@@ -207,10 +220,10 @@ export class PayGateServer {
       }
     };
 
-    // Scoped token manager (uses admin key as signing secret, padded to min length)
-    const tokenSecret = this.adminKey.length >= 8
-      ? this.adminKey
-      : this.adminKey + require('crypto').randomBytes(8).toString('hex');
+    // Scoped token manager (uses bootstrap admin key as signing secret, padded to min length)
+    const tokenSecret = this.bootstrapAdminKey.length >= 8
+      ? this.bootstrapAdminKey
+      : this.bootstrapAdminKey + require('crypto').randomBytes(8).toString('hex');
     this.tokens = new ScopedTokenManager(tokenSecret);
 
     // Redis distributed state (if configured)
@@ -259,7 +272,7 @@ export class PayGateServer {
       this.server.listen(this.config.port, () => {
         const addr = this.server!.address();
         const actualPort = typeof addr === 'object' && addr ? addr.port : this.config.port;
-        resolve({ port: actualPort, adminKey: this.adminKey });
+        resolve({ port: actualPort, adminKey: this.bootstrapAdminKey });
       });
 
       this.server.on('error', reject);
@@ -379,6 +392,13 @@ export class PayGateServer {
         return this.handleRevokeToken(req, res);
       case '/tokens/revoked':
         return this.handleListRevokedTokens(req, res);
+      // ─── Admin key management endpoints ──────────────────────────────
+      case '/admin/keys':
+        if (req.method === 'POST') return this.handleCreateAdminKey(req, res);
+        if (req.method === 'GET') return this.handleListAdminKeys(req, res);
+        break;
+      case '/admin/keys/revoke':
+        return this.handleRevokeAdminKey(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -811,6 +831,9 @@ export class PayGateServer {
         createToken: 'POST /tokens — Create scoped token (requires X-Admin-Key)',
         revokeToken: 'POST /tokens/revoke — Revoke a scoped token (requires X-Admin-Key)',
         listRevokedTokens: 'GET /tokens/revoked — List revoked tokens (requires X-Admin-Key)',
+        adminKeys: 'GET /admin/keys — List admin keys (requires X-Admin-Key, super_admin)',
+        createAdminKey: 'POST /admin/keys — Create admin key with role (requires X-Admin-Key, super_admin)',
+        revokeAdminKey: 'POST /admin/keys/revoke — Revoke an admin key (requires X-Admin-Key, super_admin)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -885,7 +908,7 @@ export class PayGateServer {
   // ─── /keys — Create ─────────────────────────────────────────────────────────
 
   private async handleCreateKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number }; tags?: Record<string, string>; ipAllowlist?: string[]; namespace?: string };
@@ -989,7 +1012,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; credits?: number };
@@ -1050,7 +1073,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string };
@@ -1100,7 +1123,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string };
@@ -1158,7 +1181,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; allowedTools?: string[]; deniedTools?: string[] };
@@ -1208,7 +1231,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; expiresAt?: string | null; expiresIn?: number };
@@ -1264,7 +1287,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number; remove?: boolean };
@@ -1327,7 +1350,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; tags?: Record<string, string | null> };
@@ -1381,7 +1404,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; ips?: string[] };
@@ -1467,7 +1490,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; threshold?: number; amount?: number; maxDaily?: number; disable?: boolean };
@@ -1606,7 +1629,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; spendingLimit?: number };
@@ -2099,7 +2122,7 @@ export class PayGateServer {
   }
 
   private async handleConfigureAlerts(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { rules?: Array<{ type: string; threshold: number; cooldownSeconds?: number }> };
@@ -2167,7 +2190,7 @@ export class PayGateServer {
   }
 
   private handleClearDeadLetters(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     if (!this.gate.webhook) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2290,9 +2313,11 @@ export class PayGateServer {
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  private checkAdmin(req: IncomingMessage, res: ServerResponse): boolean {
+  private checkAdmin(req: IncomingMessage, res: ServerResponse, minRole?: AdminRole): boolean {
     const adminKey = req.headers['x-admin-key'] as string;
-    if (adminKey !== this.adminKey) {
+    const record = adminKey ? this.adminKeys.validate(adminKey) : null;
+
+    if (!record) {
       this.audit.log('admin.auth_failed', 'unknown', `Admin auth failed on ${req.url}`, {
         url: req.url,
         method: req.method,
@@ -2301,6 +2326,21 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Invalid admin key' }));
       return false;
     }
+
+    // Role-based permission check (if a minimum role is specified)
+    if (minRole && ROLE_HIERARCHY[record.role] < ROLE_HIERARCHY[minRole]) {
+      this.audit.log('admin.auth_failed', adminKey.slice(0, 7) + '...' + adminKey.slice(-4),
+        `Insufficient role for ${req.url} (need ${minRole}, have ${record.role})`, {
+        url: req.url,
+        method: req.method,
+        requiredRole: minRole,
+        currentRole: record.role,
+      });
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Insufficient permissions', requiredRole: minRole, currentRole: record.role }));
+      return false;
+    }
+
     return true;
   }
 
@@ -2324,7 +2364,7 @@ export class PayGateServer {
   }
 
   private async handleCreateTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
@@ -2368,7 +2408,7 @@ export class PayGateServer {
   }
 
   private async handleUpdateTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
@@ -2413,7 +2453,7 @@ export class PayGateServer {
   }
 
   private async handleDeleteTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
@@ -2451,7 +2491,7 @@ export class PayGateServer {
   }
 
   private async handleTeamAssignKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
@@ -2505,7 +2545,7 @@ export class PayGateServer {
   }
 
   private async handleTeamRemoveKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
@@ -2597,7 +2637,7 @@ export class PayGateServer {
   // ─── /tokens — Create scoped token ──────────────────────────────────────────
 
   private async handleCreateToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { key?: string; ttl?: number; allowedTools?: string[]; label?: string };
@@ -2659,7 +2699,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
-    if (!this.checkAdmin(req, res)) return;
+    if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
     let params: { token?: string; reason?: string };
@@ -2737,6 +2777,140 @@ export class PayGateServer {
         reason: e.reason || null,
       })),
     }));
+  }
+
+  // ─── /admin/keys — Admin key management ────────────────────────────────────
+
+  private handleListAdminKeys(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'super_admin')) return;
+
+    const keys = this.adminKeys.list().map(k => ({
+      key: k.key.slice(0, 7) + '...' + k.key.slice(-4),
+      name: k.name,
+      role: k.role,
+      createdAt: k.createdAt,
+      createdBy: k.createdBy,
+      active: k.active,
+      lastUsedAt: k.lastUsedAt,
+    }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ count: keys.length, keys }));
+  }
+
+  private async handleCreateAdminKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'super_admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { name?: string; role?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    if (!params.name || typeof params.name !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      return;
+    }
+
+    const role = (params.role || 'admin') as AdminRole;
+    if (!['super_admin', 'admin', 'viewer'].includes(role)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid role. Must be super_admin, admin, or viewer.' }));
+      return;
+    }
+
+    // Mask the requesting admin key for audit
+    const callerKey = req.headers['x-admin-key'] as string;
+    const callerMasked = callerKey.slice(0, 7) + '...' + callerKey.slice(-4);
+
+    const record = this.adminKeys.create(params.name, role, callerMasked);
+
+    this.audit.log('admin_key.created', callerMasked, `Created admin key "${params.name}" with role ${role}`, {
+      newKeyMasked: record.key.slice(0, 7) + '...' + record.key.slice(-4),
+      role,
+    });
+    this.gate.webhook?.emitAdmin('admin_key.created', callerMasked, {
+      newKeyMasked: record.key.slice(0, 7) + '...' + record.key.slice(-4),
+      name: params.name,
+      role,
+    });
+
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: record.key,
+      name: record.name,
+      role: record.role,
+      createdAt: record.createdAt,
+    }));
+  }
+
+  private async handleRevokeAdminKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'super_admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+
+    if (!params.key || typeof params.key !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: key' }));
+      return;
+    }
+
+    const callerKey = req.headers['x-admin-key'] as string;
+
+    // Prevent revoking your own key
+    if (params.key === callerKey) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot revoke your own admin key' }));
+      return;
+    }
+
+    const result = this.adminKeys.revoke(params.key);
+    if (!result.success) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: result.error }));
+      return;
+    }
+
+    const callerMasked = callerKey.slice(0, 7) + '...' + callerKey.slice(-4);
+    const targetMasked = params.key.slice(0, 7) + '...' + params.key.slice(-4);
+
+    this.audit.log('admin_key.revoked', callerMasked, `Revoked admin key ${targetMasked}`, {
+      revokedKeyMasked: targetMasked,
+    });
+    this.gate.webhook?.emitAdmin('admin_key.revoked', callerMasked, {
+      revokedKeyMasked: targetMasked,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ revoked: true }));
   }
 
   /**

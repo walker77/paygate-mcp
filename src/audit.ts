@@ -48,7 +48,10 @@ export type AuditEventType =
   | 'billing.refund'
   // Auto-topup
   | 'key.auto_topup_configured'
-  | 'key.auto_topped_up';
+  | 'key.auto_topped_up'
+  // Admin key management
+  | 'admin_key.created'
+  | 'admin_key.revoked';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

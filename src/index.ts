@@ -54,6 +54,8 @@ export { validateConfig, formatDiagnostics } from './config-validator';
 export type { ConfigDiagnostic, ValidatableConfig } from './config-validator';
 export { ScopedTokenManager, TokenRevocationList } from './tokens';
 export type { TokenPayload, TokenValidation, TokenCreateOptions, RevokedTokenEntry } from './tokens';
+export { AdminKeyManager, ROLE_HIERARCHY, VALID_ROLES } from './admin-keys';
+export type { AdminRole, AdminKeyRecord } from './admin-keys';
 
 export type {
   PayGateConfig,
