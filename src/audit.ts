@@ -52,6 +52,10 @@ export type AuditEventType =
   | 'key.alias_set'
   // Key expiry warnings
   | 'key.expiry_warning'
+  // Key templates
+  | 'template.created'
+  | 'template.updated'
+  | 'template.deleted'
   // Scoped tokens
   | 'token.created'
   | 'token.revoked'

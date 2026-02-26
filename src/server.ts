@@ -48,6 +48,7 @@ import { PluginManager, PayGatePlugin, PluginToolContext } from './plugin';
 import { KeyGroupManager } from './groups';
 import { WebhookRouter } from './webhook-router';
 import { ExpiryScanner } from './expiry-scanner';
+import { KeyTemplateManager } from './key-templates';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -104,6 +105,8 @@ export class PayGateServer {
   readonly groups: KeyGroupManager;
   /** Background key expiry scanner */
   readonly expiryScanner: ExpiryScanner;
+  /** Key template manager for reusable key presets */
+  readonly templates: KeyTemplateManager;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -268,6 +271,13 @@ export class PayGateServer {
       });
     };
 
+    // Key template manager for reusable key creation presets
+    const templatesStatePath = statePath ? statePath.replace(/\.json$/, '-templates.json') : undefined;
+    this.templates = new KeyTemplateManager(templatesStatePath);
+    this.metrics.registerGauge('paygate_templates_total', 'Number of key templates', () => {
+      return this.templates.count;
+    });
+
     // Scoped token manager (uses bootstrap admin key as signing secret, padded to min length)
     const tokenSecret = this.bootstrapAdminKey.length >= 8
       ? this.bootstrapAdminKey
@@ -429,6 +439,12 @@ export class PayGateServer {
         return this.handleKeyUsage(req, res);
       case '/keys/expiring':
         return this.handleKeysExpiring(req, res);
+      case '/keys/templates':
+        if (req.method === 'GET') return this.handleListTemplates(req, res);
+        if (req.method === 'POST') return this.handleCreateTemplate(req, res);
+        break;
+      case '/keys/templates/delete':
+        return this.handleDeleteTemplate(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
       case '/keys/transfer':
@@ -984,6 +1000,8 @@ export class PayGateServer {
         autoTopup: 'POST /keys/auto-topup — Configure auto-topup for a key (requires X-Admin-Key)',
         keyUsage: 'GET /keys/usage?key=... — Per-key usage breakdown (requires X-Admin-Key)',
         keysExpiring: 'GET /keys/expiring?within=86400 — List keys expiring within N seconds (requires X-Admin-Key)',
+        keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
+        deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
         mcpPayment: 'GET /.well-known/mcp-payment — Payment metadata (SEP-2007)',
         audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
@@ -1099,7 +1117,7 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res, 'admin')) return;
 
     const body = await this.readBody(req);
-    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number }; tags?: Record<string, string>; ipAllowlist?: string[]; namespace?: string };
+    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number }; tags?: Record<string, string>; ipAllowlist?: string[]; namespace?: string; template?: string };
     try {
       params = JSON.parse(body);
     } catch {
@@ -1108,8 +1126,19 @@ export class PayGateServer {
       return;
     }
 
+    // Resolve template defaults (explicit params override template values)
+    let tpl: import('./key-templates').KeyTemplate | null = null;
+    if (params.template) {
+      tpl = this.templates.get(params.template);
+      if (!tpl) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Template "${params.template}" not found` }));
+        return;
+      }
+    }
+
     const name = String(params.name || 'unnamed').slice(0, 200);
-    const credits = Math.max(0, Math.floor(Number(params.credits) || 100));
+    const credits = Math.max(0, Math.floor(Number(params.credits ?? tpl?.credits ?? 100)));
 
     if (credits <= 0) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1117,15 +1146,17 @@ export class PayGateServer {
       return;
     }
 
-    // Calculate expiry: expiresIn (seconds) takes priority over expiresAt (ISO date)
+    // Calculate expiry: expiresIn (seconds) takes priority over expiresAt (ISO date), template TTL is fallback
     let expiresAt: string | null = null;
     if (params.expiresIn && Number(params.expiresIn) > 0) {
       expiresAt = new Date(Date.now() + Number(params.expiresIn) * 1000).toISOString();
     } else if (params.expiresAt) {
       expiresAt = String(params.expiresAt);
+    } else if (tpl && tpl.expiryTtlSeconds > 0) {
+      expiresAt = new Date(Date.now() + tpl.expiryTtlSeconds * 1000).toISOString();
     }
 
-    // Parse quota if provided
+    // Parse quota: explicit params > template > undefined
     let quota = undefined;
     if (params.quota) {
       quota = {
@@ -1134,17 +1165,31 @@ export class PayGateServer {
         dailyCreditLimit: Math.max(0, Math.floor(Number(params.quota.dailyCreditLimit) || 0)),
         monthlyCreditLimit: Math.max(0, Math.floor(Number(params.quota.monthlyCreditLimit) || 0)),
       };
+    } else if (tpl?.quota) {
+      quota = { ...tpl.quota };
     }
 
     const record = this.gate.store.createKey(name, credits, {
-      allowedTools: params.allowedTools,
-      deniedTools: params.deniedTools,
+      allowedTools: params.allowedTools || (tpl ? [...tpl.allowedTools] : undefined),
+      deniedTools: params.deniedTools || (tpl ? [...tpl.deniedTools] : undefined),
       expiresAt,
       quota,
-      tags: params.tags,
-      ipAllowlist: params.ipAllowlist,
-      namespace: params.namespace,
+      tags: params.tags || (tpl ? { ...tpl.tags } : undefined),
+      ipAllowlist: params.ipAllowlist || (tpl ? [...tpl.ipAllowlist] : undefined),
+      namespace: params.namespace || tpl?.namespace,
     });
+
+    // Apply template spending limit if not explicitly set
+    if (tpl && tpl.spendingLimit > 0 && record.spendingLimit === 0) {
+      record.spendingLimit = tpl.spendingLimit;
+      this.gate.store.save();
+    }
+
+    // Apply template auto-topup if not explicitly configured
+    if (tpl?.autoTopup && !record.autoTopup) {
+      record.autoTopup = { ...tpl.autoTopup };
+      this.gate.store.save();
+    }
 
     // Sync new key to Redis (if configured)
     if (this.redisSync) {
@@ -4682,11 +4727,93 @@ export class PayGateServer {
     res.end(JSON.stringify({ revoked: true }));
   }
 
-  /**
-   * Sync a key mutation to Redis. Call after any local KeyStore mutation
-   * (setAcl, setExpiry, setQuota, setTags, setIpAllowlist, setSpendingLimit).
-   * Fire-and-forget: errors logged, never thrown.
-   */
+  // ─── /keys/templates — CRUD ────────────────────────────────────────────────
+
+  private handleListTemplates(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const templates = this.templates.list();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ total: templates.length, templates }));
+  }
+
+  private async handleCreateTemplate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const name = params.name;
+    if (!name || typeof name !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      return;
+    }
+
+    const existing = this.templates.get(name as string);
+    const result = this.templates.set(name as string, params as any);
+
+    if (!result.success) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: result.error }));
+      return;
+    }
+
+    const eventType = existing ? 'template.updated' : 'template.created';
+    this.audit.log(eventType, 'admin', `${existing ? 'Updated' : 'Created'} template: ${name}`, {
+      templateName: name,
+    });
+
+    res.writeHead(existing ? 200 : 201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ template: result.template }));
+  }
+
+  private async handleDeleteTemplate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { name?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.name || typeof params.name !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      return;
+    }
+
+    const deleted = this.templates.delete(params.name);
+    if (!deleted) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Template "${params.name}" not found` }));
+      return;
+    }
+
+    this.audit.log('template.deleted', 'admin', `Deleted template: ${params.name}`, {
+      templateName: params.name,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ deleted: true, name: params.name }));
+  }
+
   /**
    * Route admin webhook events through the WebhookRouter (for filter rules) or direct emitter.
    */

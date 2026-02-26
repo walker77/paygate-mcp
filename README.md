@@ -78,6 +78,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Webhook Pause/Resume** — `POST /webhooks/pause` and `POST /webhooks/resume` temporarily halt webhook delivery during maintenance — events are buffered (not lost) and flushed on resume, with pause state visible in `/webhooks/stats`
 - **Key Aliases** — `POST /keys/alias` assigns human-readable aliases (e.g. `my-service`, `prod-backend`) to API keys — use aliases in any admin endpoint (topup, revoke, suspend, resume, clone, transfer, usage) instead of opaque key IDs, with uniqueness enforcement, format validation, state file persistence, and audit trail
 - **Key Expiry Scanner** — Proactive background scanner that detects expiring API keys before they expire — configurable scan interval and notification thresholds (default: 7d, 24h, 1h), de-duplicated `key.expiry_warning` webhook events, audit trail, `GET /keys/expiring?within=86400` query endpoint, and graceful shutdown
+- **Key Templates** — Named templates for API key creation — define reusable presets (credits, ACL, quotas, IP, tags, namespace, expiry TTL, spending limit, auto-topup) and create keys with `template: "free-tier"` — explicit params override template defaults, CRUD admin API, Prometheus gauge, file persistence, max 100 templates
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -361,6 +362,9 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/webhooks/resume` | POST | `X-Admin-Key` | Resume webhook delivery and flush buffered events |
 | `/keys/alias` | POST | `X-Admin-Key` | Set or clear a human-readable alias for an API key |
 | `/keys/expiring` | GET | `X-Admin-Key` | List keys expiring within a time window (`?within=86400` seconds) |
+| `/keys/templates` | GET | `X-Admin-Key` | List all key templates |
+| `/keys/templates` | POST | `X-Admin-Key` | Create or update a key template |
+| `/keys/templates/delete` | POST | `X-Admin-Key` | Delete a key template |
 | `/config/reload` | POST | `X-Admin-Key` | Hot-reload config file (pricing, rate limits, webhooks, quotas) |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
@@ -1276,6 +1280,56 @@ Configure the scanner in your config file:
 | Progressive | Largest threshold fires first, then progressively smaller thresholds on subsequent scans |
 | Audit | `key.expiry_warning` event logged for every notification |
 | Endpoint | `GET /keys/expiring?within=N` lists keys expiring within N seconds (default: 86400) |
+
+### Key Templates
+
+Named templates for API key creation. Define reusable presets and create keys with `template: "free-tier"`:
+
+```bash
+# Create a template
+curl -X POST http://localhost:3402/keys/templates \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{
+    "name": "free-tier",
+    "description": "Free plan with basic access",
+    "credits": 50,
+    "allowedTools": ["search", "read"],
+    "deniedTools": ["admin"],
+    "tags": {"plan": "free"},
+    "namespace": "public",
+    "expiryTtlSeconds": 2592000,
+    "spendingLimit": 200
+  }'
+
+# List all templates
+curl http://localhost:3402/keys/templates \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Create a key from template (inherits all defaults)
+curl -X POST http://localhost:3402/keys \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "new-user", "template": "free-tier"}'
+
+# Create a key from template with overrides
+curl -X POST http://localhost:3402/keys \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "vip-user", "template": "free-tier", "credits": 500, "tags": {"plan": "vip"}}'
+
+# Delete a template
+curl -X POST http://localhost:3402/keys/templates/delete \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "free-tier"}'
+```
+
+| Feature | Details |
+|---------|---------|
+| Fields | credits, allowedTools, deniedTools, quota, ipAllowlist, spendingLimit, tags, namespace, expiryTtlSeconds, autoTopup |
+| Override | Explicit params in `POST /keys` always override template defaults |
+| TTL | `expiryTtlSeconds` sets expiry relative to key creation time (0 = never) |
+| Limit | Max 100 templates per server |
+| Persistence | `-templates.json` alongside state file, survives restarts |
+| Audit | `template.created`, `template.updated`, `template.deleted` events |
+| Prometheus | `paygate_templates_total` gauge tracks template count |
 
 ### IP Allowlisting
 
