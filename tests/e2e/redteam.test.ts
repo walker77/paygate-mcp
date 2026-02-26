@@ -247,19 +247,21 @@ describe('RED TEAM — PayGate Security', () => {
     });
 
     it('should not allow zero-cost tool bypass via empty tool name', async () => {
+      // Create key with minimal credits (0 credits rejected, use 1)
       const createRes = await httpRequest(port, '/keys', {
         method: 'POST',
         headers: { 'X-Admin-Key': adminKey },
-        body: { name: 'empty-tool', credits: 0 },
+        body: { name: 'empty-tool', credits: 1 },
       });
       const apiKey = createRes.body.key;
+      expect(apiKey).toBeDefined();
 
       const res = await httpRequest(port, '/mcp', {
         method: 'POST',
         headers: { 'X-API-Key': apiKey },
         body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: '', arguments: {} } },
       });
-      // Should be denied — insufficient credits
+      // Should be denied or return error — empty tool name is invalid
       expect(res.body.error).toBeDefined();
     });
 
