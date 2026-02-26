@@ -1626,6 +1626,8 @@ const policy = server.groups.resolvePolicy(apiKey, keyRecord);
 // { allowedTools, deniedTools, rateLimitPerMin, quota, ipAllowlist, toolPricing, maxSpendingLimit }
 ```
 
+**Redis sync:** When running with `--redis-url`, group definitions and key assignments are automatically persisted to Redis and synced across instances via pub/sub. All group CRUD operations and assignment changes propagate in real-time to other PayGate processes.
+
 ### Horizontal Scaling (Redis)
 
 Enable Redis-backed state for multi-process deployments. Multiple PayGate instances share API keys, credits, and usage data through Redis:

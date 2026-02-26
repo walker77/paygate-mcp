@@ -19,6 +19,7 @@ import { RedisClient, RedisSubscriber, parseRedisUrl } from './redis-client';
 import type { RedisClientOptions } from './redis-client';
 import { KeyStore } from './store';
 import { ApiKeyRecord, QuotaConfig, UsageEvent } from './types';
+import { KeyGroupManager, KeyGroupRecord } from './groups';
 import { randomBytes } from 'crypto';
 
 const KEY_PREFIX = 'pg:key:';
@@ -26,14 +27,17 @@ const KEY_SET = 'pg:keys';
 const META_KEY = 'pg:meta';
 const USAGE_LIST = 'pg:usage';
 const RATE_PREFIX = 'pg:rate:';
+const GROUP_PREFIX = 'pg:group:';
+const GROUP_SET = 'pg:groups';
+const GROUP_ASSIGN_KEY = 'pg:group_assignments';
 const PG_CHANNEL = 'pg:events';
 
 // ─── Pub/Sub Event Types ──────────────────────────────────────────────────────
 
 export interface PubSubEvent {
   /** Event type */
-  type: 'key_updated' | 'key_revoked' | 'credits_changed' | 'key_created' | 'token_revoked';
-  /** API key affected */
+  type: 'key_updated' | 'key_revoked' | 'credits_changed' | 'key_created' | 'token_revoked' | 'group_updated' | 'group_deleted' | 'group_assignment_changed';
+  /** API key or group ID affected */
   key: string;
   /** Originating instance ID (for self-message filtering) */
   instanceId: string;
@@ -121,6 +125,8 @@ export class RedisSync {
   onPubSubEvent?: (event: PubSubEvent) => void;
   /** Callback for token revocation events (wired to ScopedTokenManager by server) */
   onTokenRevoked?: (fingerprint: string, expiresAt: string, revokedAt: string, reason?: string) => void;
+  /** Optional KeyGroupManager for group sync (wired by server when groups are used) */
+  groupManager?: KeyGroupManager;
 
   constructor(redis: RedisClient, store: KeyStore, syncIntervalMs = 5000) {
     this.redis = redis;
@@ -140,11 +146,15 @@ export class RedisSync {
     console.log('[paygate:redis] Connected to Redis');
 
     await this.loadFromRedis();
+    await this.loadGroupsFromRedis();
 
     // Start periodic refresh (fallback for missed pub/sub messages)
     this.syncInterval = setInterval(() => {
       this.loadFromRedis().catch(err => {
         console.error('[paygate:redis] Sync error:', err.message);
+      });
+      this.loadGroupsFromRedis().catch(err => {
+        console.error('[paygate:redis] Group sync error:', err.message);
       });
     }, this.syncMs);
 
@@ -254,6 +264,13 @@ export class RedisSync {
               event.data.reason,
             );
           }
+          break;
+        }
+        case 'group_updated':
+        case 'group_deleted':
+        case 'group_assignment_changed': {
+          // Reload all groups from Redis (groups are small, full reload is fine)
+          this.loadGroupsFromRedis().catch(() => {});
           break;
         }
       }
@@ -599,6 +616,7 @@ export class RedisSync {
     fields.push('autoTopup', record.autoTopup ? JSON.stringify(record.autoTopup) : '');
     fields.push('autoTopupTodayCount', String(record.autoTopupTodayCount));
     fields.push('autoTopupLastResetDay', record.autoTopupLastResetDay);
+    fields.push('group', record.group || '');
     return fields;
   }
 
@@ -630,6 +648,170 @@ export class RedisSync {
       autoTopup: hash.autoTopup ? JSON.parse(hash.autoTopup) : undefined,
       autoTopupTodayCount: parseInt(hash.autoTopupTodayCount, 10) || 0,
       autoTopupLastResetDay: hash.autoTopupLastResetDay || new Date().toISOString().slice(0, 10),
+      group: hash.group || undefined,
+    };
+  }
+
+  // ─── Group Sync Operations ─────────────────────────────────────────────────
+
+  /**
+   * Save a group record to Redis. Fire-and-forget.
+   */
+  async saveGroup(group: KeyGroupRecord): Promise<void> {
+    try {
+      const redisKey = GROUP_PREFIX + group.id;
+      await this.redis.hset(redisKey, ...this.groupToHash(group));
+      await this.redis.command('SADD', GROUP_SET, group.id);
+      await this.publishEvent({ type: 'group_updated', key: group.id });
+    } catch (err) {
+      console.error(`[paygate:redis] Save group error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Delete a group from Redis. Fire-and-forget.
+   */
+  async deleteGroup(groupId: string): Promise<void> {
+    try {
+      await this.redis.command('DEL', GROUP_PREFIX + groupId);
+      await this.redis.command('SREM', GROUP_SET, groupId);
+      await this.publishEvent({ type: 'group_deleted', key: groupId });
+    } catch (err) {
+      console.error(`[paygate:redis] Delete group error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Save all group assignments to Redis as a single hash (apiKey → groupId).
+   * Fire-and-forget.
+   */
+  async saveGroupAssignments(): Promise<void> {
+    if (!this.groupManager) return;
+    try {
+      // Clear existing assignments
+      await this.redis.command('DEL', GROUP_ASSIGN_KEY);
+      // Rebuild from group manager
+      const serialized = this.groupManager.serialize();
+      if (serialized.assignments.length > 0) {
+        const fields: string[] = [];
+        for (const [apiKey, groupId] of serialized.assignments) {
+          fields.push(apiKey, groupId);
+        }
+        await this.redis.hset(GROUP_ASSIGN_KEY, ...fields);
+      }
+      await this.publishEvent({ type: 'group_assignment_changed', key: '' });
+    } catch (err) {
+      console.error(`[paygate:redis] Save assignments error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Load all groups and assignments from Redis into the local KeyGroupManager.
+   */
+  async loadGroupsFromRedis(): Promise<void> {
+    if (!this.groupManager) return;
+    try {
+      const groupIds = await this.redis.command('SMEMBERS', GROUP_SET) as string[];
+      if (!groupIds || groupIds.length === 0) {
+        // No groups in Redis — push local state up if we have any
+        if (this.groupManager.count > 0) {
+          await this.pushGroupsToRedis();
+        }
+        return;
+      }
+
+      // Load all group records as [id, record] tuples (matches serialize() format)
+      const groups: Array<[string, KeyGroupRecord]> = [];
+      for (const id of groupIds) {
+        const hash = await this.redis.hgetall(GROUP_PREFIX + id);
+        if (!hash || !hash.id) continue;
+        const record = this.hashToGroup(hash);
+        if (record) groups.push([id, record]);
+      }
+
+      // Load assignments
+      const assignHash = await this.redis.hgetall(GROUP_ASSIGN_KEY);
+      const assignments: Array<[string, string]> = [];
+      if (assignHash) {
+        for (const [apiKey, groupId] of Object.entries(assignHash)) {
+          assignments.push([apiKey, groupId]);
+        }
+      }
+
+      // Load into group manager
+      this.groupManager.load({ groups, assignments });
+
+      if (groups.length > 0) {
+        console.log(`[paygate:redis] Synced ${groups.length} group(s) from Redis`);
+      }
+    } catch (err) {
+      console.error(`[paygate:redis] Load groups error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Push local groups to Redis (used when Redis is empty on first connect).
+   */
+  private async pushGroupsToRedis(): Promise<void> {
+    if (!this.groupManager) return;
+    const serialized = this.groupManager.serialize();
+    if (serialized.groups.length === 0) return;
+
+    for (const [id, group] of serialized.groups) {
+      const redisKey = GROUP_PREFIX + id;
+      await this.redis.hset(redisKey, ...this.groupToHash(group));
+      await this.redis.command('SADD', GROUP_SET, id);
+    }
+
+    if (serialized.assignments.length > 0) {
+      const fields: string[] = [];
+      for (const [apiKey, groupId] of serialized.assignments) {
+        fields.push(apiKey, groupId);
+      }
+      await this.redis.hset(GROUP_ASSIGN_KEY, ...fields);
+    }
+
+    console.log(`[paygate:redis] Pushed ${serialized.groups.length} local group(s) to Redis`);
+  }
+
+  // ─── Group Serialization ───────────────────────────────────────────────────
+
+  private groupToHash(group: KeyGroupRecord): string[] {
+    return [
+      'id', group.id,
+      'name', group.name,
+      'description', group.description,
+      'allowedTools', JSON.stringify(group.allowedTools),
+      'deniedTools', JSON.stringify(group.deniedTools),
+      'rateLimitPerMin', String(group.rateLimitPerMin),
+      'toolPricing', JSON.stringify(group.toolPricing),
+      'quota', group.quota ? JSON.stringify(group.quota) : '',
+      'ipAllowlist', JSON.stringify(group.ipAllowlist),
+      'defaultCredits', String(group.defaultCredits),
+      'maxSpendingLimit', String(group.maxSpendingLimit),
+      'tags', JSON.stringify(group.tags),
+      'createdAt', group.createdAt,
+      'active', group.active ? '1' : '0',
+    ];
+  }
+
+  private hashToGroup(hash: Record<string, string>): KeyGroupRecord | null {
+    if (!hash.id) return null;
+    return {
+      id: hash.id,
+      name: hash.name || '',
+      description: hash.description || '',
+      allowedTools: hash.allowedTools ? JSON.parse(hash.allowedTools) : [],
+      deniedTools: hash.deniedTools ? JSON.parse(hash.deniedTools) : [],
+      rateLimitPerMin: parseInt(hash.rateLimitPerMin, 10) || 0,
+      toolPricing: hash.toolPricing ? JSON.parse(hash.toolPricing) : {},
+      quota: hash.quota ? JSON.parse(hash.quota) : undefined,
+      ipAllowlist: hash.ipAllowlist ? JSON.parse(hash.ipAllowlist) : [],
+      defaultCredits: parseInt(hash.defaultCredits, 10) || 0,
+      maxSpendingLimit: parseInt(hash.maxSpendingLimit, 10) || 0,
+      tags: hash.tags ? JSON.parse(hash.tags) : {},
+      createdAt: hash.createdAt || new Date().toISOString(),
+      active: hash.active !== '0',
     };
   }
 }

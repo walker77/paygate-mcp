@@ -263,6 +263,8 @@ export class PayGateServer {
       sync.onTokenRevoked = (fingerprint, expiresAt, revokedAt, reason) => {
         this.tokens.revocationList.addEntry({ fingerprint, expiresAt, revokedAt, reason });
       };
+      // Wire group manager for Redis sync
+      sync.groupManager = this.groups;
     }
   }
 
@@ -2921,6 +2923,7 @@ export class PayGateServer {
       });
 
       this.audit.log('group.created', 'admin', `Group created: ${group.name}`, { groupId: group.id, name: group.name });
+      if (this.redisSync) this.redisSync.saveGroup(group).catch(() => {});
 
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(group));
@@ -2974,6 +2977,7 @@ export class PayGateServer {
       });
 
       this.audit.log('group.updated', 'admin', `Group updated: ${group.name}`, { groupId: group.id });
+      if (this.redisSync) this.redisSync.saveGroup(group).catch(() => {});
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(group));
@@ -3014,6 +3018,10 @@ export class PayGateServer {
     }
 
     this.audit.log('group.deleted', 'admin', `Group deleted: ${groupId}`, { groupId });
+    if (this.redisSync) {
+      this.redisSync.deleteGroup(groupId).catch(() => {});
+      this.redisSync.saveGroupAssignments().catch(() => {});
+    }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, message: `Group ${groupId} deleted` }));
@@ -3059,6 +3067,10 @@ export class PayGateServer {
       this.audit.log('group.key_assigned', 'admin', `Key assigned to group ${groupId}`, {
         keyMasked: maskKeyForAudit(apiKey), groupId,
       });
+      if (this.redisSync) {
+        this.redisSync.saveGroupAssignments().catch(() => {});
+        this.syncKeyMutation(apiKey);
+      }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, message: `Key assigned to group ${groupId}` }));
@@ -3105,6 +3117,10 @@ export class PayGateServer {
     }
 
     this.audit.log('group.key_removed', 'admin', `Key removed from group`, { keyMasked: maskKeyForAudit(apiKey) });
+    if (this.redisSync) {
+      this.redisSync.saveGroupAssignments().catch(() => {});
+      this.syncKeyMutation(apiKey);
+    }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, message: 'Key removed from group' }));
