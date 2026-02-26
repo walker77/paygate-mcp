@@ -594,9 +594,11 @@ export class PayGateServer {
         return this.handleAssignKeyToGroup(req, res);
       case '/groups/remove':
         return this.handleRemoveKeyFromGroup(req, res);
-      // ─── Config hot reload ──────────────────────────────────────────
+      // ─── Config endpoints ──────────────────────────────────────────
       case '/config/reload':
         return this.handleConfigReload(req, res);
+      case '/config':
+        return this.handleConfigExport(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -1086,6 +1088,7 @@ export class PayGateServer {
         assignKeyToGroup: 'POST /groups/assign — Assign a key to a group (requires X-Admin-Key)',
         removeKeyFromGroup: 'POST /groups/remove — Remove a key from a group (requires X-Admin-Key)',
         configReload: 'POST /config/reload — Hot reload config from file (requires X-Admin-Key)',
+        configExport: 'GET /config — Export running config with sensitive values masked (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -1219,11 +1222,81 @@ export class PayGateServer {
         pricing: '/pricing',
         audit: '/audit (admin)',
         analytics: '/analytics (admin)',
+        config: '/config (admin)',
       },
     };
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(info));
+  }
+
+  // ─── /config — Export running config ───────────────────────────────────────
+
+  private handleConfigExport(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'viewer')) return;
+
+    const requestId = (req as any)._requestId as string;
+
+    // Build sanitized config — mask sensitive values
+    const sanitized: Record<string, unknown> = {
+      name: this.config.name,
+      port: this.config.port,
+      defaultCreditsPerCall: this.config.defaultCreditsPerCall,
+      globalRateLimitPerMin: this.config.globalRateLimitPerMin,
+      shadowMode: this.config.shadowMode,
+      refundOnFailure: this.config.refundOnFailure,
+      freeMethods: this.config.freeMethods,
+      toolPricing: this.config.toolPricing,
+      webhookUrl: this.config.webhookUrl ? this.maskUrl(this.config.webhookUrl) : null,
+      webhookSecret: this.config.webhookSecret ? '***' : null,
+      webhookMaxRetries: this.config.webhookMaxRetries ?? 5,
+      webhookFilters: this.config.webhookFilters
+        ? this.config.webhookFilters.map(f => ({
+            id: f.id,
+            name: f.name,
+            events: f.events,
+            url: this.maskUrl(f.url),
+            secret: f.secret ? '***' : undefined,
+            keyPrefixes: f.keyPrefixes,
+            active: f.active,
+          }))
+        : [],
+      globalQuota: this.config.globalQuota || null,
+      oauth: this.config.oauth
+        ? {
+            issuer: this.config.oauth.issuer || '(auto-detected)',
+            accessTokenTtl: this.config.oauth.accessTokenTtl ?? 3600,
+            refreshTokenTtl: this.config.oauth.refreshTokenTtl ?? 2592000,
+            scopes: this.config.oauth.scopes ?? ['tools:*', 'tools:read', 'tools:write'],
+          }
+        : null,
+      alertRules: this.config.alertRules || [],
+      expiryScanner: this.config.expiryScanner || null,
+      cors: this.config.cors || { origin: '*' },
+      customHeaders: this.config.customHeaders || {},
+      serverCommand: this.config.serverCommand ? '***' : '',
+      serverArgs: this.config.serverArgs?.length ? ['***'] : [],
+    };
+
+    this.audit.log('config.export', 'admin', 'Config exported', { requestId });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ config: sanitized }));
+  }
+
+  /** Mask a URL by hiding the path portion (keeps scheme + host) */
+  private maskUrl(url: string): string {
+    try {
+      const parsed = new URL(url);
+      return `${parsed.protocol}//${parsed.host}/***`;
+    } catch {
+      return '***';
+    }
   }
 
   // ─── /keys — Create ─────────────────────────────────────────────────────────

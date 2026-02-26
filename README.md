@@ -84,6 +84,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Server Info Endpoint** — `GET /info` returns server capabilities, enabled features, auth methods, pricing summary, rate limits, and available endpoints — public, no admin key required, ideal for agent auto-discovery and debugging
 - **Configurable CORS** — Control which origins can access your server: single origin, multiple origins, or wildcard (`*` default), with credentials support, configurable preflight max-age, and `Vary: Origin` for proper caching — set via config file `cors` object, `--cors-origin` CLI flag, or `PAYGATE_CORS_ORIGIN` env var
 - **Custom Response Headers** — Add security headers (`X-Frame-Options`, `X-Content-Type-Options`, etc.), cache control, or any custom headers to all HTTP responses — set via config file `customHeaders` object, `--header` CLI flag, or `PAYGATE_CUSTOM_HEADERS` env var
+- **Config Export** — `GET /config` returns the running server configuration with sensitive values masked (webhook secrets → `***`, server commands → `***`, webhook URLs → scheme+host only) — admin auth required, includes audit trail
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1512,6 +1513,27 @@ Config file:
 ```
 
 Custom headers are applied to every HTTP response (health, info, admin, MCP, preflight) and coexist with CORS headers and request IDs. They do not override built-in headers.
+
+### Config Export
+
+Inspect the running server configuration for debugging and verification:
+
+```bash
+curl http://localhost:3402/config -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+Returns the full config with sensitive values masked:
+
+| Field | Masking |
+|-------|---------|
+| `webhookSecret` | `***` |
+| `webhookUrl` | Scheme + host only (e.g. `https://hooks.example.com/***`) |
+| `serverCommand` | `***` |
+| `serverArgs` | `['***']` |
+| Webhook filter secrets | `***` |
+| Webhook filter URLs | Scheme + host only |
+
+Non-sensitive values (pricing, rate limits, CORS, custom headers, quotas, etc.) are returned as-is. Each export is recorded in the audit trail as `config.export`.
 
 ### IP Allowlisting
 

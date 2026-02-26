@@ -82,8 +82,9 @@ export type AuditEventType =
   | 'webhook_filter.created'
   | 'webhook_filter.updated'
   | 'webhook_filter.deleted'
-  // Config reload
-  | 'config.reloaded';
+  // Config
+  | 'config.reloaded'
+  | 'config.export';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */
