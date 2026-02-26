@@ -32,6 +32,7 @@ export type AuditEventType =
   | 'oauth.token_revoked'
   // Admin
   | 'admin.auth_failed'
+  | 'admin.alerts_configured'
   // Billing
   | 'billing.refund';
 

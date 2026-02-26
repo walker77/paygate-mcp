@@ -99,6 +99,12 @@ export interface PayGateConfig {
     /** Supported scopes. Default: ['tools:*', 'tools:read', 'tools:write']. */
     scopes?: string[];
   };
+  /** Alert rules for proactive monitoring. Empty = no alerts. */
+  alertRules?: Array<{
+    type: 'spending_threshold' | 'credits_low' | 'quota_warning' | 'key_expiry_soon' | 'rate_limit_spike';
+    threshold: number;
+    cooldownSeconds?: number;
+  }>;
 }
 
 // ─── Multi-Server ──────────────────────────────────────────────────────────

@@ -35,6 +35,8 @@ import { AuditLogger, maskKeyForAudit } from './audit';
 import { ToolRegistry } from './registry';
 import { MetricsCollector } from './metrics';
 import { getDashboardHtml } from './dashboard';
+import { AnalyticsEngine } from './analytics';
+import { AlertEngine, Alert } from './alerts';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -72,6 +74,10 @@ export class PayGateServer {
   readonly registry: ToolRegistry;
   /** Prometheus-compatible metrics collector */
   readonly metrics: MetricsCollector;
+  /** Time-series analytics engine */
+  readonly analytics: AnalyticsEngine;
+  /** Alert engine for proactive monitoring */
+  readonly alerts: AlertEngine;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -137,6 +143,18 @@ export class PayGateServer {
     });
     this.metrics.registerGauge('paygate_total_credits_available', 'Total credits across all active keys', () => {
       return this.gate.store.listKeys().filter(k => k.active).reduce((sum, k) => sum + k.credits, 0);
+    });
+
+    // Analytics engine
+    this.analytics = new AnalyticsEngine();
+
+    // Alert engine
+    this.alerts = new AlertEngine({
+      rules: this.config.alertRules || [],
+    });
+    // Register alert gauge
+    this.metrics.registerGauge('paygate_pending_alerts_total', 'Number of pending alerts', () => {
+      return this.alerts.pendingCount;
     });
   }
 
@@ -228,6 +246,12 @@ export class PayGateServer {
         return this.handlePricing(req, res);
       case '/metrics':
         return this.handleMetrics(req, res);
+      case '/analytics':
+        return this.handleAnalytics(req, res);
+      case '/alerts':
+        if (req.method === 'GET') return this.handleGetAlerts(req, res);
+        if (req.method === 'POST') return this.handleConfigureAlerts(req, res);
+        break;
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -323,6 +347,10 @@ export class PayGateServer {
         this.metrics.recordToolCall(toolName, false, 0, reason);
         if (response.error.code === -32001) {
           this.metrics.recordRateLimitHit(toolName);
+          // Track rate limit denial for alert spike detection
+          if (apiKey) {
+            this.alerts.recordRateLimitDenial(apiKey);
+          }
         }
       } else {
         this.audit.log('gate.allow', maskKeyForAudit(apiKey || 'anonymous'), `Allowed: ${toolName}`, {
@@ -332,6 +360,27 @@ export class PayGateServer {
         const price = this.gate.getToolPrice(toolName,
           (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined);
         this.metrics.recordToolCall(toolName, true, price);
+      }
+    }
+
+    // Check alert rules after gate evaluation
+    if (apiKey && request.method === 'tools/call' && this.alerts.configuredRules.length > 0) {
+      const keyRecord = this.gate.store.getKey(apiKey);
+      if (keyRecord) {
+        const isRateLimited = response.error?.code === -32001;
+        const fired = this.alerts.check(apiKey, keyRecord, { rateLimitDenied: isRateLimited });
+        // Send alert events via webhook
+        for (const alert of fired) {
+          this.gate.webhook?.emitAdmin('alert.fired', 'system', {
+            alertType: alert.type,
+            keyPrefix: alert.keyPrefix,
+            keyName: alert.keyName,
+            message: alert.message,
+            threshold: alert.threshold,
+            currentValue: alert.currentValue,
+            ...alert.metadata,
+          });
+        }
       }
     }
 
@@ -527,6 +576,8 @@ export class PayGateServer {
         auditExport: 'GET /audit/export — Export audit log (requires X-Admin-Key)',
         auditStats: 'GET /audit/stats — Audit log statistics (requires X-Admin-Key)',
         metrics: 'GET /metrics — Prometheus metrics (public)',
+        analytics: 'GET /analytics — Usage analytics with time-series data (requires X-Admin-Key)',
+        alerts: 'GET /alerts — Get pending alerts + POST /alerts — Configure alert rules (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -1601,6 +1652,94 @@ export class PayGateServer {
   private handleMetrics(_req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
     res.end(this.metrics.serialize());
+  }
+
+  // ─── /analytics — Usage analytics ──────────────────────────────────────────
+
+  private handleAnalytics(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+
+    const from = params.get('from') || undefined;
+    const to = params.get('to') || undefined;
+    const granularity = (params.get('granularity') || 'hourly') as 'hourly' | 'daily';
+    const topN = params.get('top') ? parseInt(params.get('top')!, 10) : 10;
+
+    const events = this.gate.meter.getEvents();
+    const report = this.analytics.report(events, { from, to, granularity, topN });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(report, null, 2));
+  }
+
+  // ─── /alerts — Alert management ────────────────────────────────────────────
+
+  private handleGetAlerts(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const alerts = this.alerts.consumeAlerts();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      alerts,
+      count: alerts.length,
+      rules: this.alerts.configuredRules,
+    }));
+  }
+
+  private async handleConfigureAlerts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { rules?: Array<{ type: string; threshold: number; cooldownSeconds?: number }> };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.rules || !Array.isArray(params.rules)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing or invalid rules array' }));
+      return;
+    }
+
+    // Validate rule types
+    const validTypes = ['spending_threshold', 'credits_low', 'quota_warning', 'key_expiry_soon', 'rate_limit_spike'];
+    for (const rule of params.rules) {
+      if (!validTypes.includes(rule.type)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid alert type: ${rule.type}. Valid: ${validTypes.join(', ')}` }));
+        return;
+      }
+      if (typeof rule.threshold !== 'number' || rule.threshold < 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid threshold for ${rule.type}: must be a non-negative number` }));
+        return;
+      }
+    }
+
+    // Replace the alert engine with new rules
+    (this as any).alerts = new AlertEngine({ rules: params.rules as any });
+
+    this.audit.log('admin.alerts_configured', 'admin', `Alert rules updated (${params.rules.length} rules)`, {
+      ruleCount: params.rules.length,
+      rules: params.rules,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      rules: params.rules,
+      message: `${params.rules.length} alert rule(s) configured`,
+    }));
   }
 
   // ─── /audit — Query audit log ─────────────────────────────────────────────

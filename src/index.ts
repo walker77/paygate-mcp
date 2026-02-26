@@ -38,6 +38,10 @@ export type { MetricLabels } from './metrics';
 export type { ToolPricingInfo, ServerPaymentMetadata, PricingResponse } from './registry';
 export type { McpSession, SessionManagerConfig } from './session';
 export { getDashboardHtml } from './dashboard';
+export { AnalyticsEngine } from './analytics';
+export type { AnalyticsReport, TimeBucket, ToolBreakdown, TopConsumer, TrendComparison, BucketGranularity } from './analytics';
+export { AlertEngine } from './alerts';
+export type { Alert, AlertRule, AlertType, AlertEngineConfig } from './alerts';
 export { PayGateClient, PayGateError } from './client';
 export type { PayGateClientConfig, CreditsNeededInfo, BalanceInfo } from './client';
 

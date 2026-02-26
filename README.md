@@ -50,6 +50,8 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Admin Lifecycle Events** — Webhook notifications for key.created, key.revoked, key.rotated, key.topup
 - **IP Allowlisting** — Restrict API keys to specific IPs or CIDR ranges (IPv4)
 - **Key Tags/Metadata** — Attach arbitrary key-value tags to API keys for external system integration
+- **Usage Analytics** — Time-series analytics API with tool breakdown, top consumers, and trend comparison
+- **Alert Webhooks** — Configurable alerts for spending thresholds, low credits, quota warnings, key expiry, rate limit spikes
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -286,6 +288,9 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
 | `/metrics` | GET | None | Prometheus metrics (counters, gauges, uptime) |
+| `/analytics` | GET | `X-Admin-Key` | Usage analytics (time-series, tool breakdown, trends) |
+| `/alerts` | GET | `X-Admin-Key` | Consume pending alerts |
+| `/alerts` | POST | `X-Admin-Key` | Configure alert rules |
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
@@ -510,6 +515,8 @@ When webhooks are enabled, admin operations also fire webhook events:
 | `key.topup` | POST /topup | keyMasked, creditsAdded, newBalance |
 | `key.revoked` | POST /keys/revoke | keyMasked |
 | `key.rotated` | POST /keys/rotate | oldKeyMasked, newKeyMasked |
+| `key.expired` | Gate evaluation | keyMasked |
+| `alert.fired` | Gate evaluation | alertType, keyPrefix, message, value, threshold |
 
 Admin events appear in the `adminEvents` array of the webhook payload (separate from usage `events`). Both arrays can be present in the same batch.
 
@@ -649,7 +656,7 @@ curl http://localhost:3402/audit/stats \
   -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
-**Tracked events:** `key.created`, `key.revoked`, `key.topup`, `key.acl_updated`, `key.expiry_updated`, `key.quota_updated`, `key.limit_updated`, `gate.allow`, `gate.deny`, `session.created`, `session.destroyed`, `oauth.client_registered`, `oauth.token_issued`, `oauth.token_revoked`, `admin.auth_failed`, `billing.refund`.
+**Tracked events:** `key.created`, `key.revoked`, `key.topup`, `key.acl_updated`, `key.expiry_updated`, `key.quota_updated`, `key.limit_updated`, `key.tags_updated`, `key.ip_updated`, `gate.allow`, `gate.deny`, `session.created`, `session.destroyed`, `oauth.client_registered`, `oauth.token_issued`, `oauth.token_revoked`, `admin.auth_failed`, `admin.alerts_configured`, `billing.refund`.
 
 **Retention:** Ring buffer (default 10,000 events), age-based cleanup (default 30 days), automatic periodic enforcement.
 
@@ -788,6 +795,65 @@ curl -X POST http://localhost:3402/keys \
 ```
 
 Limits: max 50 tags per key, max 100 chars per key/value. Tags appear in `/balance` responses and key listings.
+
+### Usage Analytics
+
+Query aggregated usage data for dashboards, reports, and trend analysis:
+
+```bash
+# Get analytics for the last 24 hours (hourly buckets)
+curl "http://localhost:3402/analytics?from=2026-02-25T00:00:00Z&to=2026-02-26T00:00:00Z&granularity=hourly" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Daily granularity with top 5 consumers
+curl "http://localhost:3402/analytics?granularity=daily&topN=5" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+Returns:
+- **timeSeries** — Bucketed call counts, credits charged, and denials per time window
+- **toolBreakdown** — Per-tool stats (calls, credits, average cost) sorted by usage
+- **topConsumers** — Top N API keys by credits spent, with each key's most-used tool
+- **trend** — Current vs previous period comparison with percentage changes (calls, credits, denials)
+- **summary** — Total calls, credits, unique keys, and unique tools
+
+Query parameters: `from` (ISO date), `to` (ISO date), `granularity` (`hourly` or `daily`, default: `hourly`), `topN` (number, default: `10`).
+
+### Alert Webhooks
+
+Configure rules to fire alerts when usage thresholds are crossed. Alerts are delivered via webhooks as `alert.fired` admin events:
+
+```bash
+# Configure alert rules
+curl -X POST http://localhost:3402/alerts \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"rules": [
+    {"type": "spending_threshold", "threshold": 80},
+    {"type": "credits_low", "threshold": 50},
+    {"type": "quota_warning", "threshold": 90},
+    {"type": "key_expiry_soon", "threshold": 86400},
+    {"type": "rate_limit_spike", "threshold": 10}
+  ]}'
+
+# Consume pending alerts (returns and clears queue)
+curl http://localhost:3402/alerts \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Alert types:**
+
+| Type | Threshold Meaning | Fires When |
+|------|-------------------|------------|
+| `spending_threshold` | Percentage (0–100) | Key has spent ≥ threshold% of its initial credits |
+| `credits_low` | Absolute credits | Key's remaining credits drop below threshold |
+| `quota_warning` | Percentage (0–100) | Key's daily call usage exceeds threshold% of quota |
+| `key_expiry_soon` | Seconds | Key expires within threshold seconds |
+| `rate_limit_spike` | Count | Key has ≥ threshold rate-limit denials in 5 minutes |
+
+Each rule has an optional `cooldownSeconds` (default: 300) to prevent alert storms. Alerts are automatically checked on every gate evaluation (tool call).
+
+When webhooks are enabled (`--webhook-url`), alerts fire as `alert.fired` events in the `adminEvents` webhook payload with full context (key, rule type, current value, threshold).
 
 ### Rate Limit Response Headers
 
@@ -941,6 +1007,8 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Admin lifecycle events — Webhook notifications for key management operations
 - [x] IP allowlisting — Restrict API keys to specific IPs or CIDR ranges
 - [x] Key tags/metadata — Attach key-value tags for external system integration
+- [x] Usage analytics — Time-series analytics API with tool breakdown, trends, and top consumers
+- [x] Alert webhooks — Configurable threshold alerts (spending, credits, quota, expiry, rate limits)
 - [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements

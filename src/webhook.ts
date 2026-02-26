@@ -18,7 +18,7 @@ import { UsageEvent } from './types';
 // ─── Admin Lifecycle Events ─────────────────────────────────────────────────
 
 export interface WebhookAdminEvent {
-  type: 'key.created' | 'key.revoked' | 'key.rotated' | 'key.topup' | 'key.expired';
+  type: 'key.created' | 'key.revoked' | 'key.rotated' | 'key.topup' | 'key.expired' | 'alert.fired';
   timestamp: string;
   actor: string;
   metadata: Record<string, unknown>;
