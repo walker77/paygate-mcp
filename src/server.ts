@@ -394,6 +394,8 @@ export class PayGateServer {
         return this.handleSearchKeysByTag(req, res);
       case '/keys/auto-topup':
         return this.handleSetAutoTopup(req, res);
+      case '/keys/usage':
+        return this.handleKeyUsage(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
       case '/keys/transfer':
@@ -938,6 +940,7 @@ export class PayGateServer {
         setIpAllowlist: 'POST /keys/ip — Set IP allowlist (requires X-Admin-Key)',
         searchKeys: 'POST /keys/search — Search keys by tags (requires X-Admin-Key)',
         autoTopup: 'POST /keys/auto-topup — Configure auto-topup for a key (requires X-Admin-Key)',
+        keyUsage: 'GET /keys/usage?key=... — Per-key usage breakdown (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
         mcpPayment: 'GET /.well-known/mcp-payment — Payment metadata (SEP-2007)',
         audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
@@ -2206,6 +2209,49 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ keys: results, count: results.length }));
+  }
+
+  // ─── /keys/usage — Per-key usage breakdown ──────────────────────────────────
+
+  private handleKeyUsage(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const key = params.get('key');
+    const since = params.get('since') || undefined;
+
+    if (!key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key query parameter' }));
+      return;
+    }
+
+    // Verify key exists (use getKeyRaw to allow querying expired/suspended keys)
+    const record = this.gate.store.getKeyRaw(key);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const usage = this.gate.meter.getKeyUsage(key, since);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: key.slice(0, 10) + '...',
+      name: record.name,
+      credits: record.credits,
+      active: record.active,
+      suspended: record.suspended || false,
+      since: since || 'all',
+      ...usage,
+    }, null, 2));
   }
 
   // ─── /keys/auto-topup — Configure auto-topup ────────────────────────────────

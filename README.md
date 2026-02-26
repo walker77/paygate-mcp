@@ -72,6 +72,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
 - **Key Cloning** — `POST /keys/clone` creates a new API key with the same config (ACL, quotas, tags, IP, namespace, group, spending limit, expiry, auto-topup) but fresh counters — ideal for provisioning similar keys
 - **Key Suspension** — Temporarily disable API keys without revoking them — suspended keys are denied at the gate but can be resumed, and admin operations (topup, ACL, etc.) still work on suspended keys
+- **Per-Key Usage** — `GET /keys/usage?key=...` returns detailed usage breakdown for a specific key: per-tool stats, hourly time-series, deny reasons, recent events, and key metadata
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -294,6 +295,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys/suspend` | POST | `X-Admin-Key` | Temporarily suspend a key (reversible) |
 | `/keys/resume` | POST | `X-Admin-Key` | Resume a suspended key |
 | `/keys/clone` | POST | `X-Admin-Key` | Clone a key (new key, same config, fresh counters) |
+| `/keys/usage` | GET | `X-Admin-Key` | Per-key usage breakdown (per-tool, time-series, deny reasons) |
 | `/keys/rotate` | POST | `X-Admin-Key` | Rotate key (new key, same credits/ACL/quotas) |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
 | `/keys/expiry` | POST | `X-Admin-Key` | Set or remove key expiry (TTL) |
@@ -1070,6 +1072,38 @@ curl -X POST http://localhost:3402/keys/resume \
 - **Revoke** — Permanent. Key is deactivated and cannot be restored. Use for compromised or decommissioned keys.
 
 Suspension fires `key.suspended` and `key.resumed` audit events and webhook notifications. Shadow mode allows suspended keys through (with `shadow:key_suspended` reason) for testing.
+
+### Per-Key Usage
+
+Get detailed usage breakdown for a specific API key — per-tool stats, hourly time-series, deny reasons, and recent events:
+
+```bash
+# Get full usage for a key
+curl http://localhost:3402/keys/usage?key=pg_abc123... \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by time (ISO 8601)
+curl "http://localhost:3402/keys/usage?key=pg_abc123...&since=2025-01-01T00:00:00Z" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+Response includes:
+
+| Field | Description |
+|-------|-------------|
+| `key` | Masked API key (first 10 chars + `...`) |
+| `name` | Key name |
+| `credits` | Current credit balance |
+| `active` / `suspended` | Key status |
+| `totalCalls` | Total tool calls made |
+| `totalAllowed` / `totalDenied` | Allowed vs denied breakdown |
+| `totalCreditsSpent` | Total credits consumed |
+| `perTool` | Per-tool breakdown: `{ calls, credits, denied }` |
+| `denyReasons` | Aggregated deny reasons with counts |
+| `timeSeries` | Hourly buckets: `{ hour, calls, credits, denied }` |
+| `recentEvents` | Last 50 events (newest first) with tool, credits, and deny reason |
+
+Works for active, suspended, and expired keys. Useful for debugging, billing audits, and per-customer analytics.
 
 ### IP Allowlisting
 
