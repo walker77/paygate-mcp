@@ -16,6 +16,7 @@ import { KeyStore } from './store';
 import { RateLimiter } from './rate-limiter';
 import { UsageMeter } from './meter';
 import { WebhookEmitter } from './webhook';
+import { WebhookRouter } from './webhook-router';
 import { QuotaTracker } from './quota';
 import { PluginManager, PluginGateContext } from './plugin';
 import { KeyGroupManager } from './groups';
@@ -24,7 +25,10 @@ export class Gate {
   readonly store: KeyStore;
   readonly rateLimiter: RateLimiter;
   readonly meter: UsageMeter;
+  /** Default webhook emitter (backward compat). Use webhookRouter for filtered routing. */
   readonly webhook: WebhookEmitter | null;
+  /** Webhook router with filter rules. Routes events to multiple destinations. */
+  readonly webhookRouter: WebhookRouter | null;
   readonly quotaTracker: QuotaTracker;
   private readonly config: PayGateConfig;
   /** Optional plugin manager for extensible hooks. */
@@ -47,10 +51,21 @@ export class Gate {
     this.store = new KeyStore(statePath);
     this.rateLimiter = new RateLimiter(config.globalRateLimitPerMin);
     this.meter = new UsageMeter();
-    this.webhook = config.webhookUrl ? new WebhookEmitter(config.webhookUrl, {
-      secret: config.webhookSecret || null,
-      maxRetries: config.webhookMaxRetries ?? 5,
-    }) : null;
+
+    // Create webhook router if any webhook is configured
+    if (config.webhookUrl || (config.webhookFilters && config.webhookFilters.length > 0)) {
+      this.webhookRouter = new WebhookRouter({
+        defaultUrl: config.webhookUrl,
+        defaultSecret: config.webhookSecret || null,
+        maxRetries: config.webhookMaxRetries ?? 5,
+        filters: config.webhookFilters || [],
+      });
+      this.webhook = this.webhookRouter.defaultWebhook;
+    } else {
+      this.webhookRouter = null;
+      this.webhook = null;
+    }
+
     this.quotaTracker = new QuotaTracker();
   }
 
@@ -769,7 +784,12 @@ export class Gate {
       namespace,
     };
     this.meter.record(event);
-    this.webhook?.emit(event);
+    // Route through webhookRouter (filters + default) or fall back to direct emitter
+    if (this.webhookRouter) {
+      this.webhookRouter.emit(event);
+    } else if (this.webhook) {
+      this.webhook.emit(event);
+    }
     this.onUsageEvent?.(event);
   }
 }

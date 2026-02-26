@@ -86,6 +86,8 @@ export interface PayGateConfig {
   webhookSecret: string | null;
   /** Maximum retries for failed webhook deliveries. Default: 5. */
   webhookMaxRetries?: number;
+  /** Webhook filter rules for routing events to different destinations. */
+  webhookFilters?: WebhookFilterRule[];
   /** Refund credits when downstream tool call fails. Default: false. */
   refundOnFailure: boolean;
   /** Global usage quota defaults (daily/monthly limits). Null = unlimited. */
@@ -107,6 +109,25 @@ export interface PayGateConfig {
     threshold: number;
     cooldownSeconds?: number;
   }>;
+}
+
+// ─── Webhook Filters ──────────────────────────────────────────────────────
+
+export interface WebhookFilterRule {
+  /** Unique filter ID (auto-generated if not provided). */
+  id: string;
+  /** Human-readable name for this filter. */
+  name: string;
+  /** Event types to match (e.g., ['key.created', 'key.revoked']). Use ['*'] for all events. */
+  events: string[];
+  /** Destination webhook URL for matched events. */
+  url: string;
+  /** Optional signing secret for this destination (overrides global secret). */
+  secret?: string;
+  /** API key prefixes to match (e.g., ['pk_prod_']). Undefined/empty = all keys. */
+  keyPrefixes?: string[];
+  /** Whether this filter is active. Default: true. */
+  active: boolean;
 }
 
 // ─── Multi-Server ──────────────────────────────────────────────────────────
@@ -136,6 +157,7 @@ export const DEFAULT_CONFIG: PayGateConfig = {
   webhookUrl: null,
   webhookSecret: null,
   webhookMaxRetries: 5,
+  webhookFilters: [],
   refundOnFailure: false,
 };
 

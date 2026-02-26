@@ -45,6 +45,7 @@ import { ScopedTokenManager } from './tokens';
 import { AdminKeyManager, AdminRole, ROLE_HIERARCHY } from './admin-keys';
 import { PluginManager, PayGatePlugin, PluginToolContext } from './plugin';
 import { KeyGroupManager } from './groups';
+import { WebhookRouter } from './webhook-router';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -216,7 +217,7 @@ export class PayGateServer {
       this.audit.log('key.auto_topped_up', 'system', `Auto-topup: added ${amount} credits`, {
         keyMasked, creditsAdded: amount, newBalance,
       });
-      this.gate.webhook?.emitAdmin('key.auto_topped_up', 'system', {
+      this.emitWebhookAdmin('key.auto_topped_up', 'system', {
         keyMasked, creditsAdded: amount, newBalance,
       });
       // Sync to Redis (if configured)
@@ -414,6 +415,14 @@ export class PayGateServer {
         break;
       case '/webhooks/stats':
         return this.handleWebhookStats(req, res);
+      case '/webhooks/filters':
+        if (req.method === 'GET') return this.handleListWebhookFilters(req, res);
+        if (req.method === 'POST') return this.handleCreateWebhookFilter(req, res);
+        break;
+      case '/webhooks/filters/update':
+        return this.handleUpdateWebhookFilter(req, res);
+      case '/webhooks/filters/delete':
+        return this.handleDeleteWebhookFilter(req, res);
       // ─── Team management endpoints ────────────────────────────────────
       case '/teams':
         if (req.method === 'GET') return this.handleListTeams(req, res);
@@ -664,7 +673,7 @@ export class PayGateServer {
         const fired = this.alerts.check(apiKey, keyRecord, { rateLimitDenied: isRateLimited });
         // Send alert events via webhook
         for (const alert of fired) {
-          this.gate.webhook?.emitAdmin('alert.fired', 'system', {
+          this.emitWebhookAdmin('alert.fired', 'system', {
             alertType: alert.type,
             keyPrefix: alert.keyPrefix,
             keyName: alert.keyName,
@@ -902,6 +911,9 @@ export class PayGateServer {
         alerts: 'GET /alerts — Get pending alerts + POST /alerts — Configure alert rules (requires X-Admin-Key)',
         webhookDeadLetters: 'GET /webhooks/dead-letter — View failed webhook deliveries + DELETE to clear (requires X-Admin-Key)',
         webhookStats: 'GET /webhooks/stats — Webhook delivery statistics (requires X-Admin-Key)',
+        webhookFilters: 'GET|POST /webhooks/filters — List or create webhook filter rules (requires X-Admin-Key)',
+        updateWebhookFilter: 'POST /webhooks/filters/update — Update a webhook filter rule (requires X-Admin-Key)',
+        deleteWebhookFilter: 'POST /webhooks/filters/delete — Delete a webhook filter rule (requires X-Admin-Key)',
         teams: 'GET /teams — List teams + POST /teams — Create team (requires X-Admin-Key)',
         teamsUpdate: 'POST /teams/update — Update team (requires X-Admin-Key)',
         teamsDelete: 'POST /teams/delete — Delete team (requires X-Admin-Key)',
@@ -1059,7 +1071,7 @@ export class PayGateServer {
       deniedTools: record.deniedTools,
       expiresAt: record.expiresAt,
     });
-    this.gate.webhook?.emitAdmin('key.created', 'admin', {
+    this.emitWebhookAdmin('key.created', 'admin', {
       keyMasked: maskKeyForAudit(record.key), name, credits,
     });
 
@@ -1144,7 +1156,7 @@ export class PayGateServer {
       creditsAdded: credits,
       newBalance: record?.credits,
     });
-    this.gate.webhook?.emitAdmin('key.topup', 'admin', {
+    this.emitWebhookAdmin('key.topup', 'admin', {
       keyMasked: maskKeyForAudit(params.key), creditsAdded: credits, newBalance: record?.credits,
     });
 
@@ -1194,7 +1206,7 @@ export class PayGateServer {
     this.audit.log('key.revoked', 'admin', `Key revoked`, {
       keyMasked: maskKeyForAudit(params.key),
     });
-    this.gate.webhook?.emitAdmin('key.revoked', 'admin', {
+    this.emitWebhookAdmin('key.revoked', 'admin', {
       keyMasked: maskKeyForAudit(params.key),
     });
 
@@ -1246,7 +1258,7 @@ export class PayGateServer {
       oldKeyMasked: maskKeyForAudit(params.key),
       newKeyMasked: maskKeyForAudit(rotated.key),
     });
-    this.gate.webhook?.emitAdmin('key.rotated', 'admin', {
+    this.emitWebhookAdmin('key.rotated', 'admin', {
       oldKeyMasked: maskKeyForAudit(params.key),
       newKeyMasked: maskKeyForAudit(rotated.key),
     });
@@ -1641,7 +1653,7 @@ export class PayGateServer {
       keyMasked: maskKeyForAudit(params.key),
       threshold, amount, maxDaily,
     });
-    this.gate.webhook?.emitAdmin('key.auto_topup_configured', 'admin', {
+    this.emitWebhookAdmin('key.auto_topup_configured', 'admin', {
       keyMasked: maskKeyForAudit(params.key), threshold, amount, maxDaily,
     });
 
@@ -2318,12 +2330,159 @@ export class PayGateServer {
     }
 
     const stats = this.gate.webhook.getRetryStats();
+    const routerStats = this.gate.webhookRouter ? this.gate.webhookRouter.getAggregateStats() : null;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       configured: true,
       maxRetries: this.gate.webhook.maxRetries,
       ...stats,
+      ...(routerStats ? { filters: routerStats } : {}),
     }));
+  }
+
+  // ─── /webhooks/filters — Webhook filter CRUD ─────────────────────────────
+
+  private handleListWebhookFilters(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhookRouter) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ count: 0, filters: [], message: 'No webhook router configured' }));
+      return;
+    }
+
+    const filters = this.gate.webhookRouter.listRules();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ count: filters.length, filters }));
+  }
+
+  private async handleCreateWebhookFilter(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    if (!this.gate.webhookRouter) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No webhook configured. Set webhookUrl or webhookFilters to enable webhook routing.' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    try {
+      const rule = this.gate.webhookRouter.addRule({
+        id: '',  // auto-generated
+        name: String(params.name || ''),
+        events: Array.isArray(params.events) ? params.events.map(String) : [],
+        url: String(params.url || ''),
+        secret: params.secret ? String(params.secret) : undefined,
+        keyPrefixes: Array.isArray(params.keyPrefixes) ? params.keyPrefixes.map(String) : undefined,
+        active: params.active !== false,
+      });
+
+      this.audit.log('webhook_filter.created', 'admin', `Webhook filter created: ${rule.name}`, { filterId: rule.id, name: rule.name });
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rule));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private async handleUpdateWebhookFilter(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    if (!this.gate.webhookRouter) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No webhook router configured' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const filterId = String(params.id || '');
+    if (!filterId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing id field' }));
+      return;
+    }
+
+    try {
+      const rule = this.gate.webhookRouter.updateRule(filterId, {
+        name: params.name !== undefined ? String(params.name) : undefined,
+        events: Array.isArray(params.events) ? params.events.map(String) : undefined,
+        url: params.url !== undefined ? String(params.url) : undefined,
+        secret: params.secret !== undefined ? String(params.secret) : undefined,
+        keyPrefixes: Array.isArray(params.keyPrefixes) ? params.keyPrefixes.map(String) : undefined,
+        active: params.active !== undefined ? Boolean(params.active) : undefined,
+      });
+
+      this.audit.log('webhook_filter.updated', 'admin', `Webhook filter updated: ${rule.name}`, { filterId: rule.id });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rule));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private async handleDeleteWebhookFilter(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    if (!this.gate.webhookRouter) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No webhook router configured' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: { id?: string };
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const filterId = String(params.id || '');
+    if (!filterId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing id field' }));
+      return;
+    }
+
+    const deleted = this.gate.webhookRouter.deleteRule(filterId);
+    if (!deleted) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Filter not found' }));
+      return;
+    }
+
+    this.audit.log('webhook_filter.deleted', 'admin', `Webhook filter deleted: ${filterId}`, { filterId });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, message: `Filter ${filterId} deleted` }));
   }
 
   // ─── /audit — Query audit log ─────────────────────────────────────────────
@@ -3197,7 +3356,7 @@ export class PayGateServer {
       newKeyMasked: record.key.slice(0, 7) + '...' + record.key.slice(-4),
       role,
     });
-    this.gate.webhook?.emitAdmin('admin_key.created', callerMasked, {
+    this.emitWebhookAdmin('admin_key.created', callerMasked, {
       newKeyMasked: record.key.slice(0, 7) + '...' + record.key.slice(-4),
       name: params.name,
       role,
@@ -3258,7 +3417,7 @@ export class PayGateServer {
     this.audit.log('admin_key.revoked', callerMasked, `Revoked admin key ${targetMasked}`, {
       revokedKeyMasked: targetMasked,
     });
-    this.gate.webhook?.emitAdmin('admin_key.revoked', callerMasked, {
+    this.emitWebhookAdmin('admin_key.revoked', callerMasked, {
       revokedKeyMasked: targetMasked,
     });
 
@@ -3271,6 +3430,17 @@ export class PayGateServer {
    * (setAcl, setExpiry, setQuota, setTags, setIpAllowlist, setSpendingLimit).
    * Fire-and-forget: errors logged, never thrown.
    */
+  /**
+   * Route admin webhook events through the WebhookRouter (for filter rules) or direct emitter.
+   */
+  private emitWebhookAdmin(type: import('./webhook').WebhookAdminEvent['type'], actor: string, metadata: Record<string, unknown> = {}): void {
+    if (this.gate.webhookRouter) {
+      this.gate.webhookRouter.emitAdmin(type, actor, metadata);
+    } else if (this.gate.webhook) {
+      this.gate.webhook.emitAdmin(type, actor, metadata);
+    }
+  }
+
   private syncKeyMutation(apiKey: string): void {
     if (!this.redisSync) return;
     const record = this.gate.store.getKey(apiKey);

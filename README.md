@@ -66,6 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Plugin System** — Extensible middleware hooks for custom billing logic, request/response transformation, custom endpoints, and lifecycle management
 - **Key Groups** — Policy templates that apply shared ACL, rate limits, pricing overrides, IP allowlists, and quotas to groups of API keys with automatic inheritance and key-level override support
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
+- **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
 - **Shadow Mode** — Log everything without enforcing payment (for testing)
@@ -329,6 +330,10 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/groups/delete` | POST | `X-Admin-Key` | Delete (deactivate) a group |
 | `/groups/assign` | POST | `X-Admin-Key` | Assign an API key to a group |
 | `/groups/remove` | POST | `X-Admin-Key` | Remove an API key from a group |
+| `/webhooks/filters` | GET | `X-Admin-Key` | List all webhook filter rules |
+| `/webhooks/filters` | POST | `X-Admin-Key` | Create a webhook filter rule |
+| `/webhooks/filters/update` | POST | `X-Admin-Key` | Update a webhook filter rule |
+| `/webhooks/filters/delete` | POST | `X-Admin-Key` | Delete a webhook filter rule |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
 
@@ -584,6 +589,76 @@ When webhooks are enabled, admin operations also fire webhook events:
 | `team.key_removed` | POST /teams/remove | teamId, keyMasked |
 
 Admin events appear in the `adminEvents` array of the webhook payload (separate from usage `events`). Both arrays can be present in the same batch.
+
+#### Webhook Filters (Event Routing)
+
+Route webhook events to different destinations based on event type and API key prefix. Each filter rule routes matching events to its own URL with independent retry queues, dead letter queues, and optional signing secrets.
+
+**Create a filter rule:**
+```bash
+curl -X POST http://localhost:3402/webhooks/filters \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "production-alerts",
+    "events": ["key.created", "key.revoked", "alert.fired"],
+    "url": "https://alerts.example.com/webhook",
+    "secret": "whsec_alerts_secret",
+    "keyPrefixes": ["pk_prod_"],
+    "active": true
+  }'
+```
+
+**List filters:**
+```bash
+curl http://localhost:3402/webhooks/filters -H "X-Admin-Key: $ADMIN_KEY"
+```
+
+**Update a filter:**
+```bash
+curl -X POST http://localhost:3402/webhooks/filters/update \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "id": "wf_abc123", "active": false }'
+```
+
+**Delete a filter:**
+```bash
+curl -X POST http://localhost:3402/webhooks/filters/delete \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "id": "wf_abc123" }'
+```
+
+**Filter rules:**
+- `events` — Array of event types to match (exact match or `"*"` wildcard for all events)
+- `keyPrefixes` — Optional array of API key prefixes (e.g., `["pk_prod_"]`). Events only match if the associated key starts with one of these prefixes. Omit for all keys.
+- `url` — Destination URL for matched events (each unique URL gets its own retry queue)
+- `secret` — Optional HMAC-SHA256 signing secret for this destination
+- `active` — Enable/disable the filter without deleting it
+
+**Routing behavior:**
+- Events matching filter rules are sent to the filter's destination URL
+- The default webhook URL (if configured) always receives all events (backward compatible)
+- Multiple filters can match the same event — it's sent to all matching destinations
+- Inactive filters are skipped during routing
+
+**Config file:**
+```json
+{
+  "webhookUrl": "https://billing.example.com/events",
+  "webhookFilters": [
+    {
+      "name": "production-alerts",
+      "events": ["key.created", "key.revoked", "alert.fired"],
+      "url": "https://alerts.example.com/webhook",
+      "keyPrefixes": ["pk_prod_"]
+    }
+  ]
+}
+```
+
+**Stats:** `GET /webhooks/stats` includes per-URL delivery statistics for all filter destinations plus the default endpoint.
 
 ### Usage Quotas
 
@@ -1726,6 +1801,14 @@ Example `paygate.json`:
   "defaultCreditsPerCall": 2,
   "globalRateLimitPerMin": 30,
   "webhookUrl": "https://billing.example.com/events",
+  "webhookFilters": [
+    {
+      "name": "production-alerts",
+      "events": ["key.created", "key.revoked", "alert.fired"],
+      "url": "https://alerts.example.com/webhook",
+      "keyPrefixes": ["pk_prod_"]
+    }
+  ],
   "refundOnFailure": true,
   "stateFile": "~/.paygate/state.json",
   "toolPricing": {
@@ -1877,6 +1960,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Token revocation list — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis sync
 - [x] Usage-based auto-topup — Automatically refill credits when balance drops below threshold with daily limits
 - [x] Admin API key management — Multiple admin keys with role-based permissions (super_admin, admin, viewer)
+- [x] Webhook filters — Route events to multiple destinations by event type and key prefix with independent retry queues
 
 ## Requirements
 

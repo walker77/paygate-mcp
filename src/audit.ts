@@ -57,7 +57,11 @@ export type AuditEventType =
   | 'group.updated'
   | 'group.deleted'
   | 'group.key_assigned'
-  | 'group.key_removed';
+  | 'group.key_removed'
+  // Webhook filters
+  | 'webhook_filter.created'
+  | 'webhook_filter.updated'
+  | 'webhook_filter.deleted';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

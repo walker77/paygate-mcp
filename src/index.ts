@@ -26,6 +26,7 @@ export { RateLimiter } from './rate-limiter';
 export { StripeWebhookHandler } from './stripe';
 export { WebhookEmitter } from './webhook';
 export type { WebhookAdminEvent, WebhookEvent, DeadLetterEntry } from './webhook';
+export { WebhookRouter } from './webhook-router';
 export { QuotaTracker } from './quota';
 export { OAuthProvider } from './oauth';
 export type { OAuthClientRecord, OAuthTokenRecord, OAuthServerMetadata, OAuthConfig } from './oauth';
@@ -77,6 +78,7 @@ export type {
   QuotaConfig,
   BatchToolCall,
   BatchGateResult,
+  WebhookFilterRule,
 } from './types';
 
 export { DEFAULT_CONFIG } from './types';
