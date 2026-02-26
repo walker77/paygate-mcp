@@ -60,6 +60,9 @@ export type AuditEventType =
   | 'group.key_removed'
   // Credit transfer
   | 'key.credits_transferred'
+  // Key import/export
+  | 'keys.exported'
+  | 'keys.imported'
   // Webhook filters
   | 'webhook_filter.created'
   | 'webhook_filter.updated'

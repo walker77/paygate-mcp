@@ -383,6 +383,10 @@ export class PayGateServer {
         return this.handleCreditTransfer(req, res);
       case '/keys/bulk':
         return this.handleBulkOperations(req, res);
+      case '/keys/export':
+        return this.handleKeyExport(req, res);
+      case '/keys/import':
+        return this.handleKeyImport(req, res);
       case '/balance':
         return this.handleBalance(req, res);
       case '/limits':
@@ -900,6 +904,8 @@ export class PayGateServer {
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
         transfer: 'POST /keys/transfer — Transfer credits between keys (requires X-Admin-Key)',
         bulk: 'POST /keys/bulk — Bulk key operations: create, topup, revoke (requires X-Admin-Key)',
+        keyExport: 'GET /keys/export — Export all API keys for backup/migration (requires X-Admin-Key)',
+        keyImport: 'POST /keys/import — Import API keys from backup (requires X-Admin-Key)',
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
         setQuota: 'POST /keys/quota — Set usage quota (requires X-Admin-Key)',
@@ -1416,6 +1422,128 @@ export class PayGateServer {
       total: results.length,
       succeeded,
       failed,
+      results,
+    }));
+  }
+
+  // ─── /keys/export — Export all API keys for backup ────────────────────────
+
+  private handleKeyExport(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const namespace = params.get('namespace') || undefined;
+    const activeOnly = params.get('activeOnly') === 'true';
+    const format = params.get('format') || 'json';
+
+    const keys = this.gate.store.exportKeys({ namespace, activeOnly });
+
+    this.audit.log('keys.exported', 'admin', `Exported ${keys.length} keys`, {
+      count: keys.length, namespace: namespace || 'all', activeOnly,
+    });
+
+    if (format === 'csv') {
+      const headers = ['key', 'name', 'credits', 'totalSpent', 'totalCalls', 'createdAt', 'lastUsedAt', 'active', 'namespace', 'expiresAt', 'spendingLimit'];
+      const rows = keys.map(k => headers.map(h => {
+        const v = (k as unknown as Record<string, unknown>)[h];
+        if (v === null || v === undefined) return '';
+        const s = String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+      }).join(','));
+      const csv = [headers.join(','), ...rows].join('\n');
+      res.writeHead(200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="paygate-keys-${new Date().toISOString().slice(0, 10)}.csv"`,
+      });
+      res.end(csv);
+      return;
+    }
+
+    // JSON format
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="paygate-keys-${new Date().toISOString().slice(0, 10)}.json"`,
+    });
+    res.end(JSON.stringify({
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      count: keys.length,
+      keys,
+    }, null, 2));
+  }
+
+  // ─── /keys/import — Import API keys from backup ───────────────────────────
+
+  private async handleKeyImport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { keys?: unknown[]; mode?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.keys || !Array.isArray(params.keys) || params.keys.length === 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing or empty "keys" array' }));
+      return;
+    }
+
+    if (params.keys.length > 1000) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Maximum 1000 keys per import request' }));
+      return;
+    }
+
+    const mode = (params.mode === 'overwrite' || params.mode === 'error') ? params.mode : 'skip';
+    const results = this.gate.store.importKeys(params.keys as any[], mode);
+
+    // Sync imported keys to Redis if available
+    if (this.redisSync) {
+      for (const r of results) {
+        if (r.status === 'imported' || r.status === 'overwritten') {
+          // Find the full key from the store to sync
+          const allKeys = this.gate.store.exportKeys();
+          const full = allKeys.find(k => k.key.slice(0, 10) + '...' === r.key);
+          if (full) {
+            this.redisSync.saveKey(full).catch(() => {});
+          }
+        }
+      }
+    }
+
+    const imported = results.filter(r => r.status === 'imported').length;
+    const overwritten = results.filter(r => r.status === 'overwritten').length;
+    const skipped = results.filter(r => r.status === 'skipped').length;
+    const errors = results.filter(r => r.status === 'error').length;
+
+    this.audit.log('keys.imported', 'admin', `Imported ${imported + overwritten} keys (${skipped} skipped, ${errors} errors)`, {
+      imported, overwritten, skipped, errors, mode,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      total: results.length,
+      imported,
+      overwritten,
+      skipped,
+      errors,
+      mode,
       results,
     }));
   }

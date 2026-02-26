@@ -425,6 +425,82 @@ export class KeyStore {
   }
 
   /**
+   * Export all API keys as full records (including secret key values).
+   * Used for backup/migration. Optionally filter by namespace or active status.
+   */
+  exportKeys(options?: { namespace?: string; activeOnly?: boolean }): ApiKeyRecord[] {
+    const result: ApiKeyRecord[] = [];
+    for (const record of this.keys.values()) {
+      if (options?.namespace && record.namespace !== options.namespace) continue;
+      if (options?.activeOnly && !record.active) continue;
+      result.push({ ...record });
+    }
+    return result;
+  }
+
+  /**
+   * Import API keys from exported records.
+   * Returns per-key results with conflict handling.
+   * mode: 'skip' (default) = skip existing keys, 'overwrite' = replace existing keys, 'error' = fail on conflicts
+   */
+  importKeys(records: ApiKeyRecord[], mode: 'skip' | 'overwrite' | 'error' = 'skip'): Array<{ key: string; name: string; status: 'imported' | 'skipped' | 'overwritten' | 'error'; error?: string }> {
+    const results: Array<{ key: string; name: string; status: 'imported' | 'skipped' | 'overwritten' | 'error'; error?: string }> = [];
+    for (const record of records) {
+      // Validate key format
+      if (!record.key || typeof record.key !== 'string' || !record.key.startsWith('pg_')) {
+        results.push({ key: record.key || '(missing)', name: record.name || '(unknown)', status: 'error', error: 'Invalid key format — must start with pg_' });
+        continue;
+      }
+      const existing = this.keys.get(record.key);
+      if (existing) {
+        if (mode === 'skip') {
+          results.push({ key: record.key.slice(0, 10) + '...', name: record.name, status: 'skipped' });
+          continue;
+        }
+        if (mode === 'error') {
+          results.push({ key: record.key.slice(0, 10) + '...', name: record.name, status: 'error', error: 'Key already exists' });
+          continue;
+        }
+        // mode === 'overwrite': fall through to set
+      }
+      // Sanitize and set the record
+      const sanitized: ApiKeyRecord = {
+        key: record.key,
+        name: String(record.name || 'imported').slice(0, 200),
+        credits: Math.max(0, Math.floor(Number(record.credits) || 0)),
+        totalSpent: Math.max(0, Number(record.totalSpent) || 0),
+        totalCalls: Math.max(0, Math.floor(Number(record.totalCalls) || 0)),
+        createdAt: record.createdAt || new Date().toISOString(),
+        lastUsedAt: record.lastUsedAt || null,
+        active: record.active !== false,
+        spendingLimit: Math.max(0, Number(record.spendingLimit) || 0),
+        allowedTools: Array.isArray(record.allowedTools) ? record.allowedTools.filter(t => typeof t === 'string') : [],
+        deniedTools: Array.isArray(record.deniedTools) ? record.deniedTools.filter(t => typeof t === 'string') : [],
+        expiresAt: record.expiresAt || null,
+        quota: record.quota,
+        tags: typeof record.tags === 'object' && record.tags !== null ? record.tags : {},
+        ipAllowlist: Array.isArray(record.ipAllowlist) ? record.ipAllowlist.filter(t => typeof t === 'string') : [],
+        namespace: String(record.namespace || 'default'),
+        group: record.group,
+        autoTopup: record.autoTopup,
+        autoTopupTodayCount: Number(record.autoTopupTodayCount) || 0,
+        autoTopupLastResetDay: record.autoTopupLastResetDay || new Date().toISOString().slice(0, 10),
+        quotaDailyCalls: Number(record.quotaDailyCalls) || 0,
+        quotaMonthlyCalls: Number(record.quotaMonthlyCalls) || 0,
+        quotaDailyCredits: Number(record.quotaDailyCredits) || 0,
+        quotaMonthlyCredits: Number(record.quotaMonthlyCredits) || 0,
+        quotaLastResetDay: record.quotaLastResetDay || new Date().toISOString().slice(0, 10),
+        quotaLastResetMonth: record.quotaLastResetMonth || new Date().toISOString().slice(0, 7),
+      };
+      this.keys.set(sanitized.key, sanitized);
+      const status = existing ? 'overwritten' : 'imported';
+      results.push({ key: sanitized.key.slice(0, 10) + '...', name: sanitized.name, status });
+    }
+    this.save();
+    return results;
+  }
+
+  /**
    * List all unique namespaces with summary stats.
    */
   listNamespaces(): Array<{ namespace: string; keyCount: number; activeKeys: number; totalCredits: number; totalSpent: number }> {

@@ -68,6 +68,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Credit Transfers** — Atomically transfer credits between API keys with validation, audit trail, and webhook events
 - **Bulk Key Operations** — Execute multiple key operations (create, topup, revoke) in a single request with per-operation error handling and index tracking
+- **Key Import/Export** — Export all API keys for backup/migration (JSON or CSV) and import with conflict resolution (skip, overwrite, error modes)
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -284,6 +285,8 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
 | `/keys/transfer` | POST | `X-Admin-Key` | Transfer credits between API keys |
 | `/keys/bulk` | POST | `X-Admin-Key` | Execute multiple key operations (create, topup, revoke) in one request |
+| `/keys/export` | GET | `X-Admin-Key` | Export all API keys for backup/migration (JSON or CSV) |
+| `/keys/import` | POST | `X-Admin-Key` | Import API keys from backup with conflict resolution |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
 | `/keys/rotate` | POST | `X-Admin-Key` | Rotate key (new key, same credits/ACL/quotas) |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
@@ -547,6 +550,57 @@ Response:
 **Limits:** Maximum 100 operations per request. Empty operations array returns 400.
 
 **Audit trail:** Each successful operation logs an individual audit event with "(bulk)" suffix.
+
+### Key Import/Export
+
+Export all API keys for backup or migration between PayGate instances:
+
+```bash
+# Export as JSON (includes full key secrets)
+curl http://localhost:3402/keys/export \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -o paygate-keys-backup.json
+
+# Export as CSV
+curl "http://localhost:3402/keys/export?format=csv" \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -o paygate-keys-backup.csv
+
+# Export only active keys in a specific namespace
+curl "http://localhost:3402/keys/export?activeOnly=true&namespace=production" \
+  -H "X-Admin-Key: $ADMIN_KEY"
+```
+
+Import keys into a PayGate instance:
+
+```bash
+curl -X POST http://localhost:3402/keys/import \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "keys": [{ "key": "pg_abc123...", "name": "my-key", "credits": 500, "active": true, "tags": {} }],
+    "mode": "skip"
+  }'
+```
+
+Response:
+```json
+{
+  "total": 1,
+  "imported": 1,
+  "overwritten": 0,
+  "skipped": 0,
+  "errors": 0,
+  "mode": "skip",
+  "results": [{ "key": "pg_abc123...", "name": "my-key", "status": "imported" }]
+}
+```
+
+**Conflict modes:** `skip` (default) — skip keys that already exist, `overwrite` — replace existing keys, `error` — fail on duplicate keys.
+
+**Limits:** Maximum 1000 keys per import request. Keys must start with `pg_` prefix.
+
+**Export formats:** JSON (full records with all fields) or CSV (key subset for spreadsheet use).
 
 ### Spending Limits
 
@@ -2032,6 +2086,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Webhook filters — Route events to multiple destinations by event type and key prefix with independent retry queues
 - [x] Credit transfers — Atomically transfer credits between API keys with validation and audit trail
 - [x] Bulk key operations — Execute multiple create/topup/revoke operations in one request with per-operation error handling
+- [x] Key import/export — Export keys (JSON/CSV) for backup/migration, import with conflict resolution (skip, overwrite, error modes)
 
 ## Requirements
 
