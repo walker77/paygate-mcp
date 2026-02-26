@@ -95,6 +95,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Comparison** — `GET /keys/compare?keys=pg_a,pg_b` returns side-by-side comparison of 2–10 keys — credits, usage, velocity, rate limits, status, metadata (namespace/group/tags) — with not-found key reporting
 - **Key Health Score** — `GET /keys/health?key=...` returns composite health score (0–100) with weighted component breakdown: balance health (30%), quota utilization (25%), rate limit pressure (20%), error rate (25%) — status levels (healthy/good/caution/warning/critical), key issue detection (revoked/suspended/expired/expiring/zero credits), alias support
 - **Maintenance Mode** — `POST /maintenance` enables/disables maintenance mode with custom message — `/mcp` returns 503 to clients while admin endpoints stay operational, `GET /maintenance` checks status, `GET /health` reflects maintenance state, full audit trail
+- **Admin Event Stream** — `GET /admin/events` SSE endpoint streams real-time audit events to admin clients — tool calls, denials, key operations, maintenance changes, all with optional `?types=` filter for event type filtering, keepalive pings, multi-client support
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1897,6 +1898,37 @@ curl -X POST http://localhost:3402/maintenance \
 ```
 
 When enabled, all `/mcp` requests return **503** with the custom message. Admin endpoints (`/keys`, `/maintenance`, `/audit`, etc.) remain fully operational. `GET /health` returns `{"status": "maintenance"}`. Both enable and disable actions are recorded in the audit trail (`maintenance.enabled` / `maintenance.disabled`).
+
+### Admin Event Stream
+
+Stream real-time server events to admin clients via Server-Sent Events (SSE):
+
+```bash
+# Stream all events
+curl -N http://localhost:3402/admin/events \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Accept: text/event-stream"
+
+# Stream only key operations
+curl -N http://localhost:3402/admin/events?types=key.created,key.revoked,key.topup \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Accept: text/event-stream"
+```
+
+**Events:**
+
+```
+event: connected
+data: {"message":"Admin event stream connected","filters":"all"}
+
+event: audit
+data: {"id":42,"timestamp":"2025-03-15T14:30:00.000Z","type":"key.created","actor":"admin","message":"Key created: prod-agent","metadata":{...}}
+
+event: audit
+data: {"id":43,"timestamp":"2025-03-15T14:30:01.000Z","type":"gate.allow","actor":"pg_abc12...","message":"Allowed: get_weather","metadata":{...}}
+```
+
+Every audit event (tool calls, denials, key operations, maintenance, alerts) is broadcast in real-time. Use `?types=` to filter by comma-separated event types. Supports multiple concurrent admin clients. Keepalive pings every 15s prevent connection timeouts. Connections are cleaned up automatically on disconnect.
 
 ### IP Allowlisting
 

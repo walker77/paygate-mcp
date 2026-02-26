@@ -204,6 +204,10 @@ export class PayGateServer {
   private maintenanceMessage = 'Server is under maintenance';
   /** Timestamp when maintenance mode was enabled */
   private maintenanceSince: string | null = null;
+  /** Active admin SSE event stream connections */
+  private adminEventStreams: Set<{ res: import('http').ServerResponse; types: Set<string> | null }> = new Set();
+  /** Keepalive timer for admin event streams */
+  private adminEventKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
   /** Number of in-flight /mcp requests */
   private inflight = 0;
   /** Config file path for hot reload (null if not using config file) */
@@ -265,6 +269,19 @@ export class PayGateServer {
 
     // Audit logger
     this.audit = new AuditLogger();
+
+    // Wire up admin event stream — broadcast every audit event to connected admin SSE clients
+    this.audit.onEvent = (event) => {
+      for (const client of this.adminEventStreams) {
+        try {
+          // Apply type filter if client specified one
+          if (client.types && !client.types.has(event.type)) continue;
+          client.res.write(`event: audit\ndata: ${JSON.stringify(event)}\n\n`);
+        } catch {
+          // Connection died — will be cleaned up by 'close' handler
+        }
+      }
+    };
 
     // Tool registry for pricing discovery
     this.registry = new ToolRegistry(this.config, !!this.oauth);
@@ -684,6 +701,8 @@ export class PayGateServer {
         break;
       case '/admin/keys/revoke':
         return this.handleRevokeAdminKey(req, res);
+      case '/admin/events':
+        return this.handleAdminEventStream(req, res);
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1208,6 +1227,7 @@ export class PayGateServer {
         configReload: 'POST /config/reload — Hot reload config from file (requires X-Admin-Key)',
         configExport: 'GET /config — Export running config with sensitive values masked (requires X-Admin-Key)',
         maintenance: 'GET /maintenance — Check status + POST to enable/disable maintenance mode (requires X-Admin-Key)',
+        adminEvents: 'GET /admin/events — Real-time SSE stream of server events (requires X-Admin-Key, Accept: text/event-stream)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4214,6 +4234,65 @@ export class PayGateServer {
     });
   }
 
+  // ─── /admin/events — Real-time SSE stream of server events ────────────────
+
+  private handleAdminEventStream(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const accept = req.headers['accept'] || '';
+    if (!accept.includes('text/event-stream')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Requires Accept: text/event-stream header' }));
+      return;
+    }
+
+    // Parse optional type filter from query string
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const typesParam = params.get('types');
+    const typeFilter = typesParam ? new Set(typesParam.split(',').filter(Boolean)) : null;
+
+    // Start SSE stream
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    // Send connected event
+    res.write(`event: connected\ndata: ${JSON.stringify({ message: 'Admin event stream connected', filters: typesParam || 'all' })}\n\n`);
+
+    // Register this connection
+    const client = { res, types: typeFilter };
+    this.adminEventStreams.add(client);
+
+    // Start keepalive if this is the first connection
+    if (!this.adminEventKeepAliveTimer && this.adminEventStreams.size === 1) {
+      this.adminEventKeepAliveTimer = setInterval(() => {
+        for (const c of this.adminEventStreams) {
+          try { c.res.write(':keepalive\n\n'); } catch { /* handled by close */ }
+        }
+      }, 15_000);
+      this.adminEventKeepAliveTimer.unref();
+    }
+
+    // Cleanup on disconnect
+    req.on('close', () => {
+      this.adminEventStreams.delete(client);
+      // Stop keepalive if no more connections
+      if (this.adminEventStreams.size === 0 && this.adminEventKeepAliveTimer) {
+        clearInterval(this.adminEventKeepAliveTimer);
+        this.adminEventKeepAliveTimer = null;
+      }
+    });
+  }
+
   // ─── /config/reload — Hot reload configuration from file ─────────────────
 
   private async handleConfigReload(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -5855,6 +5934,16 @@ export class PayGateServer {
   }
 
   async stop(): Promise<void> {
+    // Close admin event stream connections
+    if (this.adminEventKeepAliveTimer) {
+      clearInterval(this.adminEventKeepAliveTimer);
+      this.adminEventKeepAliveTimer = null;
+    }
+    for (const client of this.adminEventStreams) {
+      try { client.res.end(); } catch { /* ignore */ }
+    }
+    this.adminEventStreams.clear();
+
     // Plugin lifecycle: onStop (reverse order)
     if (this.plugins.count > 0) {
       await this.plugins.executeStop();

@@ -149,6 +149,9 @@ export class AuditLogger {
   private readonly config: AuditLogConfig;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
+  /** Optional callback fired for every logged event (used by admin event stream). */
+  onEvent: ((event: AuditEvent) => void) | null = null;
+
   constructor(config?: Partial<AuditLogConfig>) {
     this.config = { ...DEFAULT_AUDIT_CONFIG, ...config };
 
@@ -177,6 +180,11 @@ export class AuditLogger {
     // Enforce max size immediately (ring buffer behavior)
     if (this.events.length > this.config.maxEvents) {
       this.events = this.events.slice(-this.config.maxEvents);
+    }
+
+    // Notify listeners (e.g., admin event stream)
+    if (this.onEvent) {
+      try { this.onEvent(event); } catch { /* ignore listener errors */ }
     }
 
     return event;
