@@ -97,6 +97,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Maintenance Mode** — `POST /maintenance` enables/disables maintenance mode with custom message — `/mcp` returns 503 to clients while admin endpoints stay operational, `GET /maintenance` checks status, `GET /health` reflects maintenance state, full audit trail
 - **Admin Event Stream** — `GET /admin/events` SSE endpoint streams real-time audit events to admin clients — tool calls, denials, key operations, maintenance changes, all with optional `?types=` filter for event type filtering, keepalive pings, multi-client support
 - **Key Notes** — `POST /keys/notes` adds timestamped notes to API keys, `GET /keys/notes?key=...` lists notes, `DELETE /keys/notes?key=...&index=N` removes notes — max 50 per key, 1000 char limit, works on suspended/revoked keys, alias support, audit trail
+- **Scheduled Actions** — `POST /keys/schedule` creates future-dated actions (revoke/suspend/topup) on API keys, `GET /keys/schedule` lists pending schedules with optional `?key=` filter, `DELETE /keys/schedule?id=...` cancels a schedule — max 20 per key, alias support, background execution timer, audit trail
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1963,6 +1964,43 @@ curl -X DELETE "http://localhost:3402/keys/notes?key=pg_...&index=0" \
 ```
 
 Max 50 notes per key, 1000 characters per note. Works on suspended and revoked keys. Supports aliases. All add/delete operations recorded in audit trail (`key.note_added` / `key.note_deleted`).
+
+### Scheduled Actions
+
+Schedule future-dated actions on API keys — automatically revoke, suspend, or top up credits at a specified time:
+
+```bash
+# Schedule a key revocation in 24 hours
+curl -X POST http://localhost:3402/keys/schedule \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "action": "revoke", "executeAt": "2025-04-01T00:00:00Z"}'
+
+# Schedule a credit top-up
+curl -X POST http://localhost:3402/keys/schedule \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "action": "topup", "executeAt": "2025-04-01T00:00:00Z", "params": {"credits": 500}}'
+
+# List all pending schedules (optional ?key= filter)
+curl "http://localhost:3402/keys/schedule" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Cancel a schedule
+curl -X DELETE "http://localhost:3402/keys/schedule?id=sched_1" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response (create):**
+
+```json
+{
+  "id": "sched_1",
+  "key": "pg_abc1...2345",
+  "action": "revoke",
+  "executeAt": "2025-04-01T00:00:00.000Z",
+  "createdAt": "2025-03-15T10:30:00.000Z"
+}
+```
+
+Supported actions: `revoke`, `suspend`, `topup` (requires `params.credits`). Max 20 schedules per key. Supports aliases. Background timer checks every 10 seconds. All create/execute/cancel operations recorded in audit trail (`schedule.created` / `schedule.executed` / `schedule.cancelled`).
 
 ### IP Allowlisting
 

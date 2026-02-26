@@ -90,7 +90,11 @@ export type AuditEventType =
   | 'maintenance.disabled'
   // Key notes
   | 'key.note_added'
-  | 'key.note_deleted';
+  | 'key.note_deleted'
+  // Scheduled actions
+  | 'schedule.created'
+  | 'schedule.executed'
+  | 'schedule.cancelled';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

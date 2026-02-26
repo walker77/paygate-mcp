@@ -208,6 +208,19 @@ export class PayGateServer {
   private adminEventStreams: Set<{ res: import('http').ServerResponse; types: Set<string> | null }> = new Set();
   /** Keepalive timer for admin event streams */
   private adminEventKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  /** Scheduled actions queue */
+  private scheduledActions: Array<{
+    id: string;
+    key: string;
+    action: 'revoke' | 'suspend' | 'topup';
+    executeAt: string;
+    createdAt: string;
+    params?: Record<string, unknown>;
+  }> = [];
+  /** Timer for checking scheduled actions */
+  private scheduleTimer: ReturnType<typeof setInterval> | null = null;
+  /** Auto-incrementing schedule ID counter */
+  private nextScheduleId = 1;
   /** Number of in-flight /mcp requests */
   private inflight = 0;
   /** Config file path for hot reload (null if not using config file) */
@@ -461,6 +474,10 @@ export class PayGateServer {
     // Start the key expiry scanner (proactive background scanning)
     this.expiryScanner.start(() => this.gate.store.getAllRecords());
 
+    // Start scheduled actions executor (checks every 10s)
+    this.scheduleTimer = setInterval(() => this.executeScheduledActions(), 10_000);
+    this.scheduleTimer.unref();
+
     // Plugin lifecycle: onStart
     if (this.plugins.count > 0) {
       await this.plugins.executeStart();
@@ -568,6 +585,13 @@ export class PayGateServer {
         if (req.method === 'GET') return this.handleGetNotes(req, res);
         if (req.method === 'POST') return this.handleAddNote(req, res);
         if (req.method === 'DELETE') return this.handleDeleteNote(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      case '/keys/schedule':
+        if (req.method === 'GET') return this.handleGetSchedules(req, res);
+        if (req.method === 'POST') return this.handleCreateSchedule(req, res);
+        if (req.method === 'DELETE') return this.handleCancelSchedule(req, res);
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return;
@@ -1236,6 +1260,7 @@ export class PayGateServer {
         maintenance: 'GET /maintenance — Check status + POST to enable/disable maintenance mode (requires X-Admin-Key)',
         adminEvents: 'GET /admin/events — Real-time SSE stream of server events (requires X-Admin-Key, Accept: text/event-stream)',
         keyNotes: 'GET /keys/notes?key=... — List notes + POST to add + DELETE to remove (requires X-Admin-Key)',
+        keySchedule: 'GET /keys/schedule?key=... — List schedules + POST to create + DELETE to cancel (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4441,6 +4466,217 @@ export class PayGateServer {
     res.end(JSON.stringify({ deleted, remaining: notes.length }));
   }
 
+  // ─── /keys/schedule — Scheduled actions on API keys ──────────────────────
+
+  private handleGetSchedules(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keyParam = params.get('key');
+
+    let schedules = this.scheduledActions;
+    if (keyParam) {
+      // Resolve alias
+      const record = this.gate.store.resolveKeyRaw(keyParam);
+      if (!record) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key not found' }));
+        return;
+      }
+      schedules = schedules.filter(s => s.key === record.key);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      schedules: schedules.map(s => ({
+        ...s,
+        key: maskKeyForAudit(s.key),
+      })),
+      count: schedules.length,
+    }));
+  }
+
+  private handleCreateSchedule(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk; });
+    req.on('end', () => {
+      let params: { key?: string; action?: string; executeAt?: string; params?: Record<string, unknown> };
+      try {
+        params = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+
+      if (!params.key || typeof params.key !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: key' }));
+        return;
+      }
+
+      const validActions = ['revoke', 'suspend', 'topup'];
+      if (!params.action || !validActions.includes(params.action)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Missing or invalid action. Must be one of: ${validActions.join(', ')}` }));
+        return;
+      }
+
+      if (!params.executeAt || typeof params.executeAt !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: executeAt (ISO 8601 timestamp)' }));
+        return;
+      }
+
+      const executeTime = new Date(params.executeAt).getTime();
+      if (isNaN(executeTime)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid executeAt: must be a valid ISO 8601 timestamp' }));
+        return;
+      }
+
+      if (executeTime <= Date.now()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'executeAt must be in the future' }));
+        return;
+      }
+
+      // Topup requires credits param
+      if (params.action === 'topup') {
+        const credits = (params.params as any)?.credits;
+        if (!credits || typeof credits !== 'number' || credits <= 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'topup action requires params.credits (positive number)' }));
+          return;
+        }
+      }
+
+      const record = this.gate.store.resolveKeyRaw(params.key);
+      if (!record) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key not found' }));
+        return;
+      }
+
+      // Max 20 schedules per key
+      const keySchedules = this.scheduledActions.filter(s => s.key === record.key);
+      if (keySchedules.length >= 20) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Maximum 20 scheduled actions per key' }));
+        return;
+      }
+
+      const schedule = {
+        id: `sched_${this.nextScheduleId++}`,
+        key: record.key,
+        action: params.action as 'revoke' | 'suspend' | 'topup',
+        executeAt: new Date(params.executeAt).toISOString(),
+        createdAt: new Date().toISOString(),
+        params: params.params,
+      };
+      this.scheduledActions.push(schedule);
+
+      this.audit.log('schedule.created', 'admin', `Scheduled ${params.action} on key`, {
+        scheduleId: schedule.id,
+        key: maskKeyForAudit(record.key),
+        action: params.action,
+        executeAt: schedule.executeAt,
+      });
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...schedule,
+        key: maskKeyForAudit(schedule.key),
+      }));
+    });
+  }
+
+  private handleCancelSchedule(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const scheduleId = params.get('id');
+
+    if (!scheduleId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: id' }));
+      return;
+    }
+
+    const idx = this.scheduledActions.findIndex(s => s.id === scheduleId);
+    if (idx === -1) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Schedule not found' }));
+      return;
+    }
+
+    const cancelled = this.scheduledActions.splice(idx, 1)[0];
+
+    this.audit.log('schedule.cancelled', 'admin', `Cancelled scheduled ${cancelled.action}`, {
+      scheduleId: cancelled.id,
+      key: maskKeyForAudit(cancelled.key),
+      action: cancelled.action,
+      executeAt: cancelled.executeAt,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      cancelled: { ...cancelled, key: maskKeyForAudit(cancelled.key) },
+    }));
+  }
+
+  /** Execute any scheduled actions that are due. Called by the schedule timer. */
+  private executeScheduledActions(): void {
+    const now = Date.now();
+    const due = this.scheduledActions.filter(s => new Date(s.executeAt).getTime() <= now);
+
+    for (const schedule of due) {
+      // Remove from queue
+      const idx = this.scheduledActions.indexOf(schedule);
+      if (idx !== -1) this.scheduledActions.splice(idx, 1);
+
+      const record = this.gate.store.resolveKeyRaw(schedule.key);
+      if (!record) continue; // Key was deleted
+
+      try {
+        switch (schedule.action) {
+          case 'revoke':
+            if (record.active) {
+              record.active = false;
+              this.gate.store.save();
+            }
+            break;
+          case 'suspend':
+            if (!record.suspended) {
+              record.suspended = true;
+              this.gate.store.save();
+            }
+            break;
+          case 'topup': {
+            const credits = (schedule.params as any)?.credits || 0;
+            if (credits > 0) {
+              record.credits += credits;
+              this.gate.store.save();
+            }
+            break;
+          }
+        }
+
+        this.audit.log('schedule.executed', 'system', `Executed scheduled ${schedule.action}`, {
+          scheduleId: schedule.id,
+          key: maskKeyForAudit(schedule.key),
+          action: schedule.action,
+        });
+      } catch {
+        // Log error but don't crash
+      }
+    }
+  }
+
   // ─── /config/reload — Hot reload configuration from file ─────────────────
 
   private async handleConfigReload(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -6082,6 +6318,11 @@ export class PayGateServer {
   }
 
   async stop(): Promise<void> {
+    // Stop scheduled actions timer
+    if (this.scheduleTimer) {
+      clearInterval(this.scheduleTimer);
+      this.scheduleTimer = null;
+    }
     // Close admin event stream connections
     if (this.adminEventKeepAliveTimer) {
       clearInterval(this.adminEventKeepAliveTimer);
