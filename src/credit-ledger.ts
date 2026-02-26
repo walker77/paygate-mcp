@@ -77,4 +77,87 @@ export class CreditLedger {
   clear(key: string): void {
     this.entries.delete(key);
   }
+
+  /**
+   * Compute spending velocity and depletion forecast for a key.
+   * Analyzes credit debit entries (deduction, transfer_out) over a rolling window.
+   */
+  getSpendingVelocity(key: string, currentBalance: number, windowHours = 24): SpendingVelocity {
+    const list = this.entries.get(key);
+    if (!list || list.length === 0) {
+      return {
+        creditsPerHour: 0,
+        creditsPerDay: 0,
+        callsPerHour: 0,
+        callsPerDay: 0,
+        estimatedDepletionDate: null,
+        estimatedHoursRemaining: null,
+        windowHours,
+        dataPoints: 0,
+      };
+    }
+
+    const now = Date.now();
+    const cutoff = new Date(now - windowHours * 3_600_000).toISOString();
+
+    // Debit types reduce balance
+    const debitTypes = new Set(['deduction', 'transfer_out']);
+    const debits = list.filter(e => debitTypes.has(e.type) && e.timestamp >= cutoff);
+
+    const totalDebited = debits.reduce((sum, e) => sum + e.amount, 0);
+    const debitCount = debits.length;
+
+    // Compute the actual time span of debits (if any)
+    let spanHours = windowHours;
+    if (debits.length >= 2) {
+      const oldest = new Date(debits[0].timestamp).getTime();
+      const newest = new Date(debits[debits.length - 1].timestamp).getTime();
+      const span = (newest - oldest) / 3_600_000;
+      if (span > 0) spanHours = span;
+    } else if (debits.length === 1) {
+      // Single debit — use time from debit to now as span
+      const debitTime = new Date(debits[0].timestamp).getTime();
+      const span = (now - debitTime) / 3_600_000;
+      if (span > 0.01) spanHours = span; // At least ~36 seconds
+    }
+
+    const creditsPerHour = debits.length > 0 ? totalDebited / spanHours : 0;
+    const creditsPerDay = creditsPerHour * 24;
+    const callsPerHour = debits.length > 0 ? debitCount / spanHours : 0;
+    const callsPerDay = callsPerHour * 24;
+
+    let estimatedDepletionDate: string | null = null;
+    let estimatedHoursRemaining: number | null = null;
+
+    if (creditsPerHour > 0 && currentBalance > 0) {
+      estimatedHoursRemaining = Math.round((currentBalance / creditsPerHour) * 100) / 100;
+      const depletionMs = now + estimatedHoursRemaining * 3_600_000;
+      estimatedDepletionDate = new Date(depletionMs).toISOString();
+    } else if (currentBalance <= 0) {
+      estimatedHoursRemaining = 0;
+      estimatedDepletionDate = new Date(now).toISOString();
+    }
+
+    return {
+      creditsPerHour: Math.round(creditsPerHour * 100) / 100,
+      creditsPerDay: Math.round(creditsPerDay * 100) / 100,
+      callsPerHour: Math.round(callsPerHour * 100) / 100,
+      callsPerDay: Math.round(callsPerDay * 100) / 100,
+      estimatedDepletionDate,
+      estimatedHoursRemaining,
+      windowHours,
+      dataPoints: debits.length,
+    };
+  }
+}
+
+export interface SpendingVelocity {
+  creditsPerHour: number;
+  creditsPerDay: number;
+  callsPerHour: number;
+  callsPerDay: number;
+  estimatedDepletionDate: string | null;
+  estimatedHoursRemaining: number | null;
+  windowHours: number;
+  dataPoints: number;
 }

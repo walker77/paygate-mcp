@@ -91,6 +91,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Rate Limit Status** — `GET /keys/rate-limit-status?key=...` returns the current rate limit window state for any key — global calls used/remaining/reset time, per-tool rate limits with individual usage, read-only (doesn't consume a call)
 - **Quota Status** — `GET /keys/quota-status?key=...` returns daily/monthly quota usage for any key — calls and credits used/remaining/limits, reset periods, quota source (per-key vs global vs none)
 - **Credit History** — `GET /keys/credit-history?key=...` returns per-key credit mutation log — tracks initial allocation, topups, transfers (in/out), auto-topups, with type/limit/since filters, balance-before/after on every entry, newest-first ordering, capped at 100 entries per key
+- **Spending Velocity** — `GET /keys/spending-velocity?key=...` returns credit burn rate and depletion forecast — credits/calls per hour/day, estimated depletion date, top tools by spend, configurable analysis window (1h–30d)
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1757,6 +1758,43 @@ curl "http://localhost:3402/keys/credit-history?key=pg_...&type=topup&limit=10" 
 ```
 
 Entry types: `initial`, `topup`, `transfer_in`, `transfer_out`, `auto_topup`, `deduction`, `refund`, `bulk_topup`. Entries are newest-first, capped at 100 per key. Transfers include a `memo` field when provided.
+
+### Spending Velocity
+
+`GET /keys/spending-velocity?key=...` returns credit burn rate and depletion forecast:
+
+```bash
+curl "http://localhost:3402/keys/spending-velocity?key=pg_..." -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Custom analysis window (default 24h, max 720h/30d)
+curl "http://localhost:3402/keys/spending-velocity?key=pg_...&window=48" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_abc123...",
+  "name": "my-key",
+  "currentBalance": 750,
+  "velocity": {
+    "creditsPerHour": 12.5,
+    "creditsPerDay": 300,
+    "callsPerHour": 2.5,
+    "callsPerDay": 60,
+    "estimatedDepletionDate": "2026-03-01T18:00:00.000Z",
+    "estimatedHoursRemaining": 60,
+    "windowHours": 24,
+    "dataPoints": 45
+  },
+  "topTools": [
+    { "tool": "search", "calls": 30, "credits": 150 },
+    { "tool": "generate", "calls": 15, "credits": 120 }
+  ]
+}
+```
+
+`estimatedDepletionDate` and `estimatedHoursRemaining` are `null` when there's no spending activity. `topTools` shows the 5 highest-spend tools from usage data.
 
 ### IP Allowlisting
 

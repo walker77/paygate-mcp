@@ -34,7 +34,7 @@ export { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } fro
 export { AuditLogger, maskKeyForAudit } from './audit';
 export type { AuditEvent, AuditEventType, AuditLogConfig, AuditQuery, AuditQueryResult } from './audit';
 export { CreditLedger } from './credit-ledger';
-export type { CreditEntry } from './credit-ledger';
+export type { CreditEntry, SpendingVelocity } from './credit-ledger';
 export { ToolRegistry } from './registry';
 export { MetricsCollector } from './metrics';
 export type { MetricLabels } from './metrics';

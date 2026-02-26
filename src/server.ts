@@ -564,6 +564,8 @@ export class PayGateServer {
         return this.handleQuotaStatus(req, res);
       case '/keys/credit-history':
         return this.handleCreditHistory(req, res);
+      case '/keys/spending-velocity':
+        return this.handleSpendingVelocity(req, res);
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1139,6 +1141,7 @@ export class PayGateServer {
         rateLimitStatus: 'GET /keys/rate-limit-status?key=... — Current rate limit window state (requires X-Admin-Key)',
         quotaStatus: 'GET /keys/quota-status?key=... — Current daily/monthly quota usage (requires X-Admin-Key)',
         creditHistory: 'GET /keys/credit-history?key=... — Per-key credit mutation history (requires X-Admin-Key)',
+        spendingVelocity: 'GET /keys/spending-velocity?key=... — Spending rate and depletion forecast (requires X-Admin-Key)',
         keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
         deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
@@ -3027,6 +3030,62 @@ export class PayGateServer {
       currentBalance: keyRecord.credits,
       totalEntries: this.creditLedger.count(actualKey),
       entries,
+    }));
+  }
+
+  // ─── /keys/spending-velocity — Spending rate + depletion forecast ────────────
+
+  private handleSpendingVelocity(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const key = params.get('key');
+
+    if (!key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+
+    // Resolve alias
+    const resolved = this.gate.store.resolveKey(key);
+    const actualKey = resolved ? resolved.key : key;
+    const keyRecord = this.gate.store.getKey(actualKey);
+    if (!keyRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const windowParam = params.get('window');
+    const windowHours = Math.min(Math.max(1, windowParam !== null ? (Number(windowParam) || 1) : 24), 720); // 1h to 30 days
+
+    const velocity = this.creditLedger.getSpendingVelocity(actualKey, keyRecord.credits, windowHours);
+
+    // Get top tools from usage meter (per-key usage)
+    const keyUsage = this.gate.meter.getKeyUsage(actualKey);
+    const topTools: Array<{ tool: string; calls: number; credits: number }> = [];
+    if (keyUsage && keyUsage.perTool) {
+      const toolEntries = Object.entries(keyUsage.perTool)
+        .map(([tool, stats]) => ({ tool, calls: stats.calls, credits: stats.credits }))
+        .sort((a, b) => b.credits - a.credits)
+        .slice(0, 5);
+      topTools.push(...toolEntries);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: actualKey.slice(0, 10) + '...',
+      name: keyRecord.name,
+      currentBalance: keyRecord.credits,
+      velocity,
+      topTools,
     }));
   }
 
