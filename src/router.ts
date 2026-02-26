@@ -77,19 +77,19 @@ export class MultiServerRouter extends EventEmitter {
   /**
    * Handle an incoming JSON-RPC request, routing to the appropriate backend.
    */
-  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse> {
+  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse> {
     if (!this.started) {
       return this.errorResponse(request.id, -32603, 'Router not started');
     }
 
     // tools/list — aggregate from all backends with prefixes
     if (request.method === 'tools/list') {
-      return this.handleToolsList(request, apiKey);
+      return this.handleToolsList(request, apiKey, scopedTokenTools);
     }
 
     // tools/call — route by prefix
     if (request.method === 'tools/call') {
-      return this.handleToolsCall(request, apiKey, clientIp);
+      return this.handleToolsCall(request, apiKey, clientIp, scopedTokenTools);
     }
 
     // Free methods (initialize, ping, etc.) — forward to first backend
@@ -112,7 +112,7 @@ export class MultiServerRouter extends EventEmitter {
   /**
    * Aggregate tools/list from all backends, prefixing tool names.
    */
-  private async handleToolsList(request: JsonRpcRequest, apiKey: string | null): Promise<JsonRpcResponse> {
+  private async handleToolsList(request: JsonRpcRequest, apiKey: string | null, scopedTokenTools?: string[]): Promise<JsonRpcResponse> {
     const allTools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
 
     for (const [prefix, backend] of this.backends) {
@@ -138,7 +138,7 @@ export class MultiServerRouter extends EventEmitter {
     // Apply ACL filtering on the prefixed names
     let filteredTools = allTools;
     if (apiKey) {
-      const filtered = this.gate.filterToolsForKey(apiKey, allTools);
+      const filtered = this.gate.filterToolsForKey(apiKey, allTools, scopedTokenTools);
       if (filtered) {
         filteredTools = filtered;
       }
@@ -154,7 +154,7 @@ export class MultiServerRouter extends EventEmitter {
   /**
    * Route a tools/call request by extracting the prefix from the tool name.
    */
-  private async handleToolsCall(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse> {
+  private async handleToolsCall(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse> {
     const params = request.params as unknown as ToolCallParams;
     if (!params || !params.name) {
       return this.errorResponse(request.id, -32602, 'Invalid tool call: missing tool name');
@@ -189,7 +189,7 @@ export class MultiServerRouter extends EventEmitter {
     };
 
     // First, run gate evaluation on the prefixed name for billing/ACL
-    const decision = this.gate.evaluate(apiKey, { name: params.name, arguments: params.arguments }, clientIp);
+    const decision = this.gate.evaluate(apiKey, { name: params.name, arguments: params.arguments }, clientIp, scopedTokenTools);
 
     if (!decision.allowed) {
       return {
@@ -237,6 +237,7 @@ export class MultiServerRouter extends EventEmitter {
     batchId: string | number | undefined,
     apiKey: string | null,
     clientIp?: string,
+    scopedTokenTools?: string[],
   ): Promise<JsonRpcResponse> {
     if (!this.started) {
       return this.errorResponse(batchId, -32603, 'Router not started');
@@ -267,7 +268,7 @@ export class MultiServerRouter extends EventEmitter {
     }
 
     // Gate evaluates on PREFIXED names
-    const batchResult = this.gate.evaluateBatch(apiKey, calls, clientIp);
+    const batchResult = this.gate.evaluateBatch(apiKey, calls, clientIp, scopedTokenTools);
 
     if (!batchResult.allAllowed) {
       return {

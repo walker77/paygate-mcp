@@ -52,6 +52,8 @@ export { PayGateClient, PayGateError } from './client';
 export type { PayGateClientConfig, CreditsNeededInfo, BalanceInfo } from './client';
 export { validateConfig, formatDiagnostics } from './config-validator';
 export type { ConfigDiagnostic, ValidatableConfig } from './config-validator';
+export { ScopedTokenManager } from './tokens';
+export type { TokenPayload, TokenValidation, TokenCreateOptions } from './tokens';
 
 export type {
   PayGateConfig,

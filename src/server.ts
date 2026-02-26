@@ -41,6 +41,7 @@ import { AlertEngine, Alert } from './alerts';
 import { TeamManager } from './teams';
 import { RedisClient, parseRedisUrl } from './redis-client';
 import { RedisSync } from './redis-sync';
+import { ScopedTokenManager } from './tokens';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -50,8 +51,8 @@ type ProxyBackend = McpProxy | HttpMcpProxy;
 
 /** Common interface for request handling (single proxy or multi-server router) */
 interface RequestHandler {
-  handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse>;
-  handleBatchRequest(calls: import('./types').BatchToolCall[], batchId: string | number | undefined, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse>;
+  handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse>;
+  handleBatchRequest(calls: import('./types').BatchToolCall[], batchId: string | number | undefined, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse>;
   start(): Promise<void>;
   stop(): Promise<void>;
   readonly isRunning: boolean;
@@ -87,6 +88,8 @@ export class PayGateServer {
   readonly teams: TeamManager;
   /** Redis sync adapter for distributed state (null if not using Redis) */
   readonly redisSync: RedisSync | null = null;
+  /** Scoped token manager for short-lived delegated tokens */
+  readonly tokens: ScopedTokenManager;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -188,6 +191,12 @@ export class PayGateServer {
     this.gate.teamRecorder = (apiKey: string, credits: number) => {
       this.teams.recordUsage(apiKey, credits);
     };
+
+    // Scoped token manager (uses admin key as signing secret, padded to min length)
+    const tokenSecret = this.adminKey.length >= 8
+      ? this.adminKey
+      : this.adminKey + require('crypto').randomBytes(8).toString('hex');
+    this.tokens = new ScopedTokenManager(tokenSecret);
 
     // Redis distributed state (if configured)
     if (redisUrl) {
@@ -341,6 +350,10 @@ export class PayGateServer {
       // ─── Multi-tenant namespace endpoints ──────────────────────────────
       case '/namespaces':
         return this.handleListNamespaces(req, res);
+      // ─── Scoped token endpoints ────────────────────────────────────────
+      case '/tokens':
+        if (req.method === 'POST') return this.handleCreateToken(req, res);
+        break;
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -414,6 +427,9 @@ export class PayGateServer {
     const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
       || req.socket.remoteAddress || '';
 
+    // Extract scoped token tool restrictions (set by resolveApiKey)
+    const scopedTokenTools: string[] | undefined = (req as any)._scopedTokenTools;
+
     // ─── Batch tool calls ────────────────────────────────────────────────
     if (request.method === 'tools/call_batch') {
       const params = request.params as Record<string, unknown> | undefined;
@@ -430,7 +446,7 @@ export class PayGateServer {
         return;
       }
 
-      const batchResponse = await this.handler.handleBatchRequest(calls, request.id, apiKey, clientIp);
+      const batchResponse = await this.handler.handleBatchRequest(calls, request.id, apiKey, clientIp, scopedTokenTools);
 
       // Audit + metrics for batch
       if (batchResponse.error) {
@@ -474,7 +490,7 @@ export class PayGateServer {
       return;
     }
 
-    const response = await this.handler.handleRequest(request, apiKey, clientIp);
+    const response = await this.handler.handleRequest(request, apiKey, clientIp, scopedTokenTools);
 
     // Inject pricing metadata into tools/list responses
     if (request.method === 'tools/list' && response.result) {
@@ -639,20 +655,48 @@ export class PayGateServer {
   }
 
   /**
-   * Resolve API key from X-API-Key header or OAuth Bearer token.
+   * Resolve API key from X-API-Key header, scoped token, or OAuth Bearer token.
+   * Priority: X-API-Key → pgt_ scoped token → OAuth Bearer token.
+   * Also stores resolved token metadata for ACL narrowing.
    */
   private resolveApiKey(req: IncomingMessage): string | null {
     let apiKey = (req.headers['x-api-key'] as string) || null;
-    if (!apiKey && this.oauth) {
+
+    // Check if X-API-Key is actually a scoped token
+    if (apiKey && ScopedTokenManager.isToken(apiKey)) {
+      const validation = this.tokens.validate(apiKey);
+      if (validation.valid && validation.payload) {
+        // Store token metadata on request for ACL narrowing
+        (req as any)._scopedTokenTools = validation.payload.allowedTools;
+        return validation.payload.apiKey;
+      }
+      return null; // Invalid/expired token
+    }
+
+    // Check Bearer token (OAuth or scoped token)
+    if (!apiKey) {
       const authHeader = req.headers['authorization'] as string;
       if (authHeader?.startsWith('Bearer ')) {
         const bearerToken = authHeader.slice(7);
-        const tokenInfo = this.oauth.validateToken(bearerToken);
-        if (tokenInfo) {
-          apiKey = tokenInfo.apiKey;
+        // Try scoped token first
+        if (ScopedTokenManager.isToken(bearerToken)) {
+          const validation = this.tokens.validate(bearerToken);
+          if (validation.valid && validation.payload) {
+            (req as any)._scopedTokenTools = validation.payload.allowedTools;
+            return validation.payload.apiKey;
+          }
+          return null;
+        }
+        // Fall back to OAuth
+        if (this.oauth) {
+          const tokenInfo = this.oauth.validateToken(bearerToken);
+          if (tokenInfo) {
+            apiKey = tokenInfo.apiKey;
+          }
         }
       }
     }
+
     return apiKey;
   }
 
@@ -2435,6 +2479,63 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ namespaces, count: namespaces.length }, null, 2));
+  }
+
+  // ─── /tokens — Create scoped token ──────────────────────────────────────────
+
+  private async handleCreateToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; ttl?: number; allowedTools?: string[]; label?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required param: key (API key to delegate from)' }));
+      return;
+    }
+
+    // Verify the parent key exists and is active
+    const keyRecord = this.gate.store.getKey(params.key);
+    if (!keyRecord || !keyRecord.active) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'API key not found or inactive' }));
+      return;
+    }
+
+    const ttl = Math.max(1, Math.min(86400, Math.floor(Number(params.ttl) || 3600)));
+
+    const token = this.tokens.create({
+      apiKey: params.key,
+      ttlSeconds: ttl,
+      allowedTools: params.allowedTools,
+      label: params.label,
+    });
+
+    this.audit.log('token.created', 'admin', `Scoped token created for key: ${keyRecord.name}`, {
+      keyMasked: maskKeyForAudit(params.key),
+      ttl,
+      allowedTools: params.allowedTools,
+      label: params.label,
+    });
+
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      token,
+      expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+      ttl,
+      parentKey: keyRecord.name,
+      allowedTools: params.allowedTools || [],
+      label: params.label || null,
+      message: 'Use this token as X-API-Key or Bearer token. It will expire automatically.',
+    }));
   }
 
   /**

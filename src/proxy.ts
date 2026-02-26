@@ -79,7 +79,7 @@ export class McpProxy extends EventEmitter {
    * Handle an incoming JSON-RPC request from the client.
    * Gates tools/call through the PayGate. Passes other methods through.
    */
-  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse> {
+  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse> {
     if (!this.started || !this.process) {
       return this.errorResponse(request.id, -32603, 'Server not started');
     }
@@ -91,7 +91,7 @@ export class McpProxy extends EventEmitter {
       if (request.method === 'tools/list' && response.result && apiKey) {
         const result = response.result as { tools?: Array<{ name: string; [k: string]: unknown }> };
         if (result.tools && Array.isArray(result.tools)) {
-          const filtered = this.gate.filterToolsForKey(apiKey, result.tools);
+          const filtered = this.gate.filterToolsForKey(apiKey, result.tools, scopedTokenTools);
           if (filtered) {
             result.tools = filtered;
           }
@@ -107,7 +107,7 @@ export class McpProxy extends EventEmitter {
         return this.errorResponse(request.id, -32602, 'Invalid tool call: missing tool name');
       }
 
-      const decision = this.gate.evaluate(apiKey, toolCall, clientIp);
+      const decision = this.gate.evaluate(apiKey, toolCall, clientIp, scopedTokenTools);
 
       if (!decision.allowed) {
         return {
@@ -164,6 +164,7 @@ export class McpProxy extends EventEmitter {
     batchId: string | number | undefined,
     apiKey: string | null,
     clientIp?: string,
+    scopedTokenTools?: string[],
   ): Promise<JsonRpcResponse> {
     if (!this.started || !this.process) {
       return this.errorResponse(batchId, -32603, 'Server not started');
@@ -174,7 +175,7 @@ export class McpProxy extends EventEmitter {
     }
 
     // Pre-validate all calls via gate
-    const batchResult = this.gate.evaluateBatch(apiKey, calls, clientIp);
+    const batchResult = this.gate.evaluateBatch(apiKey, calls, clientIp, scopedTokenTools);
 
     if (!batchResult.allAllowed) {
       return {

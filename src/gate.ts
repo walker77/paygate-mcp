@@ -49,7 +49,7 @@ export class Gate {
   /**
    * Evaluate a tool call request.
    */
-  evaluate(apiKey: string | null, toolCall: ToolCallParams, clientIp?: string): GateDecision {
+  evaluate(apiKey: string | null, toolCall: ToolCallParams, clientIp?: string, scopedTokenTools?: string[]): GateDecision {
     const toolName = toolCall.name;
     const creditsRequired = this.getToolPrice(toolName, toolCall.arguments);
 
@@ -95,6 +95,16 @@ export class Gate {
         return { allowed: true, reason: `shadow:${aclResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
       }
       return { allowed: false, reason: aclResult.reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
+    }
+
+    // Step 3b: Scoped token ACL narrowing — token may restrict to a subset of parent key's tools
+    if (scopedTokenTools && scopedTokenTools.length > 0 && !scopedTokenTools.includes(toolName)) {
+      const reason = `token_tool_not_allowed: ${toolName} not in scoped token allowedTools`;
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason, keyRecord.namespace);
+      if (this.config.shadowMode) {
+        return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+      return { allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
     }
 
     // Step 4: Global rate limit?
@@ -206,7 +216,7 @@ export class Gate {
    *
    * On success, deducts credits for all calls at once.
    */
-  evaluateBatch(apiKey: string | null, calls: BatchToolCall[], clientIp?: string): BatchGateResult {
+  evaluateBatch(apiKey: string | null, calls: BatchToolCall[], clientIp?: string, scopedTokenTools?: string[]): BatchGateResult {
     if (calls.length === 0) {
       return { allAllowed: true, totalCredits: 0, decisions: [], remainingCredits: 0, failedIndex: -1 };
     }
@@ -289,6 +299,28 @@ export class Gate {
           })),
           remainingCredits: keyRecord.credits,
           reason: aclResult.reason,
+          failedIndex: i,
+        };
+      }
+
+      // Scoped token ACL narrowing for batch
+      if (scopedTokenTools && scopedTokenTools.length > 0 && !scopedTokenTools.includes(call.name)) {
+        const reason = `token_tool_not_allowed: ${call.name} not in scoped token allowedTools`;
+        if (this.config.shadowMode) {
+          perCallCredits.push(this.getToolPrice(call.name, call.arguments));
+          continue;
+        }
+        return {
+          allAllowed: false,
+          totalCredits: 0,
+          decisions: calls.map((_, j) => ({
+            allowed: false,
+            reason: j === i ? reason : 'batch_rejected',
+            creditsCharged: 0,
+            remainingCredits: keyRecord.credits,
+          })),
+          remainingCredits: keyRecord.credits,
+          reason,
           failedIndex: i,
         };
       }
@@ -498,11 +530,14 @@ export class Gate {
    * Filter a tools list based on a key's ACL. Used by proxies for tools/list filtering.
    * Returns null if no filtering needed (no API key or no ACL configured).
    */
-  filterToolsForKey(apiKey: string | null, tools: Array<{ name: string; [k: string]: unknown }>): Array<{ name: string; [k: string]: unknown }> | null {
+  filterToolsForKey(apiKey: string | null, tools: Array<{ name: string; [k: string]: unknown }>, scopedTokenTools?: string[]): Array<{ name: string; [k: string]: unknown }> | null {
     if (!apiKey) return null;
     const keyRecord = this.store.getKey(apiKey);
     if (!keyRecord) return null;
-    if (keyRecord.allowedTools.length === 0 && keyRecord.deniedTools.length === 0) return null;
+
+    const hasKeyAcl = keyRecord.allowedTools.length > 0 || keyRecord.deniedTools.length > 0;
+    const hasTokenAcl = scopedTokenTools && scopedTokenTools.length > 0;
+    if (!hasKeyAcl && !hasTokenAcl) return null;
 
     return tools.filter(tool => {
       // Whitelist: if set, tool must be in it
@@ -511,6 +546,10 @@ export class Gate {
       }
       // Blacklist: if set, tool must not be in it
       if (keyRecord.deniedTools.length > 0 && keyRecord.deniedTools.includes(tool.name)) {
+        return false;
+      }
+      // Scoped token narrowing: if token restricts tools, tool must be in token's list
+      if (hasTokenAcl && !scopedTokenTools!.includes(tool.name)) {
         return false;
       }
       return true;

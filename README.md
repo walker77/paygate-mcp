@@ -59,6 +59,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Config Validation + Dry Run** — `paygate-mcp validate --config paygate.json` catches misconfigurations before starting; `--dry-run` discovers tools, prints pricing table, then exits
 - **Batch Tool Calls** — `tools/call_batch` method for calling multiple tools in one request with all-or-nothing billing, aggregate credit checks, and parallel execution
 - **Multi-Tenant Namespaces** — Isolate API keys and usage data by tenant with namespace-filtered admin endpoints, analytics, and usage export
+- **Scoped Tokens** — Issue short-lived `pgt_` tokens scoped to specific tools with auto-expiry (max 24h), HMAC-SHA256 signed, zero server-side state
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -305,6 +306,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/teams/assign` | POST | `X-Admin-Key` | Assign an API key to a team |
 | `/teams/remove` | POST | `X-Admin-Key` | Remove an API key from a team |
 | `/teams/usage` | GET | `X-Admin-Key` | Team usage summary with member breakdown |
+| `/tokens` | POST | `X-Admin-Key` | Create a scoped token (short-lived, tool-restricted) |
 | `/namespaces` | GET | `X-Admin-Key` | List all namespaces with key/credit/spending stats |
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
@@ -1168,6 +1170,92 @@ Namespace rules:
 - Usage events carry the key's namespace for cross-cutting analytics
 - Namespaces are implicit — created automatically when a key is assigned to one
 
+### Scoped Tokens
+
+Issue short-lived, tool-restricted tokens from any API key. Scoped tokens let you delegate narrow access to agents or sub-processes without exposing the parent API key.
+
+**Create a scoped token (admin):**
+
+```bash
+curl -X POST http://localhost:3402/tokens \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key": "pg_parent_key_here",
+    "ttl": 300,
+    "allowedTools": ["search", "summarize"],
+    "label": "agent-session-42"
+  }'
+```
+
+Returns:
+
+```json
+{
+  "token": "pgt_eyJhcGl...signature",
+  "expiresAt": "2025-06-15T12:05:00.000Z",
+  "ttl": 300,
+  "parentKey": "my-agent",
+  "allowedTools": ["search", "summarize"],
+  "label": "agent-session-42",
+  "message": "Use as X-API-Key or Bearer token on /mcp"
+}
+```
+
+**Use the token on /mcp:**
+
+```bash
+# As X-API-Key header
+curl -X POST http://localhost:3402/mcp \
+  -H "X-API-Key: pgt_eyJhcGl...signature" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"q":"hello"}}}'
+
+# As Bearer token
+curl -X POST http://localhost:3402/mcp \
+  -H "Authorization: Bearer pgt_eyJhcGl...signature" \
+  -H "Content-Type: application/json" \
+  -d '...'
+```
+
+Token behavior:
+- **Self-contained** — HMAC-SHA256 signed, zero server-side state. Validated cryptographically on every request.
+- **Auto-expiry** — TTL defaults to 1 hour, max 24 hours. Expired tokens are rejected instantly.
+- **Tool ACL narrowing** — If `allowedTools` is set, the token can only call those tools (intersection with parent key's ACL).
+- **Credits from parent** — Tool calls charge against the parent key's credit balance.
+- **`tools/list` filtering** — When a scoped token calls `tools/list`, only the allowed tools are returned.
+- **Batch-aware** — `tools/call_batch` checks scoped token ACL for every call in the batch.
+- **Resolution priority** — `X-API-Key` header → `pgt_` scoped token → OAuth Bearer token.
+
+Token format: `pgt_<base64url(JSON payload)>.<base64url(HMAC-SHA256 signature)>`
+
+**Programmatic usage:**
+
+```typescript
+import { ScopedTokenManager } from 'paygate-mcp';
+
+const tokens = new ScopedTokenManager('your-signing-secret');
+
+// Create
+const token = tokens.create({
+  apiKey: 'pg_parent_key',
+  ttlSeconds: 300,
+  allowedTools: ['search'],
+  label: 'agent-42',
+});
+
+// Validate
+const result = tokens.validate(token);
+if (result.valid) {
+  console.log(result.payload.apiKey); // 'pg_parent_key'
+  console.log(result.payload.allowedTools); // ['search']
+}
+
+// Check if a string is a scoped token
+ScopedTokenManager.isToken('pgt_...'); // true
+ScopedTokenManager.isToken('pg_...');  // false
+```
+
 ### Horizontal Scaling (Redis)
 
 Enable Redis-backed state for multi-process deployments. Multiple PayGate instances share API keys, credits, and usage data through Redis:
@@ -1411,6 +1499,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Horizontal scaling — Redis-backed state for multi-process deployments
 - [x] Batch tool calls — `tools/call_batch` with all-or-nothing billing and parallel execution
 - [x] Multi-tenant namespaces — Isolate API keys and usage data by tenant with namespace-filtered endpoints
+- [x] Scoped tokens — Short-lived `pgt_` tokens with tool ACL narrowing, HMAC-SHA256 signed, zero server-side state
 
 ## Requirements
 
