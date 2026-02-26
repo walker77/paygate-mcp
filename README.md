@@ -86,6 +86,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Custom Response Headers** — Add security headers (`X-Frame-Options`, `X-Content-Type-Options`, etc.), cache control, or any custom headers to all HTTP responses — set via config file `customHeaders` object, `--header` CLI flag, or `PAYGATE_CUSTOM_HEADERS` env var
 - **Config Export** — `GET /config` returns the running server configuration with sensitive values masked (webhook secrets → `***`, server commands → `***`, webhook URLs → scheme+host only) — admin auth required, includes audit trail
 - **Trusted Proxies** — Configure trusted proxy IPs/CIDRs for accurate `X-Forwarded-For` extraction — walks the header right-to-left, skipping trusted proxies to find the real client IP, supports exact IPs and CIDR ranges (IPv4), backward compatible (first IP) when not configured
+- **Key Listing Pagination** — Enhanced `GET /keys` with cursor-based pagination (`limit`/`offset`), sorting (`sortBy`/`order`), and filtering by namespace, group, active/suspended/expired status, name prefix, and credit range — backward compatible (returns flat array when no pagination params used)
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1560,6 +1561,58 @@ Config file:
 **How it works:** Without trusted proxies, the first `X-Forwarded-For` value is used (backward compatible). With trusted proxies configured, the header is walked right-to-left, skipping IPs that match the trusted list, and the first non-trusted IP is returned as the real client IP. This is critical for accurate IP allowlisting when behind proxies.
 
 Supports exact IPv4 addresses and CIDR notation (`/8`, `/16`, `/24`, `/32`, etc.). The `resolveClientIp` function is also exported from the SDK for custom use.
+
+### Key Listing Pagination
+
+The `GET /keys` endpoint supports pagination, filtering, and sorting when any query parameter is present:
+
+```bash
+# Paginate: 10 keys per page, second page
+curl "http://localhost:3402/keys?limit=10&offset=10" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by namespace and active status
+curl "http://localhost:3402/keys?limit=50&namespace=prod&active=true" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Sort by credits descending
+curl "http://localhost:3402/keys?limit=20&sortBy=credits&order=desc" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by credit range
+curl "http://localhost:3402/keys?limit=50&minCredits=100&maxCredits=1000" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Find keys by name prefix
+curl "http://localhost:3402/keys?limit=50&namePrefix=prod-" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | number | Results per page (1–500, default: 50) |
+| `offset` | number | Skip N results (default: 0) |
+| `sortBy` | string | Sort field: `createdAt`, `name`, `credits`, `lastUsedAt`, `totalSpent`, `totalCalls` |
+| `order` | string | Sort direction: `asc` or `desc` (default: `desc`) |
+| `namespace` | string | Filter by namespace |
+| `group` | string | Filter by group ID |
+| `active` | string | `true` or `false` |
+| `suspended` | string | `true` or `false` |
+| `expired` | string | `true` or `false` |
+| `namePrefix` | string | Case-insensitive name prefix match |
+| `minCredits` | number | Minimum credits (inclusive) |
+| `maxCredits` | number | Maximum credits (inclusive) |
+
+**Response format** (when any pagination/filter param is present):
+
+```json
+{
+  "keys": [...],
+  "total": 150,
+  "offset": 20,
+  "limit": 10,
+  "hasMore": true
+}
+```
+
+**Backward compatible:** Without any pagination/filter/sort params, `GET /keys` returns the same flat array as before.
 
 ### IP Allowlisting
 

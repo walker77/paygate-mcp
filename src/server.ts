@@ -1097,7 +1097,7 @@ export class PayGateServer {
         dashboard: 'GET /dashboard — Admin web dashboard (browser UI)',
         status: 'GET /status — Usage data JSON (requires X-Admin-Key)',
         createKey: 'POST /keys — Create API key (requires X-Admin-Key)',
-        listKeys: 'GET /keys — List API keys (requires X-Admin-Key)',
+        listKeys: 'GET /keys — List API keys with pagination, filtering, sorting (requires X-Admin-Key)',
         revokeKey: 'POST /keys/revoke — Revoke a key permanently (requires X-Admin-Key)',
         suspendKey: 'POST /keys/suspend — Temporarily suspend a key (requires X-Admin-Key)',
         resumeKey: 'POST /keys/resume — Resume a suspended key (requires X-Admin-Key)',
@@ -1493,8 +1493,37 @@ export class PayGateServer {
 
     const urlParts = req.url?.split('?') || [];
     const params = new URLSearchParams(urlParts[1] || '');
-    const namespace = params.get('namespace') || undefined;
 
+    // Check if any pagination/filter/sort params are present → use enhanced listing
+    const hasPagination = params.has('limit') || params.has('offset') ||
+      params.has('sortBy') || params.has('order') ||
+      params.has('group') || params.has('active') || params.has('suspended') ||
+      params.has('expired') || params.has('namePrefix') ||
+      params.has('minCredits') || params.has('maxCredits');
+
+    if (hasPagination) {
+      const query: import('./types').KeyListQuery = {
+        namespace: params.get('namespace') || undefined,
+        group: params.has('group') ? (params.get('group') || '') : undefined,
+        active: params.get('active') || undefined,
+        suspended: params.get('suspended') || undefined,
+        expired: params.get('expired') || undefined,
+        namePrefix: params.get('namePrefix') || undefined,
+        minCredits: params.has('minCredits') ? Number(params.get('minCredits')) : undefined,
+        maxCredits: params.has('maxCredits') ? Number(params.get('maxCredits')) : undefined,
+        sortBy: (params.get('sortBy') as any) || undefined,
+        order: (params.get('order') as any) || undefined,
+        limit: params.has('limit') ? Number(params.get('limit')) : undefined,
+        offset: params.has('offset') ? Number(params.get('offset')) : undefined,
+      };
+      const result = this.gate.store.listKeysFiltered(query);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // Legacy: plain list with optional namespace
+    const namespace = params.get('namespace') || undefined;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(this.gate.store.listKeys(namespace), null, 2));
   }

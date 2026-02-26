@@ -79,6 +79,8 @@ export type {
   BatchToolCall,
   BatchGateResult,
   WebhookFilterRule,
+  KeyListQuery,
+  KeyListResult,
 } from './types';
 
 export { DEFAULT_CONFIG } from './types';

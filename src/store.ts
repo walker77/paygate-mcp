@@ -586,6 +586,89 @@ export class KeyStore {
   }
 
   /**
+   * List keys with pagination, filtering, and sorting.
+   */
+  listKeysFiltered(query: import('./types').KeyListQuery): import('./types').KeyListResult {
+    type MaskedKey = Omit<import('./types').ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean };
+
+    // ─── Filtering ───
+    const filtered: MaskedKey[] = [];
+    for (const record of this.keys.values()) {
+      // Namespace filter
+      if (query.namespace && record.namespace !== query.namespace) continue;
+      // Group filter
+      if (query.group !== undefined) {
+        if (query.group === '' && record.group) continue;       // ungrouped only
+        if (query.group !== '' && record.group !== query.group) continue;
+      }
+      // Active filter
+      if (query.active === 'true' && !record.active) continue;
+      if (query.active === 'false' && record.active) continue;
+      // Suspended filter
+      if (query.suspended === 'true' && !record.suspended) continue;
+      if (query.suspended === 'false' && record.suspended) continue;
+      // Expired filter
+      const expired = this.isExpired(record.key);
+      if (query.expired === 'true' && !expired) continue;
+      if (query.expired === 'false' && expired) continue;
+      // Name prefix filter (case-insensitive)
+      if (query.namePrefix && !record.name.toLowerCase().startsWith(query.namePrefix.toLowerCase())) continue;
+      // Credit range filters
+      if (query.minCredits !== undefined && record.credits < query.minCredits) continue;
+      if (query.maxCredits !== undefined && record.credits > query.maxCredits) continue;
+
+      const { key, ...rest } = record;
+      filtered.push({ ...rest, keyPrefix: key.slice(0, 10) + '...', expired });
+    }
+
+    // ─── Sorting ───
+    const sortBy = query.sortBy || 'createdAt';
+    const order = query.order || 'desc';
+    const mul = order === 'asc' ? 1 : -1;
+
+    filtered.sort((a, b) => {
+      let cmp = 0;
+      switch (sortBy) {
+        case 'name':
+          cmp = a.name.localeCompare(b.name);
+          break;
+        case 'credits':
+          cmp = a.credits - b.credits;
+          break;
+        case 'totalSpent':
+          cmp = a.totalSpent - b.totalSpent;
+          break;
+        case 'totalCalls':
+          cmp = a.totalCalls - b.totalCalls;
+          break;
+        case 'lastUsedAt':
+          cmp = (a.lastUsedAt || '').localeCompare(b.lastUsedAt || '');
+          break;
+        case 'createdAt':
+        default:
+          cmp = a.createdAt.localeCompare(b.createdAt);
+          break;
+      }
+      return cmp * mul;
+    });
+
+    // ─── Pagination ───
+    const total = filtered.length;
+    const rawLimit = query.limit != null && !isNaN(query.limit) ? query.limit : 50;
+    const limit = Math.min(Math.max(1, rawLimit), 500);
+    const offset = Math.max(0, query.offset || 0);
+    const page = filtered.slice(offset, offset + limit);
+
+    return {
+      keys: page,
+      total,
+      offset,
+      limit,
+      hasMore: offset + limit < total,
+    };
+  }
+
+  /**
    * Export all API keys as full records (including secret key values).
    * Used for backup/migration. Optionally filter by namespace or active status.
    */

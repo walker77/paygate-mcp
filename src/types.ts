@@ -276,6 +276,48 @@ export interface GateDecision {
   remainingCredits: number;
 }
 
+// ─── Key Listing ────────────────────────────────────────────────────────────────
+
+export interface KeyListQuery {
+  /** Filter by namespace. */
+  namespace?: string;
+  /** Filter by group ID. */
+  group?: string;
+  /** Filter by active status: 'true', 'false', or undefined (all). */
+  active?: string;
+  /** Filter by suspended status: 'true', 'false', or undefined (all). */
+  suspended?: string;
+  /** Filter by expired status: 'true', 'false', or undefined (all). */
+  expired?: string;
+  /** Filter keys with name starting with this prefix (case-insensitive). */
+  namePrefix?: string;
+  /** Minimum credits (inclusive). */
+  minCredits?: number;
+  /** Maximum credits (inclusive). */
+  maxCredits?: number;
+  /** Sort by field. Default: 'createdAt'. */
+  sortBy?: 'createdAt' | 'name' | 'credits' | 'lastUsedAt' | 'totalSpent' | 'totalCalls';
+  /** Sort order. Default: 'desc'. */
+  order?: 'asc' | 'desc';
+  /** Number of results to return. Default: 50. Max: 500. */
+  limit?: number;
+  /** Number of results to skip. Default: 0. */
+  offset?: number;
+}
+
+export interface KeyListResult {
+  /** Array of (masked) key records matching the query. */
+  keys: Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }>;
+  /** Total number of keys matching the filters (before pagination). */
+  total: number;
+  /** Current offset. */
+  offset: number;
+  /** Current limit. */
+  limit: number;
+  /** Whether there are more results after this page. */
+  hasMore: boolean;
+}
+
 // ─── Batch Tool Calls ───────────────────────────────────────────────────────────
 
 export interface BatchToolCall {
