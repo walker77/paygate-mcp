@@ -5,7 +5,7 @@
 
 import { validateConfig, formatDiagnostics, ValidatableConfig, ConfigDiagnostic } from '../src/config-validator';
 import * as path from 'path';
-import { execFileSync, SpawnSyncReturns } from 'child_process';
+import { spawnSync } from 'child_process';
 import { writeFileSync, unlinkSync } from 'fs';
 
 const MOCK_SERVER = path.join(__dirname, 'e2e', 'mock-mcp-server.js');
@@ -266,11 +266,12 @@ describe('v2.7.0 — CLI validate command', () => {
       defaultCreditsPerCall: 1,
     }));
 
-    const output = execFileSync(
-      'node', ['dist/cli.js', 'validate', '--config', tmpConfig],
-      { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8' }
-    );
-    expect(output).toContain('valid');
+    const result = spawnSync('node', ['dist/cli.js', 'validate', '--config', tmpConfig], {
+      cwd: '/tmp/paygate-mcp-sync',
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('valid');
   });
 
   test('validate invalid config exits 1', () => {
@@ -278,45 +279,28 @@ describe('v2.7.0 — CLI validate command', () => {
       port: -1,
     }));
 
-    let exitedNonZero = false;
-    let output = '';
-    try {
-      execFileSync(
-        'node', ['dist/cli.js', 'validate', '--config', tmpConfig],
-        { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', stdio: 'pipe' }
-      );
-    } catch (err: any) {
-      exitedNonZero = true;
-      output = (err.stdout || '').toString() + (err.stderr || '').toString();
-    }
-    expect(exitedNonZero).toBe(true);
-    expect(output).toContain('ERROR');
+    const result = spawnSync('node', ['dist/cli.js', 'validate', '--config', tmpConfig], {
+      cwd: '/tmp/paygate-mcp-sync',
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout + result.stderr).toContain('ERROR');
   });
 
   test('validate without --config exits 1', () => {
-    let exitedNonZero = false;
-    try {
-      execFileSync(
-        'node', ['dist/cli.js', 'validate'],
-        { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', stdio: 'pipe' }
-      );
-    } catch {
-      exitedNonZero = true;
-    }
-    expect(exitedNonZero).toBe(true);
+    const result = spawnSync('node', ['dist/cli.js', 'validate'], {
+      cwd: '/tmp/paygate-mcp-sync',
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(1);
   });
 
   test('validate non-existent config file exits 1', () => {
-    let exitedNonZero = false;
-    try {
-      execFileSync(
-        'node', ['dist/cli.js', 'validate', '--config', '/tmp/nonexistent-paygate.json'],
-        { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', stdio: 'pipe' }
-      );
-    } catch {
-      exitedNonZero = true;
-    }
-    expect(exitedNonZero).toBe(true);
+    const result = spawnSync('node', ['dist/cli.js', 'validate', '--config', '/tmp/nonexistent-paygate.json'], {
+      cwd: '/tmp/paygate-mcp-sync',
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(1);
   });
 });
 
@@ -324,12 +308,13 @@ describe('v2.7.0 — CLI validate command', () => {
 
 describe('v2.7.0 — Dry Run (--dry-run)', () => {
   test('dry run discovers tools and exits', () => {
-    const output = execFileSync(
+    const result = spawnSync(
       'node', ['dist/cli.js', 'wrap', '--server', `node ${MOCK_SERVER}`, '--port', '0', '--dry-run'],
       { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', timeout: 15000 }
     );
-    expect(output).toContain('DRY RUN');
-    expect(output).toContain('Discovered');
-    expect(output).toContain('Dry run complete');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('DRY RUN');
+    expect(result.stdout).toContain('Discovered');
+    expect(result.stdout).toContain('Dry run complete');
   }, 20000);
 });
