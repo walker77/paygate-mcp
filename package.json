@@ -1,15 +1,30 @@
 {
   "name": "paygate-mcp",
-  "version": "6.6.0",
+  "version": "6.7.0",
   "description": "Pay-per-tool-call gating proxy for MCP servers. Wrap any MCP server with API key auth, per-tool pricing, rate limiting, and usage metering.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": { "paygate-mcp": "./dist/cli.js" },
-  "files": ["dist", "README.md", "LICENSE"],
+  "bin": {
+    "paygate-mcp": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proxy": { "types": "./dist/proxy.d.ts", "default": "./dist/proxy.js" },
-    "./client": { "types": "./dist/client.d.ts", "default": "./dist/client.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./proxy": {
+      "types": "./dist/proxy.d.ts",
+      "default": "./dist/proxy.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -24,7 +39,17 @@
     "@types/jest": "^29.5.0",
     "@types/node": "^20.10.0"
   },
-  "keywords": ["mcp", "paygate", "monetize", "pay-per-call", "api-key", "rate-limit", "model-context-protocol", "ai-agent", "billing"],
+  "keywords": [
+    "mcp",
+    "paygate",
+    "monetize",
+    "pay-per-call",
+    "api-key",
+    "rate-limit",
+    "model-context-protocol",
+    "ai-agent",
+    "billing"
+  ],
   "license": "MIT",
   "homepage": "https://paygated.dev",
   "repository": {
@@ -34,5 +59,7 @@
   "bugs": {
     "url": "https://github.com/walker77/paygate-mcp/issues"
   },
-  "engines": { "node": ">=18.0.0" }
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

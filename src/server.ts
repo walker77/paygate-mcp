@@ -568,6 +568,8 @@ export class PayGateServer {
         return this.handleSpendingVelocity(req, res);
       case '/keys/compare':
         return this.handleKeyComparison(req, res);
+      case '/keys/health':
+        return this.handleKeyHealth(req, res);
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1145,6 +1147,7 @@ export class PayGateServer {
         creditHistory: 'GET /keys/credit-history?key=... — Per-key credit mutation history (requires X-Admin-Key)',
         spendingVelocity: 'GET /keys/spending-velocity?key=... — Spending rate and depletion forecast (requires X-Admin-Key)',
         keyComparison: 'GET /keys/compare?keys=pg_a,pg_b — Side-by-side key comparison (requires X-Admin-Key)',
+        keyHealth: 'GET /keys/health?key=... — Composite health score (0-100) with component breakdown (requires X-Admin-Key)',
         keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
         deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
@@ -3189,6 +3192,151 @@ export class PayGateServer {
       compared: comparisons.length,
       notFound: notFound.length > 0 ? notFound : undefined,
       keys: comparisons,
+    }));
+  }
+
+  // ─── /keys/health — Composite health score ──────────────────────────────────
+
+  private handleKeyHealth(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const key = params.get('key');
+
+    if (!key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+
+    // Use resolveKeyRaw to include expired/suspended/revoked keys in health check
+    const record = this.gate.store.resolveKeyRaw(key);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const actualKey = record.key;
+
+    // ── Component 1: Balance health (30% weight) ──
+    // Based on spending velocity → how many hours of usage remaining
+    const velocity = this.creditLedger.getSpendingVelocity(actualKey, record.credits, 24);
+    let balanceScore = 100;
+    let balanceRisk = 'healthy';
+    if (velocity.creditsPerHour > 0) {
+      const hoursLeft = velocity.estimatedHoursRemaining ?? Infinity;
+      if (hoursLeft <= 1) { balanceScore = 0; balanceRisk = 'critical'; }
+      else if (hoursLeft <= 6) { balanceScore = 20; balanceRisk = 'critical'; }
+      else if (hoursLeft <= 24) { balanceScore = 40; balanceRisk = 'warning'; }
+      else if (hoursLeft <= 72) { balanceScore = 60; balanceRisk = 'caution'; }
+      else if (hoursLeft <= 168) { balanceScore = 80; balanceRisk = 'good'; }
+    } else if (record.credits <= 0) {
+      balanceScore = 0;
+      balanceRisk = 'critical';
+    }
+
+    // ── Component 2: Quota utilization (25% weight) ──
+    let quotaScore = 100;
+    let quotaRisk = 'healthy';
+    const quotaConfig = record.quota || this.config.globalQuota;
+    if (quotaConfig) {
+      // Reset counters if day/month rolled over before reading
+      this.gate.quotaTracker.resetIfNeeded(record);
+      let maxUtilization = 0;
+
+      if (quotaConfig.dailyCallLimit && quotaConfig.dailyCallLimit > 0) {
+        maxUtilization = Math.max(maxUtilization, record.quotaDailyCalls / quotaConfig.dailyCallLimit);
+      }
+      if (quotaConfig.monthlyCallLimit && quotaConfig.monthlyCallLimit > 0) {
+        maxUtilization = Math.max(maxUtilization, record.quotaMonthlyCalls / quotaConfig.monthlyCallLimit);
+      }
+      if (quotaConfig.dailyCreditLimit && quotaConfig.dailyCreditLimit > 0) {
+        maxUtilization = Math.max(maxUtilization, record.quotaDailyCredits / quotaConfig.dailyCreditLimit);
+      }
+      if (quotaConfig.monthlyCreditLimit && quotaConfig.monthlyCreditLimit > 0) {
+        maxUtilization = Math.max(maxUtilization, record.quotaMonthlyCredits / quotaConfig.monthlyCreditLimit);
+      }
+
+      quotaScore = Math.max(0, Math.round((1 - maxUtilization) * 100));
+      if (maxUtilization >= 1) quotaRisk = 'critical';
+      else if (maxUtilization >= 0.9) quotaRisk = 'warning';
+      else if (maxUtilization >= 0.75) quotaRisk = 'caution';
+      else if (maxUtilization >= 0.5) quotaRisk = 'good';
+    }
+
+    // ── Component 3: Rate limit pressure (20% weight) ──
+    const rateStatus = this.gate.rateLimiter.getStatus(actualKey);
+    let rateLimitScore = 100;
+    let rateLimitRisk = 'healthy';
+    if (rateStatus.limit > 0) {
+      const utilization = rateStatus.used / rateStatus.limit;
+      rateLimitScore = Math.max(0, Math.round((1 - utilization) * 100));
+      if (utilization >= 1) rateLimitRisk = 'critical';
+      else if (utilization >= 0.9) rateLimitRisk = 'warning';
+      else if (utilization >= 0.75) rateLimitRisk = 'caution';
+      else if (utilization >= 0.5) rateLimitRisk = 'good';
+    }
+
+    // ── Component 4: Error rate (25% weight) ──
+    const keyUsage = this.gate.meter.getKeyUsage(actualKey);
+    let errorScore = 100;
+    let errorRisk = 'healthy';
+    if (keyUsage.totalCalls > 0) {
+      const errorRate = keyUsage.totalDenied / keyUsage.totalCalls;
+      errorScore = Math.max(0, Math.round((1 - errorRate) * 100));
+      if (errorRate >= 0.5) errorRisk = 'critical';
+      else if (errorRate >= 0.25) errorRisk = 'warning';
+      else if (errorRate >= 0.1) errorRisk = 'caution';
+      else if (errorRate > 0) errorRisk = 'good';
+    }
+
+    // ── Composite score (weighted) ──
+    const overallScore = Math.round(
+      balanceScore * 0.30 +
+      quotaScore * 0.25 +
+      rateLimitScore * 0.20 +
+      errorScore * 0.25
+    );
+
+    let overallStatus = 'healthy';
+    if (overallScore < 25) overallStatus = 'critical';
+    else if (overallScore < 50) overallStatus = 'warning';
+    else if (overallScore < 75) overallStatus = 'caution';
+    else if (overallScore < 90) overallStatus = 'good';
+
+    // Check key-level issues
+    const issues: string[] = [];
+    if (!record.active) issues.push('Key is revoked');
+    if (record.suspended) issues.push('Key is suspended');
+    if (record.expiresAt && new Date(record.expiresAt).getTime() < Date.now()) issues.push('Key has expired');
+    if (record.expiresAt) {
+      const hoursToExpiry = (new Date(record.expiresAt).getTime() - Date.now()) / 3_600_000;
+      if (hoursToExpiry > 0 && hoursToExpiry <= 24) issues.push('Key expires within 24 hours');
+      else if (hoursToExpiry > 0 && hoursToExpiry <= 168) issues.push('Key expires within 7 days');
+    }
+    if (record.credits <= 0) issues.push('Zero credits remaining');
+    if (balanceRisk === 'critical') issues.push('Credits depleting rapidly');
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: actualKey.slice(0, 10) + '...',
+      name: record.name,
+      score: overallScore,
+      status: overallStatus,
+      issues: issues.length > 0 ? issues : undefined,
+      components: {
+        balance: { score: balanceScore, risk: balanceRisk, weight: 0.30 },
+        quota: { score: quotaScore, risk: quotaRisk, weight: 0.25 },
+        rateLimit: { score: rateLimitScore, risk: rateLimitRisk, weight: 0.20 },
+        errorRate: { score: errorScore, risk: errorRisk, weight: 0.25 },
+      },
     }));
   }
 

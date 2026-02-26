@@ -93,6 +93,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit History** — `GET /keys/credit-history?key=...` returns per-key credit mutation log — tracks initial allocation, topups, transfers (in/out), auto-topups, with type/limit/since filters, balance-before/after on every entry, newest-first ordering, capped at 100 entries per key
 - **Spending Velocity** — `GET /keys/spending-velocity?key=...` returns credit burn rate and depletion forecast — credits/calls per hour/day, estimated depletion date, top tools by spend, configurable analysis window (1h–30d)
 - **Key Comparison** — `GET /keys/compare?keys=pg_a,pg_b` returns side-by-side comparison of 2–10 keys — credits, usage, velocity, rate limits, status, metadata (namespace/group/tags) — with not-found key reporting
+- **Key Health Score** — `GET /keys/health?key=...` returns composite health score (0–100) with weighted component breakdown: balance health (30%), quota utilization (25%), rate limit pressure (20%), error rate (25%) — status levels (healthy/good/caution/warning/critical), key issue detection (revoked/suspended/expired/expiring/zero credits), alias support
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1836,6 +1837,34 @@ curl "http://localhost:3402/keys/compare?keys=pg_abc,pg_xyz" -H "X-Admin-Key: YO
 ```
 
 Keys not found are reported in a `notFound` array. Supports aliases. Maximum 10 keys per comparison.
+
+### Key Health Score
+
+`GET /keys/health?key=...` returns a composite health score (0–100) with weighted component breakdown:
+
+```bash
+curl "http://localhost:3402/keys/health?key=pg_abc" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_abc123...",
+  "name": "prod-agent",
+  "score": 72,
+  "status": "caution",
+  "issues": ["Key expires within 7 days", "Credits depleting rapidly"],
+  "components": {
+    "balance": { "score": 40, "risk": "warning", "weight": 0.30 },
+    "quota": { "score": 85, "risk": "good", "weight": 0.25 },
+    "rateLimit": { "score": 100, "risk": "healthy", "weight": 0.20 },
+    "errorRate": { "score": 75, "risk": "good", "weight": 0.25 }
+  }
+}
+```
+
+Components: **balance** (30%, hours until credit depletion), **quota** (25%, max utilization across daily/monthly limits), **rateLimit** (20%, current window usage), **errorRate** (25%, denied/total ratio). Status: healthy (≥90), good (≥75), caution (≥50), warning (≥25), critical (<25). Issues detect: revoked, suspended, expired, expiring soon, zero credits, rapid depletion. Supports aliases.
 
 ### IP Allowlisting
 
