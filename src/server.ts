@@ -444,6 +444,8 @@ export class PayGateServer {
         return this.handleWebhookReplay(req, res);
       case '/webhooks/stats':
         return this.handleWebhookStats(req, res);
+      case '/webhooks/test':
+        return this.handleWebhookTest(req, res);
       case '/webhooks/filters':
         if (req.method === 'GET') return this.handleListWebhookFilters(req, res);
         if (req.method === 'POST') return this.handleCreateWebhookFilter(req, res);
@@ -951,6 +953,7 @@ export class PayGateServer {
         alerts: 'GET /alerts — Get pending alerts + POST /alerts — Configure alert rules (requires X-Admin-Key)',
         webhookDeadLetters: 'GET /webhooks/dead-letter — View failed webhook deliveries + DELETE to clear (requires X-Admin-Key)',
         webhookReplay: 'POST /webhooks/replay — Replay dead letter webhook events (requires X-Admin-Key)',
+        webhookTest: 'POST /webhooks/test — Send test event to webhook URL and return result (requires X-Admin-Key)',
         webhookStats: 'GET /webhooks/stats — Webhook delivery statistics (requires X-Admin-Key)',
         webhookFilters: 'GET|POST /webhooks/filters — List or create webhook filter rules (requires X-Admin-Key)',
         updateWebhookFilter: 'POST /webhooks/filters/update — Update a webhook filter rule (requires X-Admin-Key)',
@@ -3202,6 +3205,131 @@ export class PayGateServer {
       maxRetries: this.gate.webhook.maxRetries,
       ...stats,
       ...(routerStats ? { filters: routerStats } : {}),
+    }));
+  }
+
+  // ─── /webhooks/test — Send test event ────────────────────────────────────
+
+  private async handleWebhookTest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No webhook configured. Set --webhook-url or webhookUrl in config.' }));
+      return;
+    }
+
+    // Parse optional custom message from body
+    let customMessage = 'Test event from paygate-mcp';
+    try {
+      const raw = await this.readBody(req);
+      if (raw) {
+        const body = JSON.parse(raw);
+        if (body && typeof body === 'object' && body.message) {
+          customMessage = String(body.message);
+        }
+      }
+    } catch {
+      // Empty body or parse error is fine — use default message
+    }
+
+    // Build test payload (matching normal webhook structure)
+    const testEvent = {
+      type: 'alert.fired' as const,
+      timestamp: new Date().toISOString(),
+      actor: 'admin',
+      metadata: {
+        test: true,
+        message: customMessage,
+      },
+    };
+
+    const payload = JSON.stringify({
+      sentAt: new Date().toISOString(),
+      adminEvents: [testEvent],
+    });
+
+    // Send synchronously and capture the result
+    const webhookUrl = (this.gate.webhook as any).url as string;
+    const isHttps = webhookUrl.startsWith('https://');
+    const secret = (this.gate.webhook as any).secret as string | null;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(webhookUrl);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid webhook URL configured' }));
+      return;
+    }
+
+    const headers: Record<string, string | number> = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+      'User-Agent': 'paygate-mcp-webhook/1.0',
+      'X-PayGate-Test': '1',
+    };
+
+    // Sign if secret configured
+    if (secret) {
+      const { createHmac } = await import('crypto');
+      const timestamp = Math.floor(Date.now() / 1000);
+      const signaturePayload = `${timestamp}.${payload}`;
+      const signature = createHmac('sha256', secret).update(signaturePayload).digest('hex');
+      headers['X-PayGate-Signature'] = `t=${timestamp},v1=${signature}`;
+    }
+
+    const { request: httpReq } = isHttps ? await import('https') : await import('http');
+
+    const result = await new Promise<{ success: boolean; statusCode?: number; error?: string; responseTime: number }>((resolve) => {
+      const startTime = Date.now();
+      const timeout = 10_000;
+
+      const reqObj = httpReq({
+        hostname: parsed.hostname,
+        port: parsed.port || (isHttps ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: 'POST',
+        headers,
+        timeout,
+      }, (response) => {
+        response.resume();
+        const elapsed = Date.now() - startTime;
+        if (response.statusCode && response.statusCode >= 400) {
+          resolve({ success: false, statusCode: response.statusCode, error: `HTTP ${response.statusCode}`, responseTime: elapsed });
+        } else {
+          resolve({ success: true, statusCode: response.statusCode || 200, responseTime: elapsed });
+        }
+      });
+
+      reqObj.on('error', (err: Error) => {
+        resolve({ success: false, error: err.message, responseTime: Date.now() - startTime });
+      });
+
+      reqObj.on('timeout', () => {
+        reqObj.destroy();
+        resolve({ success: false, error: 'Timeout (10s)', responseTime: Date.now() - startTime });
+      });
+
+      reqObj.write(payload);
+      reqObj.end();
+    });
+
+    // Record audit event
+    this.audit.log('webhook.test', 'admin', `Webhook test: ${result.success ? 'success' : 'failed'} (${result.statusCode || 'no response'})`, {
+      url: webhookUrl.replace(/\/\/([^:]+):([^@]+)@/, '//$1:***@'),
+      success: result.success,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      url: webhookUrl.replace(/\/\/([^:]+):([^@]+)@/, '//$1:***@'), // mask credentials in URL
+      ...result,
     }));
   }
 

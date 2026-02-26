@@ -73,6 +73,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Cloning** — `POST /keys/clone` creates a new API key with the same config (ACL, quotas, tags, IP, namespace, group, spending limit, expiry, auto-topup) but fresh counters — ideal for provisioning similar keys
 - **Key Suspension** — Temporarily disable API keys without revoking them — suspended keys are denied at the gate but can be resumed, and admin operations (topup, ACL, etc.) still work on suspended keys
 - **Per-Key Usage** — `GET /keys/usage?key=...` returns detailed usage breakdown for a specific key: per-tool stats, hourly time-series, deny reasons, recent events, and key metadata
+- **Webhook Test** — `POST /webhooks/test` sends a test event to your configured webhook URL with synchronous response including status code, response time, and delivery success/failure — verifies webhook connectivity without generating real events
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -350,6 +351,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/webhooks/filters/update` | POST | `X-Admin-Key` | Update a webhook filter rule |
 | `/webhooks/filters/delete` | POST | `X-Admin-Key` | Delete a webhook filter rule |
 | `/webhooks/replay` | POST | `X-Admin-Key` | Replay dead letter webhook events (all or by index) |
+| `/webhooks/test` | POST | `X-Admin-Key` | Send test event to configured webhook URL (synchronous) |
 | `/config/reload` | POST | `X-Admin-Key` | Hot-reload config file (pricing, rate limits, webhooks, quotas) |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
@@ -1104,6 +1106,33 @@ Response includes:
 | `recentEvents` | Last 50 events (newest first) with tool, credits, and deny reason |
 
 Works for active, suspended, and expired keys. Useful for debugging, billing audits, and per-customer analytics.
+
+### Webhook Test
+
+Send a test event to your configured webhook URL to verify connectivity without generating real events:
+
+```bash
+# Send test event
+curl -X POST http://localhost:3402/webhooks/test \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# With custom message
+curl -X POST http://localhost:3402/webhooks/test \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"message": "Testing from staging deploy"}'
+```
+
+Response:
+
+| Field | Description |
+|-------|-------------|
+| `url` | Webhook URL (credentials masked) |
+| `success` | `true` if webhook returned 2xx |
+| `statusCode` | HTTP status code from webhook endpoint |
+| `responseTime` | Round-trip delivery time in milliseconds |
+| `error` | Error message (only on failure) |
+
+The test event includes `X-PayGate-Test: 1` header and `X-PayGate-Signature` when a webhook secret is configured. Returns 400 if no webhook URL is configured. Creates an audit trail entry (`webhook.test`).
 
 ### IP Allowlisting
 
