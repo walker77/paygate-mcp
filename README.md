@@ -82,6 +82,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Environment Variables Config** — Configure everything via `PAYGATE_*` env vars for Docker/K8s deployments — 18 env vars covering all CLI flags, with priority: CLI flags > env vars > config file > defaults, `PAYGATE_CONFIG` loads config file path, help text with Docker examples
 - **Request ID Tracking** — Every HTTP response includes `X-Request-Id` header (auto-generated `req_` prefix + 16 hex chars) for distributed tracing — propagates incoming `X-Request-Id` from load balancers/proxies, included in gate audit log metadata, CORS-exposed, available via `getRequestId(req)` helper
 - **Server Info Endpoint** — `GET /info` returns server capabilities, enabled features, auth methods, pricing summary, rate limits, and available endpoints — public, no admin key required, ideal for agent auto-discovery and debugging
+- **Configurable CORS** — Control which origins can access your server: single origin, multiple origins, or wildcard (`*` default), with credentials support, configurable preflight max-age, and `Vary: Origin` for proper caching — set via config file `cors` object, `--cors-origin` CLI flag, or `PAYGATE_CORS_ORIGIN` env var
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1446,6 +1447,41 @@ curl http://localhost:3402/info
   }
 }
 ```
+
+### Configurable CORS
+
+Control which browser origins can access your PayGate server. Default is `*` (allow all).
+
+```bash
+# CLI flag: single origin
+npx paygate-mcp wrap --server "..." --cors-origin "https://myapp.com"
+
+# CLI flag: multiple origins (comma-separated)
+npx paygate-mcp wrap --server "..." --cors-origin "https://app1.com,https://app2.com"
+
+# Env var
+PAYGATE_CORS_ORIGIN=https://myapp.com npx paygate-mcp wrap --server "..."
+```
+
+Config file:
+```json
+{
+  "cors": {
+    "origin": ["https://app1.com", "https://app2.com"],
+    "credentials": true,
+    "maxAge": 3600
+  }
+}
+```
+
+| Feature | Details |
+|---------|---------|
+| Default | `*` (allow all origins) |
+| Single origin | Exact match against request `Origin` header |
+| Multiple origins | Array of allowed origins, matched against request |
+| Credentials | `Access-Control-Allow-Credentials: true` when enabled |
+| Max-Age | Preflight cache duration (default: 86400 = 24 hours) |
+| Vary | `Vary: Origin` header added when origin is not `*` |
 
 ### IP Allowlisting
 

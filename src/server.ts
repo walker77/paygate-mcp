@@ -391,12 +391,23 @@ export class PayGateServer {
     (req as any)._requestId = requestId;
 
     // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const corsConfig = this.config.cors;
+    const allowedOrigin = this.resolveCorsOrigin(req, corsConfig);
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization, X-Request-Id');
     res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id');
+    if (corsConfig?.credentials) {
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+    // Vary header for proper caching when origin is not '*'
+    if (allowedOrigin !== '*') {
+      res.setHeader('Vary', 'Origin');
+    }
 
     if (req.method === 'OPTIONS') {
+      const maxAge = corsConfig?.maxAge ?? 86400;
+      res.setHeader('Access-Control-Max-Age', String(maxAge));
       res.writeHead(204);
       res.end();
       return;
@@ -1163,6 +1174,7 @@ export class PayGateServer {
       templates: this.templates.list().length > 0,
       multiServer: !!this.router,
       quotas: !!this.config.globalQuota,
+      corsRestricted: !!(this.config.cors && this.config.cors.origin !== '*'),
     };
 
     const pricing: Record<string, unknown> = {
@@ -4928,6 +4940,30 @@ export class PayGateServer {
       // saveKey() internally calls publishEvent({ type: 'key_updated' }).
       this.redisSync.saveKey(record).catch(() => {});
     }
+  }
+
+  /** Resolve the CORS origin based on config and incoming request Origin header */
+  private resolveCorsOrigin(req: IncomingMessage, corsConfig?: PayGateConfig['cors']): string {
+    // No CORS config or wildcard: allow all
+    if (!corsConfig || corsConfig.origin === '*') return '*';
+
+    const requestOrigin = req.headers['origin'] as string | undefined;
+
+    // String origin: exact match
+    if (typeof corsConfig.origin === 'string') {
+      return requestOrigin === corsConfig.origin ? corsConfig.origin : '';
+    }
+
+    // Array of origins: check if request origin is in the list
+    if (Array.isArray(corsConfig.origin)) {
+      if (corsConfig.origin.includes('*')) return '*';
+      if (requestOrigin && corsConfig.origin.includes(requestOrigin)) {
+        return requestOrigin;
+      }
+      return '';
+    }
+
+    return '*';
   }
 
   private readBody(req: IncomingMessage): Promise<string> {

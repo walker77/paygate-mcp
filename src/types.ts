@@ -118,6 +118,15 @@ export interface PayGateConfig {
     /** Seconds before expiry to notify. Default: [604800, 86400, 3600] (7d, 24h, 1h). */
     thresholds?: number[];
   };
+  /** CORS configuration. Default: allow all origins (*). */
+  cors?: {
+    /** Allowed origin(s). Use '*' for all, or specify exact origins. Default: '*'. */
+    origin: string | string[];
+    /** Whether to include Access-Control-Allow-Credentials header. Default: false. */
+    credentials?: boolean;
+    /** Max age for preflight cache in seconds. Default: 86400 (24 hours). */
+    maxAge?: number;
+  };
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────

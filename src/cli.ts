@@ -97,6 +97,7 @@ function printUsage(): void {
     PAYGATE_REFUND_ON_FAILURE Set to "true" (same as --refund-on-failure)
     PAYGATE_REDIS_URL      Redis URL (same as --redis-url)
     PAYGATE_DRY_RUN        Set to "true" for dry run (same as --dry-run)
+    PAYGATE_CORS_ORIGIN    CORS allowed origin(s), comma-separated (same as --cors-origin)
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -177,6 +178,12 @@ interface ConfigFile {
   };
   /** Redis URL for distributed state */
   redisUrl?: string;
+  /** CORS configuration */
+  cors?: {
+    origin: string | string[];
+    credentials?: boolean;
+    maxAge?: number;
+  };
 }
 
 // ─── Env Var Helpers ─────────────────────────────────────────────────────────
@@ -212,6 +219,7 @@ export const ENV_VAR_MAP: Record<string, string> = {
   PAYGATE_REFUND_ON_FAILURE: '--refund-on-failure (set to "true")',
   PAYGATE_REDIS_URL: '--redis-url (Redis URL)',
   PAYGATE_DRY_RUN: '--dry-run (set to "true")',
+  PAYGATE_CORS_ORIGIN: '--cors-origin (CORS allowed origin(s), comma-separated)',
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -312,6 +320,7 @@ async function main(): Promise<void> {
       const stateFileFlag = flags['state-file'] || env('PAYGATE_STATE_FILE');
       const stripeSecretFlag = flags['stripe-secret'] || env('PAYGATE_STRIPE_SECRET');
       const refundFlag = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || env('PAYGATE_REFUND_ON_FAILURE') === 'true';
+      const corsOriginFlag = flags['cors-origin'] || env('PAYGATE_CORS_ORIGIN');
 
       const port = parseInt(portFlag || String(fileConfig.port || 3402), 10);
       const price = parseInt(priceFlag || String(fileConfig.defaultCreditsPerCall || 1), 10);
@@ -336,6 +345,12 @@ async function main(): Promise<void> {
         monthlyCreditLimit: Math.max(0, Math.floor(Number(fileConfig.globalQuota.monthlyCreditLimit) || 0)),
       } : undefined;
 
+      // Parse CORS origin from CLI/env or config file
+      const corsConfig: { origin: string | string[]; credentials?: boolean; maxAge?: number } | undefined =
+        corsOriginFlag
+          ? { origin: corsOriginFlag.includes(',') ? corsOriginFlag.split(',').map((s: string) => s.trim()) : corsOriginFlag }
+          : fileConfig.cors;
+
       const server = new PayGateServer({
         serverCommand,
         serverArgs,
@@ -351,6 +366,7 @@ async function main(): Promise<void> {
         refundOnFailure: !!refundOnFailure,
         globalQuota,
         oauth: fileConfig.oauth,
+        cors: corsConfig,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Wire config file path for hot-reload support
