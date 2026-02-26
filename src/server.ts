@@ -43,6 +43,7 @@ import { RedisClient, parseRedisUrl } from './redis-client';
 import { RedisSync } from './redis-sync';
 import { ScopedTokenManager } from './tokens';
 import { AdminKeyManager, AdminRole, ROLE_HIERARCHY } from './admin-keys';
+import { PluginManager, PayGatePlugin, PluginToolContext } from './plugin';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -94,6 +95,8 @@ export class PayGateServer {
   readonly redisSync: RedisSync | null = null;
   /** Scoped token manager for short-lived delegated tokens */
   readonly tokens: ScopedTokenManager;
+  /** Plugin manager for extensible middleware hooks */
+  readonly plugins: PluginManager;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -220,6 +223,13 @@ export class PayGateServer {
       }
     };
 
+    // Plugin manager for extensible middleware hooks
+    this.plugins = new PluginManager();
+    this.gate.pluginManager = this.plugins;
+    this.metrics.registerGauge('paygate_plugins_total', 'Number of registered plugins', () => {
+      return this.plugins.count;
+    });
+
     // Scoped token manager (uses bootstrap admin key as signing secret, padded to min length)
     const tokenSecret = this.bootstrapAdminKey.length >= 8
       ? this.bootstrapAdminKey
@@ -249,6 +259,23 @@ export class PayGateServer {
     }
   }
 
+  /**
+   * Register a plugin for extensible middleware hooks.
+   * Plugins run in registration order.
+   *
+   * @example
+   * ```ts
+   * server.use({
+   *   name: 'custom-pricing',
+   *   transformPrice: (tool, base) => tool.startsWith('premium_') ? base * 5 : null,
+   * });
+   * ```
+   */
+  use(plugin: PayGatePlugin): this {
+    this.plugins.register(plugin);
+    return this;
+  }
+
   async start(): Promise<{ port: number; adminKey: string }> {
     // Initialize Redis sync before starting (loads state from Redis + starts pub/sub)
     if (this.redisSync) {
@@ -258,6 +285,11 @@ export class PayGateServer {
     }
 
     await this.handler.start();
+
+    // Plugin lifecycle: onStart
+    if (this.plugins.count > 0) {
+      await this.plugins.executeStart();
+    }
 
     return new Promise((resolve, reject) => {
       this.server = createServer(async (req, res) => {
@@ -290,6 +322,12 @@ export class PayGateServer {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // Plugin: onRequest — let plugins handle custom endpoints before routing
+    if (this.plugins.count > 0) {
+      const handled = await this.plugins.executeOnRequest(req, res);
+      if (handled) return;
     }
 
     const url = req.url?.split('?')[0] || '/';
@@ -399,6 +437,9 @@ export class PayGateServer {
         break;
       case '/admin/keys/revoke':
         return this.handleRevokeAdminKey(req, res);
+      // ─── Plugin endpoints ──────────────────────────────────────────────
+      case '/plugins':
+        return this.handleListPlugins(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -535,7 +576,24 @@ export class PayGateServer {
       return;
     }
 
-    const response = await this.handler.handleRequest(request, apiKey, clientIp, scopedTokenTools);
+    // Plugin: beforeToolCall — let plugins modify the request before forwarding
+    let pluginRequest = request;
+    if (this.plugins.count > 0 && request.method === 'tools/call') {
+      const toolName = (request.params as Record<string, unknown>)?.name as string || '';
+      const toolArgs = (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined;
+      const pluginCtx: PluginToolContext = { apiKey, toolName, toolArgs, request };
+      pluginRequest = await this.plugins.executeBeforeToolCall(pluginCtx);
+    }
+
+    let response = await this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools);
+
+    // Plugin: afterToolCall — let plugins modify the response
+    if (this.plugins.count > 0 && request.method === 'tools/call') {
+      const toolName = (request.params as Record<string, unknown>)?.name as string || '';
+      const toolArgs = (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined;
+      const pluginCtx: PluginToolContext = { apiKey, toolName, toolArgs, request };
+      response = await this.plugins.executeAfterToolCall(pluginCtx, response);
+    }
 
     // Inject pricing metadata into tools/list responses
     if (request.method === 'tools/list' && response.result) {
@@ -834,6 +892,7 @@ export class PayGateServer {
         adminKeys: 'GET /admin/keys — List admin keys (requires X-Admin-Key, super_admin)',
         createAdminKey: 'POST /admin/keys — Create admin key with role (requires X-Admin-Key, super_admin)',
         revokeAdminKey: 'POST /admin/keys/revoke — Revoke an admin key (requires X-Admin-Key, super_admin)',
+        plugins: 'GET /plugins — List registered plugins (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -2781,6 +2840,23 @@ export class PayGateServer {
 
   // ─── /admin/keys — Admin key management ────────────────────────────────────
 
+  // ─── GET /plugins — List registered plugins ─────────────────────────────
+
+  private handleListPlugins(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const plugins = this.plugins.list();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ count: plugins.length, plugins }));
+  }
+
+  // ─── Admin Key Management ────────────────────────────────────────────────
+
   private handleListAdminKeys(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
@@ -2947,6 +3023,10 @@ export class PayGateServer {
   }
 
   async stop(): Promise<void> {
+    // Plugin lifecycle: onStop (reverse order)
+    if (this.plugins.count > 0) {
+      await this.plugins.executeStop();
+    }
     await this.handler.stop();
     this.gate.destroy();
     this.oauth?.destroy();
@@ -3000,6 +3080,10 @@ export class PayGateServer {
     });
 
     console.log('[paygate] Drained — tearing down resources');
+    // Plugin lifecycle: onStop (reverse order)
+    if (this.plugins.count > 0) {
+      await this.plugins.executeStop();
+    }
     // Tear down resources (but skip server.close, already closed above)
     await this.handler.stop();
     this.gate.destroy();

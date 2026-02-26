@@ -63,6 +63,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Token Revocation List** — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis cross-instance sync, and admin API
 - **Usage-Based Auto-Topup** — Automatically add credits when balance drops below a threshold with configurable daily limits, audit trail, webhook events, and Redis sync
 - **Admin API Key Management** — Multiple admin keys with role-based permissions (super_admin, admin, viewer), file persistence, audit trail, and safety guards
+- **Plugin System** — Extensible middleware hooks for custom billing logic, request/response transformation, custom endpoints, and lifecycle management
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -320,6 +321,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
+| `/plugins` | GET | `X-Admin-Key` | List registered plugins with hook info |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
 
@@ -1434,6 +1436,104 @@ curl -X POST http://localhost:3402/admin/keys/revoke \
 - Admin keys are persisted to a separate file (`*-admin.json`) alongside the state file.
 - All operations are logged in the audit trail (`admin_key.created`, `admin_key.revoked`).
 - Webhook events are fired for admin key lifecycle changes.
+
+### Plugin System
+
+Add custom logic to PayGate with the plugin API. Plugins can intercept gate decisions, transform pricing, modify tool requests/responses, add custom HTTP endpoints, and hook into server lifecycle events.
+
+```ts
+import { PayGateServer, PayGatePlugin } from 'paygate-mcp';
+
+// Define a plugin
+const loggingPlugin: PayGatePlugin = {
+  name: 'request-logger',
+  version: '1.0.0',
+
+  // Gate hooks (sync — hot path)
+  beforeGate: (ctx) => {
+    // Return { allowed: false, reason: '...' } to short-circuit
+    // Return null to continue normal evaluation
+    if (ctx.toolName === 'dangerous_tool') {
+      return { allowed: false, reason: 'tool_disabled' };
+    }
+    return null;
+  },
+
+  afterGate: (ctx, decision) => {
+    // Modify the gate decision after evaluation
+    console.log(`${ctx.toolName}: ${decision.allowed ? 'allowed' : 'denied'}`);
+    return decision;
+  },
+
+  transformPrice: (toolName, basePrice, args) => {
+    // Return a number to override price, or null to keep base price
+    if (toolName === 'premium_search') return basePrice * 2;
+    return null;
+  },
+
+  onDeny: (ctx, reason) => {
+    // Called whenever a tool call is denied
+    console.log(`Denied: ${ctx.toolName} — ${reason}`);
+  },
+
+  // Tool hooks (async)
+  beforeToolCall: async (ctx) => {
+    // Modify the JSON-RPC request before forwarding
+    return { ...ctx.request, params: { ...ctx.request.params, audit: true } };
+  },
+
+  afterToolCall: async (ctx, response) => {
+    // Modify the JSON-RPC response before returning to client
+    return response;
+  },
+
+  // HTTP hook (async)
+  onRequest: (req, res) => {
+    // Add custom endpoints — return true if handled
+    if (req.url === '/custom/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ custom: true }));
+      return true;
+    }
+    return false;
+  },
+
+  // Lifecycle hooks (async)
+  onStart: async () => { console.log('Plugin started'); },
+  onStop: async () => { console.log('Plugin stopped'); },
+};
+
+// Register plugins with .use() (chainable)
+const server = new PayGateServer({ ... });
+server
+  .use(loggingPlugin)
+  .use(anotherPlugin);
+
+await server.start();
+```
+
+**Hook types:**
+
+| Hook | Sync/Async | Description |
+|------|-----------|-------------|
+| `beforeGate` | Sync | Short-circuit gate evaluation. First non-null result wins. |
+| `afterGate` | Sync | Modify gate decision. Cascading (each plugin sees previous result). |
+| `transformPrice` | Sync | Override tool pricing. First non-null number wins. |
+| `onDeny` | Sync | Notification on denial. All plugins called. |
+| `beforeToolCall` | Async | Modify JSON-RPC request before forwarding. Cascading. |
+| `afterToolCall` | Async | Modify JSON-RPC response before returning. Cascading. |
+| `onRequest` | Async | Add custom HTTP endpoints. First `true` return handles the request. |
+| `onStart` | Async | Called after server starts. Registration order. |
+| `onStop` | Async | Called before server stops. Reverse registration order. |
+
+**Error isolation:** Plugin errors are caught and logged — a crashing plugin never takes down the server.
+
+**List registered plugins (admin only):**
+
+```bash
+curl http://localhost:3402/plugins -H "X-Admin-Key: $ADMIN_KEY"
+# { "count": 2, "plugins": [{ "name": "...", "version": "...", "hooks": ["beforeGate", ...] }] }
+```
 
 ### Horizontal Scaling (Redis)
 

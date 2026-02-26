@@ -56,6 +56,8 @@ export { ScopedTokenManager, TokenRevocationList } from './tokens';
 export type { TokenPayload, TokenValidation, TokenCreateOptions, RevokedTokenEntry } from './tokens';
 export { AdminKeyManager, ROLE_HIERARCHY, VALID_ROLES } from './admin-keys';
 export type { AdminRole, AdminKeyRecord } from './admin-keys';
+export { PluginManager } from './plugin';
+export type { PayGatePlugin, PluginGateContext, PluginToolContext, PluginGateOverride, PluginInfo } from './plugin';
 
 export type {
   PayGateConfig,

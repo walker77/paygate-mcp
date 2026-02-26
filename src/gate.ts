@@ -17,6 +17,7 @@ import { RateLimiter } from './rate-limiter';
 import { UsageMeter } from './meter';
 import { WebhookEmitter } from './webhook';
 import { QuotaTracker } from './quota';
+import { PluginManager, PluginGateContext } from './plugin';
 
 export class Gate {
   readonly store: KeyStore;
@@ -25,6 +26,8 @@ export class Gate {
   readonly webhook: WebhookEmitter | null;
   readonly quotaTracker: QuotaTracker;
   private readonly config: PayGateConfig;
+  /** Optional plugin manager for extensible hooks. */
+  pluginManager?: PluginManager;
   /** Optional team-level budget/quota checker injected by server. */
   teamChecker?: (apiKey: string, credits: number) => { allowed: boolean; reason?: string };
   /** Optional team usage recorder injected by server. */
@@ -54,6 +57,26 @@ export class Gate {
   evaluate(apiKey: string | null, toolCall: ToolCallParams, clientIp?: string, scopedTokenTools?: string[]): GateDecision {
     const toolName = toolCall.name;
     const creditsRequired = this.getToolPrice(toolName, toolCall.arguments);
+
+    // Plugin: beforeGate — short-circuit if any plugin returns a decision
+    if (this.pluginManager && this.pluginManager.count > 0) {
+      const keyRecord = apiKey ? this.store.getKey(apiKey) : undefined;
+      const pluginCtx: PluginGateContext = { apiKey, toolName, toolArgs: toolCall.arguments, clientIp, keyRecord: keyRecord || undefined };
+      const override = this.pluginManager.executeBeforeGate(pluginCtx);
+      if (override) {
+        const decision: GateDecision = {
+          allowed: override.allowed,
+          reason: override.reason || (override.allowed ? undefined : 'plugin_denied'),
+          creditsCharged: override.creditsCharged ?? 0,
+          remainingCredits: keyRecord?.credits ?? 0,
+        };
+        if (!decision.allowed) {
+          this.pluginManager.executeOnDeny(pluginCtx, decision.reason || 'plugin_denied');
+          this.recordEvent(apiKey || 'none', keyRecord?.name || '', toolName, 0, false, decision.reason);
+        }
+        return this.pluginManager.executeAfterGate(pluginCtx, decision);
+      }
+    }
 
     // Step 1: API key present?
     if (!apiKey) {
@@ -209,7 +232,15 @@ export class Gate {
     const remaining = this.store.getKey(apiKey)?.credits ?? 0;
     this.recordEvent(apiKey, keyRecord.name, toolName, creditsRequired, true, undefined, keyRecord.namespace);
 
-    return { allowed: true, creditsCharged: creditsRequired, remainingCredits: remaining };
+    let decision: GateDecision = { allowed: true, creditsCharged: creditsRequired, remainingCredits: remaining };
+
+    // Plugin: afterGate — let plugins modify the final decision
+    if (this.pluginManager && this.pluginManager.count > 0) {
+      const pluginCtx: PluginGateContext = { apiKey, toolName, toolArgs: toolCall.arguments, clientIp, keyRecord };
+      decision = this.pluginManager.executeAfterGate(pluginCtx, decision);
+    }
+
+    return decision;
   }
 
   /**
@@ -577,17 +608,22 @@ export class Gate {
    */
   getToolPrice(toolName: string, args?: Record<string, unknown>): number {
     const override = this.config.toolPricing[toolName];
-    const basePrice = override ? override.creditsPerCall : this.config.defaultCreditsPerCall;
+    let price = override ? override.creditsPerCall : this.config.defaultCreditsPerCall;
 
     // Dynamic pricing: add per-KB surcharge for input size
     if (override?.creditsPerKbInput && override.creditsPerKbInput > 0 && args) {
       const inputBytes = Buffer.byteLength(JSON.stringify(args), 'utf-8');
       const inputKb = inputBytes / 1024;
       const surcharge = Math.ceil(inputKb * override.creditsPerKbInput);
-      return basePrice + surcharge;
+      price = price + surcharge;
     }
 
-    return basePrice;
+    // Plugin: transformPrice — let plugins override the final price
+    if (this.pluginManager && this.pluginManager.count > 0) {
+      price = this.pluginManager.executeTransformPrice(toolName, price, args);
+    }
+
+    return price;
   }
 
   /**
