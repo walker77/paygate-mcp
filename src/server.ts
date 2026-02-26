@@ -29,6 +29,7 @@ import { McpProxy } from './proxy';
 import { HttpMcpProxy } from './http-proxy';
 import { MultiServerRouter } from './router';
 import { StripeWebhookHandler } from './stripe';
+import { OAuthProvider } from './oauth';
 import { getDashboardHtml } from './dashboard';
 
 /** Max request body size: 1MB */
@@ -57,6 +58,8 @@ export class PayGateServer {
   private readonly config: PayGateConfig;
   private readonly adminKey: string;
   private stripeHandler: StripeWebhookHandler | null = null;
+  /** OAuth 2.1 provider (null if OAuth is not enabled) */
+  readonly oauth: OAuthProvider | null = null;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -90,6 +93,17 @@ export class PayGateServer {
     if (stripeWebhookSecret) {
       this.stripeHandler = new StripeWebhookHandler(this.gate.store, stripeWebhookSecret);
     }
+
+    // OAuth 2.1 support
+    if (this.config.oauth) {
+      const oauthStatePath = statePath ? statePath.replace(/\.json$/, '-oauth.json') : undefined;
+      this.oauth = new OAuthProvider({
+        issuer: this.config.oauth.issuer,
+        accessTokenTtl: this.config.oauth.accessTokenTtl,
+        refreshTokenTtl: this.config.oauth.refreshTokenTtl,
+        scopes: this.config.oauth.scopes,
+      }, oauthStatePath);
+    }
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
@@ -106,7 +120,9 @@ export class PayGateServer {
       });
 
       this.server.listen(this.config.port, () => {
-        resolve({ port: this.config.port, adminKey: this.adminKey });
+        const addr = this.server!.address();
+        const actualPort = typeof addr === 'object' && addr ? addr.port : this.config.port;
+        resolve({ port: actualPort, adminKey: this.adminKey });
       });
 
       this.server.on('error', reject);
@@ -142,6 +158,8 @@ export class PayGateServer {
         return this.handleSetAcl(req, res);
       case '/keys/expiry':
         return this.handleSetExpiry(req, res);
+      case '/keys/quota':
+        return this.handleSetQuota(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
       case '/balance':
@@ -154,6 +172,19 @@ export class PayGateServer {
         return this.handleStripeWebhook(req, res);
       case '/dashboard':
         return this.handleDashboard(req, res);
+      // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
+      case '/.well-known/oauth-authorization-server':
+        return this.handleOAuthMetadata(req, res);
+      case '/oauth/register':
+        return this.handleOAuthRegister(req, res);
+      case '/oauth/authorize':
+        return this.handleOAuthAuthorize(req, res);
+      case '/oauth/token':
+        return this.handleOAuthToken(req, res);
+      case '/oauth/revoke':
+        return this.handleOAuthRevoke(req, res);
+      case '/oauth/clients':
+        return this.handleOAuthClients(req, res);
       default:
         // Root — simple info
         if (url === '/' || url === '') {
@@ -173,7 +204,18 @@ export class PayGateServer {
       return;
     }
 
-    const apiKey = (req.headers['x-api-key'] as string) || null;
+    // Auth: X-API-Key header OR Bearer token (OAuth 2.1)
+    let apiKey = (req.headers['x-api-key'] as string) || null;
+    if (!apiKey && this.oauth) {
+      const authHeader = req.headers['authorization'] as string;
+      if (authHeader?.startsWith('Bearer ')) {
+        const bearerToken = authHeader.slice(7);
+        const tokenInfo = this.oauth.validateToken(bearerToken);
+        if (tokenInfo) {
+          apiKey = tokenInfo.apiKey;
+        }
+      }
+    }
     const body = await this.readBody(req);
 
     let request: JsonRpcRequest;
@@ -211,8 +253,18 @@ export class PayGateServer {
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
+        setQuota: 'POST /keys/quota — Set usage quota (requires X-Admin-Key)',
+        ...(this.oauth ? {
+          oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
+          oauthRegister: 'POST /oauth/register — Register OAuth client',
+          oauthAuthorize: 'GET /oauth/authorize — Authorization endpoint',
+          oauthToken: 'POST /oauth/token — Token endpoint',
+          oauthRevoke: 'POST /oauth/revoke — Revoke token',
+          oauthClients: 'GET /oauth/clients — List OAuth clients (requires X-Admin-Key)',
+        } : {}),
       },
       shadowMode: this.config.shadowMode,
+      oauth: !!this.oauth,
     }));
   }
 
@@ -231,7 +283,7 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const body = await this.readBody(req);
-    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string };
+    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number } };
     try {
       params = JSON.parse(body);
     } catch {
@@ -257,10 +309,22 @@ export class PayGateServer {
       expiresAt = String(params.expiresAt);
     }
 
+    // Parse quota if provided
+    let quota = undefined;
+    if (params.quota) {
+      quota = {
+        dailyCallLimit: Math.max(0, Math.floor(Number(params.quota.dailyCallLimit) || 0)),
+        monthlyCallLimit: Math.max(0, Math.floor(Number(params.quota.monthlyCallLimit) || 0)),
+        dailyCreditLimit: Math.max(0, Math.floor(Number(params.quota.dailyCreditLimit) || 0)),
+        monthlyCreditLimit: Math.max(0, Math.floor(Number(params.quota.monthlyCreditLimit) || 0)),
+      };
+    }
+
     const record = this.gate.store.createKey(name, credits, {
       allowedTools: params.allowedTools,
       deniedTools: params.deniedTools,
       expiresAt,
+      quota,
     });
 
     res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -457,6 +521,62 @@ export class PayGateServer {
     }));
   }
 
+  // ─── /keys/quota — Set usage quota ────────────────────────────────────────
+
+  private async handleSetQuota(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number; remove?: boolean };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    if (params.remove) {
+      const success = this.gate.store.setQuota(params.key, null);
+      if (!success) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key not found' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Quota removed (using global defaults)' }));
+      return;
+    }
+
+    const quota = {
+      dailyCallLimit: Math.max(0, Math.floor(Number(params.dailyCallLimit) || 0)),
+      monthlyCallLimit: Math.max(0, Math.floor(Number(params.monthlyCallLimit) || 0)),
+      dailyCreditLimit: Math.max(0, Math.floor(Number(params.dailyCreditLimit) || 0)),
+      monthlyCreditLimit: Math.max(0, Math.floor(Number(params.monthlyCreditLimit) || 0)),
+    };
+
+    const success = this.gate.store.setQuota(params.key, quota);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ quota, message: 'Quota set' }));
+  }
+
   // ─── /balance — Client self-service ────────────────────────────────────────
 
   private handleBalance(req: IncomingMessage, res: ServerResponse): void {
@@ -485,6 +605,9 @@ export class PayGateServer {
       ? Math.max(0, record.spendingLimit - record.totalSpent)
       : null;
 
+    // Reset quotas if needed before reporting
+    this.gate.quotaTracker.resetIfNeeded(record);
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       name: record.name,
@@ -497,6 +620,13 @@ export class PayGateServer {
       allowedTools: record.allowedTools,
       deniedTools: record.deniedTools,
       expiresAt: record.expiresAt,
+      quota: record.quota || null,
+      quotaUsage: {
+        dailyCalls: record.quotaDailyCalls,
+        monthlyCalls: record.quotaMonthlyCalls,
+        dailyCredits: record.quotaDailyCredits,
+        monthlyCredits: record.quotaMonthlyCredits,
+      },
     }));
   }
 
@@ -637,6 +767,299 @@ export class PayGateServer {
     res.end(getDashboardHtml(this.config.name));
   }
 
+  // ─── OAuth 2.1 Endpoints ────────────────────────────────────────────────────
+
+  /** GET /.well-known/oauth-authorization-server — Server metadata (RFC 8414) */
+  private handleOAuthMetadata(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.oauth) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(this.oauth.getMetadata()));
+  }
+
+  /** POST /oauth/register — Dynamic Client Registration (RFC 7591) */
+  private async handleOAuthRegister(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.oauth) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: {
+      client_name?: string;
+      redirect_uris?: string[];
+      grant_types?: string[];
+      scope?: string;
+      api_key?: string; // optional: link to existing API key
+    };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_client_metadata' }));
+      return;
+    }
+
+    if (!params.client_name || !params.redirect_uris?.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_client_metadata', error_description: 'client_name and redirect_uris are required' }));
+      return;
+    }
+
+    try {
+      const client = this.oauth.registerClient({
+        clientName: params.client_name,
+        redirectUris: params.redirect_uris,
+        grantTypes: params.grant_types,
+        scope: params.scope,
+        apiKeyRef: params.api_key,
+      });
+
+      // RFC 7591 response format
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        client_id: client.clientId,
+        client_secret: client.clientSecret,
+        client_name: client.clientName,
+        redirect_uris: client.redirectUris,
+        grant_types: client.grantTypes,
+        scope: client.scope,
+        client_id_issued_at: Math.floor(new Date(client.createdAt).getTime() / 1000),
+      }));
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_client_metadata', error_description: (err as Error).message }));
+    }
+  }
+
+  /** GET/POST /oauth/authorize — Authorization endpoint */
+  private async handleOAuthAuthorize(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.oauth) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      return;
+    }
+
+    // Parse query params from URL (for GET) or body (for POST)
+    let params: Record<string, string> = {};
+
+    if (req.method === 'GET') {
+      const urlParts = req.url?.split('?') || [];
+      const query = new URLSearchParams(urlParts[1] || '');
+      for (const [k, v] of query) params[k] = v;
+    } else if (req.method === 'POST') {
+      const body = await this.readBody(req);
+      try {
+        params = JSON.parse(body);
+      } catch {
+        // Try URL-encoded form data
+        const query = new URLSearchParams(body);
+        for (const [k, v] of query) params[k] = v;
+      }
+    } else {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const clientId = params.client_id;
+    const redirectUri = params.redirect_uri;
+    const codeChallenge = params.code_challenge;
+    const codeChallengeMethod = params.code_challenge_method;
+    const scope = params.scope;
+    const state = params.state;
+    const responseType = params.response_type;
+
+    // Validate required params
+    if (responseType !== 'code') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unsupported_response_type' }));
+      return;
+    }
+
+    if (!clientId || !redirectUri || !codeChallenge) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_request', error_description: 'client_id, redirect_uri, and code_challenge are required' }));
+      return;
+    }
+
+    // For server-to-server MCP: auto-approve if the client has a linked API key.
+    // In a browser-based flow, this would show a consent page.
+    try {
+      const code = this.oauth.createAuthCode({
+        clientId,
+        redirectUri,
+        codeChallenge,
+        codeChallengeMethod,
+        scope,
+      });
+
+      // Redirect with auth code
+      const redirectUrl = new URL(redirectUri);
+      redirectUrl.searchParams.set('code', code);
+      if (state) redirectUrl.searchParams.set('state', state);
+
+      res.writeHead(302, { Location: redirectUrl.toString() });
+      res.end();
+    } catch (err) {
+      const errorMsg = (err as Error).message;
+      // If there's a redirect URI and client is valid, redirect with error
+      if (redirectUri) {
+        try {
+          const redirectUrl = new URL(redirectUri);
+          redirectUrl.searchParams.set('error', 'server_error');
+          redirectUrl.searchParams.set('error_description', errorMsg);
+          if (state) redirectUrl.searchParams.set('state', state);
+          res.writeHead(302, { Location: redirectUrl.toString() });
+          res.end();
+          return;
+        } catch { /* fall through to JSON error */ }
+      }
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_request', error_description: errorMsg }));
+    }
+  }
+
+  /** POST /oauth/token — Token endpoint */
+  private async handleOAuthToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.oauth) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, string>;
+    try {
+      params = JSON.parse(body);
+    } catch {
+      // Try URL-encoded form data
+      params = {};
+      const query = new URLSearchParams(body);
+      for (const [k, v] of query) params[k] = v;
+    }
+
+    const grantType = params.grant_type;
+
+    try {
+      if (grantType === 'authorization_code') {
+        // Exchange auth code for tokens
+        const result = this.oauth.exchangeCode({
+          code: params.code,
+          clientId: params.client_id,
+          redirectUri: params.redirect_uri,
+          codeVerifier: params.code_verifier,
+        });
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'Pragma': 'no-cache',
+        });
+        res.end(JSON.stringify({
+          access_token: result.accessToken,
+          token_type: result.tokenType,
+          expires_in: result.expiresIn,
+          refresh_token: result.refreshToken,
+          scope: result.scope,
+        }));
+      } else if (grantType === 'refresh_token') {
+        // Refresh access token
+        const result = this.oauth.refreshAccessToken({
+          refreshToken: params.refresh_token,
+          clientId: params.client_id,
+          scope: params.scope,
+        });
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'Pragma': 'no-cache',
+        });
+        res.end(JSON.stringify({
+          access_token: result.accessToken,
+          token_type: result.tokenType,
+          expires_in: result.expiresIn,
+          scope: result.scope,
+        }));
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
+      }
+    } catch (err) {
+      const errorMsg = (err as Error).message;
+      const errorCode = errorMsg.startsWith('invalid_grant') ? 'invalid_grant' : 'invalid_request';
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: errorCode, error_description: errorMsg }));
+    }
+  }
+
+  /** POST /oauth/revoke — Token revocation (RFC 7009) */
+  private async handleOAuthRevoke(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.oauth) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: { token?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      const query = new URLSearchParams(body);
+      params = { token: query.get('token') || undefined };
+    }
+
+    if (!params.token) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid_request', error_description: 'token is required' }));
+      return;
+    }
+
+    // RFC 7009: always return 200, even if token doesn't exist
+    this.oauth.revokeToken(params.token);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ revoked: true }));
+  }
+
+  /** GET /oauth/clients — List registered OAuth clients (admin only) */
+  private handleOAuthClients(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.oauth) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      return;
+    }
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(this.oauth.listClients(), null, 2));
+  }
+
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
   private checkAdmin(req: IncomingMessage, res: ServerResponse): boolean {
@@ -670,6 +1093,7 @@ export class PayGateServer {
   async stop(): Promise<void> {
     await this.handler.stop();
     this.gate.destroy();
+    this.oauth?.destroy();
     if (this.server) {
       return new Promise((resolve) => {
         this.server!.close(() => resolve());

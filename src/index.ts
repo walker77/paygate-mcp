@@ -25,6 +25,9 @@ export { UsageMeter } from './meter';
 export { RateLimiter } from './rate-limiter';
 export { StripeWebhookHandler } from './stripe';
 export { WebhookEmitter } from './webhook';
+export { QuotaTracker } from './quota';
+export { OAuthProvider } from './oauth';
+export type { OAuthClientRecord, OAuthTokenRecord, OAuthServerMetadata, OAuthConfig } from './oauth';
 export { getDashboardHtml } from './dashboard';
 export { PayGateClient, PayGateError } from './client';
 export type { PayGateClientConfig, CreditsNeededInfo, BalanceInfo } from './client';
@@ -42,6 +45,7 @@ export type {
   UsageEvent,
   UsageSummary,
   GateDecision,
+  QuotaConfig,
 } from './types';
 
 export { DEFAULT_CONFIG } from './types';

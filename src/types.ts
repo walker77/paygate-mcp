@@ -44,6 +44,21 @@ export interface ToolPricing {
   creditsPerCall: number;
   /** Override rate limit for this tool (calls/min). 0 = use global. */
   rateLimitPerMin?: number;
+  /** Dynamic pricing: extra credits per KB of input arguments. 0 = disabled. */
+  creditsPerKbInput?: number;
+}
+
+// ─── Usage Quotas ──────────────────────────────────────────────────────────
+
+export interface QuotaConfig {
+  /** Max calls per day (UTC). 0 = unlimited. */
+  dailyCallLimit: number;
+  /** Max calls per month (UTC). 0 = unlimited. */
+  monthlyCallLimit: number;
+  /** Max credits per day (UTC). 0 = unlimited. */
+  dailyCreditLimit: number;
+  /** Max credits per month (UTC). 0 = unlimited. */
+  monthlyCreditLimit: number;
 }
 
 export interface PayGateConfig {
@@ -69,6 +84,19 @@ export interface PayGateConfig {
   webhookUrl: string | null;
   /** Refund credits when downstream tool call fails. Default: false. */
   refundOnFailure: boolean;
+  /** Global usage quota defaults (daily/monthly limits). Null = unlimited. */
+  globalQuota?: QuotaConfig;
+  /** OAuth 2.1 configuration. Null = disabled. */
+  oauth?: {
+    /** Issuer URL (base URL of the server). Auto-detected if not set. */
+    issuer?: string;
+    /** Access token lifetime in seconds. Default: 3600 (1 hour). */
+    accessTokenTtl?: number;
+    /** Refresh token lifetime in seconds. Default: 2592000 (30 days). */
+    refreshTokenTtl?: number;
+    /** Supported scopes. Default: ['tools:*', 'tools:read', 'tools:write']. */
+    scopes?: string[];
+  };
 }
 
 // ─── Multi-Server ──────────────────────────────────────────────────────────
@@ -118,6 +146,20 @@ export interface ApiKeyRecord {
   deniedTools: string[];
   /** ISO date string when this key expires. Null = never expires. */
   expiresAt: string | null;
+  /** Per-key quota overrides. Null = use global defaults / unlimited. */
+  quota?: QuotaConfig;
+  /** Quota tracking: calls today (UTC). Reset daily. */
+  quotaDailyCalls: number;
+  /** Quota tracking: calls this month (UTC). Reset monthly. */
+  quotaMonthlyCalls: number;
+  /** Quota tracking: credits today (UTC). Reset daily. */
+  quotaDailyCredits: number;
+  /** Quota tracking: credits this month (UTC). Reset monthly. */
+  quotaMonthlyCredits: number;
+  /** Last quota reset date (ISO date string, date only). */
+  quotaLastResetDay: string;
+  /** Last monthly quota reset (ISO month string YYYY-MM). */
+  quotaLastResetMonth: string;
 }
 
 // ─── Metering ───────────────────────────────────────────────────────────────────

@@ -37,6 +37,9 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Per-Tool Rate Limits** — Independent rate limits per tool, not just global
 - **Key Expiry (TTL)** — Auto-expire API keys after a set time
 - **Spending Limits** — Cap total spend per API key to prevent runaway costs
+- **Usage Quotas** — Daily/monthly call and credit limits per key (with UTC auto-reset)
+- **Dynamic Pricing** — Charge extra credits based on input size (`creditsPerKbInput`)
+- **OAuth 2.1** — Full authorization server with PKCE, client registration, Bearer tokens
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -244,19 +247,26 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/mcp` | POST | `X-API-Key` | JSON-RPC 2.0 proxy to wrapped MCP server |
-| `/balance` | GET | `X-API-Key` | Client self-service — check own credits, ACL, expiry |
-| `/keys` | POST | `X-Admin-Key` | Create API key (with ACL, expiry, credits) |
+| `/mcp` | POST | `X-API-Key` or `Bearer` | JSON-RPC 2.0 proxy to wrapped MCP server |
+| `/balance` | GET | `X-API-Key` | Client self-service — check credits, quota, ACL, expiry |
+| `/keys` | POST | `X-Admin-Key` | Create API key (with ACL, expiry, quota, credits) |
 | `/keys` | GET | `X-Admin-Key` | List all keys (masked, with expiry status) |
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
 | `/keys/expiry` | POST | `X-Admin-Key` | Set or remove key expiry (TTL) |
+| `/keys/quota` | POST | `X-Admin-Key` | Set usage quota (daily/monthly limits) |
 | `/limits` | POST | `X-Admin-Key` | Set spending limit on a key |
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
 | `/dashboard` | GET | None (admin key in-browser) | Real-time admin web dashboard |
 | `/stripe/webhook` | POST | Stripe Signature | Auto-top-up credits on payment |
+| `/.well-known/oauth-authorization-server` | GET | None | OAuth 2.1 server metadata |
+| `/oauth/register` | POST | None | Dynamic Client Registration (RFC 7591) |
+| `/oauth/authorize` | GET | None | Authorization endpoint (PKCE required) |
+| `/oauth/token` | POST | None | Token endpoint (code exchange + refresh) |
+| `/oauth/revoke` | POST | None | Token revocation (RFC 7009) |
+| `/oauth/clients` | GET | `X-Admin-Key` | List registered OAuth clients |
 | `/` | GET | None | Health check |
 
 ### Free Methods
@@ -435,6 +445,88 @@ npx paygate-mcp wrap --server "node server.js" --webhook-url "https://billing.ex
 
 Events are batched (up to 10 per POST) and flushed every 5 seconds. Each event includes tool name, credits charged, API key, and timestamp. Fire-and-forget with one retry on failure.
 
+### Usage Quotas
+
+Set daily or monthly usage limits per API key:
+
+```bash
+# Create a key with 10 calls/day, 200 calls/month
+curl -X POST http://localhost:3402/keys \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "metered-user", "credits": 1000, "quota": {"dailyCallLimit": 10, "monthlyCallLimit": 200}}'
+
+# Set credit-based quotas (max 50 credits/day)
+curl -X POST http://localhost:3402/keys/quota \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "CLIENT_API_KEY", "dailyCreditLimit": 50}'
+
+# Remove per-key quota (fall back to global defaults)
+curl -X POST http://localhost:3402/keys/quota \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "CLIENT_API_KEY", "remove": true}'
+```
+
+Quota types: `dailyCallLimit`, `monthlyCallLimit`, `dailyCreditLimit`, `monthlyCreditLimit`. Set to 0 for unlimited. Counters reset at UTC midnight (daily) and UTC month boundary (monthly). Set global defaults in the config file with `globalQuota`.
+
+### Dynamic Pricing
+
+Charge extra credits based on input argument size:
+
+```json
+{
+  "toolPricing": {
+    "analyze_text": { "creditsPerCall": 2, "creditsPerKbInput": 5 },
+    "search": { "creditsPerCall": 1 }
+  }
+}
+```
+
+For `analyze_text`, a 3 KB input would cost `2 + ceil(3 × 5) = 17` credits. Small inputs round up to at least 1 KB. Tools without `creditsPerKbInput` use the flat base price.
+
+### OAuth 2.1
+
+Full OAuth 2.1 authorization server for MCP clients. Implements PKCE, dynamic client registration, token refresh, and revocation.
+
+Enable OAuth in config:
+```json
+{
+  "oauth": {
+    "accessTokenTtl": 3600,
+    "refreshTokenTtl": 2592000,
+    "scopes": ["tools:*", "tools:read", "tools:write"]
+  }
+}
+```
+
+**Full flow:**
+```bash
+# 1. Register an OAuth client
+curl -X POST http://localhost:3402/oauth/register \
+  -H "Content-Type: application/json" \
+  -d '{"client_name": "My Agent", "redirect_uris": ["http://localhost:8080/callback"], "api_key": "pg_..."}'
+
+# 2. Generate PKCE challenge (code_verifier → SHA256 → base64url)
+# 3. Authorize: GET /oauth/authorize?response_type=code&client_id=...&redirect_uri=...&code_challenge=...&code_challenge_method=S256
+# 4. Exchange code for tokens
+curl -X POST http://localhost:3402/oauth/token \
+  -H "Content-Type: application/json" \
+  -d '{"grant_type": "authorization_code", "code": "...", "client_id": "...", "redirect_uri": "...", "code_verifier": "..."}'
+
+# 5. Use Bearer token on /mcp
+curl -X POST http://localhost:3402/mcp \
+  -H "Authorization: Bearer pg_at_..." \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "search", "arguments": {"query": "hello"}}}'
+
+# 6. Refresh token
+curl -X POST http://localhost:3402/oauth/token \
+  -d '{"grant_type": "refresh_token", "refresh_token": "pg_rt_...", "client_id": "..."}'
+```
+
+OAuth tokens are backed by API keys — each token maps to an API key for billing. The `/mcp` endpoint accepts both `X-API-Key` and `Authorization: Bearer` headers.
+
 ### Config File Mode
 
 Load all settings from a JSON file instead of CLI flags:
@@ -455,7 +547,15 @@ Example `paygate.json`:
   "refundOnFailure": true,
   "stateFile": "~/.paygate/state.json",
   "toolPricing": {
-    "premium_analyze": { "creditsPerCall": 10 }
+    "premium_analyze": { "creditsPerCall": 10, "creditsPerKbInput": 5 }
+  },
+  "globalQuota": {
+    "dailyCallLimit": 1000,
+    "monthlyCreditLimit": 50000
+  },
+  "oauth": {
+    "accessTokenTtl": 3600,
+    "scopes": ["tools:*"]
   },
   "importKeys": {
     "pg_abc123def456": 500
@@ -521,6 +621,9 @@ const result = await client.callTool('search', { query: 'hello' });
 - Spending limits enforced with integer arithmetic (no float bypass)
 - Per-tool ACL enforcement (whitelist + blacklist, sanitized inputs)
 - Key expiry with fail-closed behavior (expired = denied)
+- OAuth 2.1 with PKCE (S256) — no implicit grant, no plain challenge
+- OAuth tokens are opaque hex strings (no JWT data leakage)
+- Quota counters reset atomically at UTC boundaries
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
@@ -545,7 +648,9 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Key expiry (TTL) — auto-expire API keys
 - [x] Multi-server mode — wrap N MCP servers behind one PayGate
 - [x] Client SDK — `PayGateClient` with auto 402 retry
-- [ ] OAuth 2.1 — MCP spec mandates it for production
+- [x] Usage quotas — daily/monthly call and credit limits per key
+- [x] Dynamic pricing — charge by input size (`creditsPerKbInput`)
+- [x] OAuth 2.1 — PKCE, client registration, Bearer tokens, token refresh/revocation
 
 ## Requirements
 

@@ -11,17 +11,19 @@
  * Shadow mode: log but don't enforce (always ALLOW).
  */
 
-import { PayGateConfig, GateDecision, UsageEvent, ToolCallParams, ApiKeyRecord } from './types';
+import { PayGateConfig, GateDecision, UsageEvent, ToolCallParams, ApiKeyRecord, QuotaConfig } from './types';
 import { KeyStore } from './store';
 import { RateLimiter } from './rate-limiter';
 import { UsageMeter } from './meter';
 import { WebhookEmitter } from './webhook';
+import { QuotaTracker } from './quota';
 
 export class Gate {
   readonly store: KeyStore;
   readonly rateLimiter: RateLimiter;
   readonly meter: UsageMeter;
   readonly webhook: WebhookEmitter | null;
+  readonly quotaTracker: QuotaTracker;
   private readonly config: PayGateConfig;
 
   constructor(config: PayGateConfig, statePath?: string) {
@@ -30,6 +32,7 @@ export class Gate {
     this.rateLimiter = new RateLimiter(config.globalRateLimitPerMin);
     this.meter = new UsageMeter();
     this.webhook = config.webhookUrl ? new WebhookEmitter(config.webhookUrl) : null;
+    this.quotaTracker = new QuotaTracker();
   }
 
   /**
@@ -37,7 +40,7 @@ export class Gate {
    */
   evaluate(apiKey: string | null, toolCall: ToolCallParams): GateDecision {
     const toolName = toolCall.name;
-    const creditsRequired = this.getToolPrice(toolName);
+    const creditsRequired = this.getToolPrice(toolName, toolCall.arguments);
 
     // Step 1: API key present?
     if (!apiKey) {
@@ -127,13 +130,27 @@ export class Gate {
       }
     }
 
-    // Step 8: ALLOW — deduct credits and record
+    // Step 8: Usage quota check (daily/monthly limits)
+    const quotaResult = this.quotaTracker.check(keyRecord, creditsRequired, this.config.globalQuota);
+    if (!quotaResult.allowed) {
+      this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, quotaResult.reason);
+      if (this.config.shadowMode) {
+        return { allowed: true, reason: `shadow:${quotaResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+      return { allowed: false, reason: quotaResult.reason!, creditsCharged: 0, remainingCredits: keyRecord.credits };
+    }
+
+    // Step 9: ALLOW — deduct credits, record usage, and update quotas
     this.store.deductCredits(apiKey, creditsRequired);
     this.rateLimiter.record(apiKey);
     // Record per-tool rate limit usage
     if (toolPricing?.rateLimitPerMin && toolPricing.rateLimitPerMin > 0) {
       this.rateLimiter.recordCustom(`${apiKey}:tool:${toolName}`);
     }
+    // Update quota counters
+    this.quotaTracker.record(keyRecord, creditsRequired);
+    this.store.save();
+
     const remaining = this.store.getKey(apiKey)?.credits ?? 0;
     this.recordEvent(apiKey, keyRecord.name, toolName, creditsRequired, true);
 
@@ -191,11 +208,21 @@ export class Gate {
 
   /**
    * Get price for a tool in credits.
+   * With dynamic pricing: base price + per-KB surcharge for large inputs.
    */
-  getToolPrice(toolName: string): number {
+  getToolPrice(toolName: string, args?: Record<string, unknown>): number {
     const override = this.config.toolPricing[toolName];
-    if (override) return override.creditsPerCall;
-    return this.config.defaultCreditsPerCall;
+    const basePrice = override ? override.creditsPerCall : this.config.defaultCreditsPerCall;
+
+    // Dynamic pricing: add per-KB surcharge for input size
+    if (override?.creditsPerKbInput && override.creditsPerKbInput > 0 && args) {
+      const inputBytes = Buffer.byteLength(JSON.stringify(args), 'utf-8');
+      const inputKb = inputBytes / 1024;
+      const surcharge = Math.ceil(inputKb * override.creditsPerKbInput);
+      return basePrice + surcharge;
+    }
+
+    return basePrice;
   }
 
   /**
@@ -229,6 +256,8 @@ export class Gate {
     if (keyRecord) {
       keyRecord.totalSpent = Math.max(0, keyRecord.totalSpent - credits);
       keyRecord.totalCalls = Math.max(0, keyRecord.totalCalls - 1);
+      // Undo quota tracking
+      this.quotaTracker.unrecord(keyRecord, credits);
       this.store.save();
     }
     this.recordEvent(apiKey, keyRecord?.name || 'unknown', toolName, -credits, true, 'refund');

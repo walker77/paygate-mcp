@@ -11,7 +11,7 @@
 import { randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
-import { ApiKeyRecord } from './types';
+import { ApiKeyRecord, QuotaConfig } from './types';
 
 export class KeyStore {
   private keys = new Map<string, ApiKeyRecord>();
@@ -57,8 +57,11 @@ export class KeyStore {
     allowedTools?: string[];
     deniedTools?: string[];
     expiresAt?: string | null;
+    quota?: QuotaConfig;
   }): ApiKeyRecord {
     const key = `pg_${randomBytes(24).toString('hex')}`;
+    const today = new Date().toISOString().slice(0, 10);
+    const month = new Date().toISOString().slice(0, 7);
     const record: ApiKeyRecord = {
       key,
       name: this.sanitizeName(name),
@@ -72,6 +75,13 @@ export class KeyStore {
       allowedTools: this.sanitizeToolList(options?.allowedTools),
       deniedTools: this.sanitizeToolList(options?.deniedTools),
       expiresAt: options?.expiresAt || null,
+      quota: options?.quota,
+      quotaDailyCalls: 0,
+      quotaMonthlyCalls: 0,
+      quotaDailyCredits: 0,
+      quotaMonthlyCredits: 0,
+      quotaLastResetDay: today,
+      quotaLastResetMonth: month,
     };
     this.keys.set(key, record);
     this.save();
@@ -169,6 +179,17 @@ export class KeyStore {
   }
 
   /**
+   * Set quota for a key. Null = use global defaults / unlimited.
+   */
+  setQuota(key: string, quota: QuotaConfig | null): boolean {
+    const record = this.getKey(key);
+    if (!record) return false;
+    record.quota = quota || undefined;
+    this.save();
+    return true;
+  }
+
+  /**
    * Set expiry for a key. Null = never expires.
    */
   setExpiry(key: string, expiresAt: string | null): boolean {
@@ -224,7 +245,10 @@ export class KeyStore {
     allowedTools?: string[];
     deniedTools?: string[];
     expiresAt?: string | null;
+    quota?: QuotaConfig;
   }): ApiKeyRecord {
+    const today = new Date().toISOString().slice(0, 10);
+    const month = new Date().toISOString().slice(0, 7);
     const record: ApiKeyRecord = {
       key,
       name: this.sanitizeName(name),
@@ -238,6 +262,13 @@ export class KeyStore {
       allowedTools: this.sanitizeToolList(options?.allowedTools),
       deniedTools: this.sanitizeToolList(options?.deniedTools),
       expiresAt: options?.expiresAt || null,
+      quota: options?.quota,
+      quotaDailyCalls: 0,
+      quotaMonthlyCalls: 0,
+      quotaDailyCredits: 0,
+      quotaMonthlyCredits: 0,
+      quotaLastResetDay: today,
+      quotaLastResetMonth: month,
     };
     this.keys.set(key, record);
     this.save();
@@ -289,6 +320,13 @@ export class KeyStore {
           if (!Array.isArray(record.allowedTools)) record.allowedTools = [];
           if (!Array.isArray(record.deniedTools)) record.deniedTools = [];
           if (record.expiresAt === undefined) record.expiresAt = null;
+          // Backfill quota fields
+          if (record.quotaDailyCalls === undefined) record.quotaDailyCalls = 0;
+          if (record.quotaMonthlyCalls === undefined) record.quotaMonthlyCalls = 0;
+          if (record.quotaDailyCredits === undefined) record.quotaDailyCredits = 0;
+          if (record.quotaMonthlyCredits === undefined) record.quotaMonthlyCredits = 0;
+          if (!record.quotaLastResetDay) record.quotaLastResetDay = new Date().toISOString().slice(0, 10);
+          if (!record.quotaLastResetMonth) record.quotaLastResetMonth = new Date().toISOString().slice(0, 7);
           this.keys.set(key, record);
         }
       }

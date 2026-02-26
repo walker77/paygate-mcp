@@ -115,8 +115,10 @@ interface ConfigFile {
   remoteUrl?: string;
   port?: number;
   defaultCreditsPerCall?: number;
-  toolPricing?: Record<string, { creditsPerCall: number }>;
+  toolPricing?: Record<string, { creditsPerCall: number; rateLimitPerMin?: number; creditsPerKbInput?: number }>;
   globalRateLimitPerMin?: number;
+  /** Global usage quota defaults (daily/monthly limits). */
+  globalQuota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number };
   shadowMode?: boolean;
   adminKey?: string;
   stateFile?: string;
@@ -131,6 +133,13 @@ interface ConfigFile {
     serverArgs?: string[];
     remoteUrl?: string;
   }>;
+  /** OAuth 2.1 configuration */
+  oauth?: {
+    issuer?: string;
+    accessTokenTtl?: number;
+    refreshTokenTtl?: number;
+    scopes?: string[];
+  };
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -196,6 +205,14 @@ async function main(): Promise<void> {
       const webhookUrl = flags['webhook-url'] || fileConfig.webhookUrl || null;
       const refundOnFailure = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || fileConfig.refundOnFailure || false;
 
+      // Parse global quota from config file
+      const globalQuota = fileConfig.globalQuota ? {
+        dailyCallLimit: Math.max(0, Math.floor(Number(fileConfig.globalQuota.dailyCallLimit) || 0)),
+        monthlyCallLimit: Math.max(0, Math.floor(Number(fileConfig.globalQuota.monthlyCallLimit) || 0)),
+        dailyCreditLimit: Math.max(0, Math.floor(Number(fileConfig.globalQuota.dailyCreditLimit) || 0)),
+        monthlyCreditLimit: Math.max(0, Math.floor(Number(fileConfig.globalQuota.monthlyCreditLimit) || 0)),
+      } : undefined;
+
       const server = new PayGateServer({
         serverCommand,
         serverArgs,
@@ -207,6 +224,8 @@ async function main(): Promise<void> {
         toolPricing,
         webhookUrl,
         refundOnFailure: !!refundOnFailure,
+        globalQuota,
+        oauth: fileConfig.oauth,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers);
 
       // Import keys from CLI flags
