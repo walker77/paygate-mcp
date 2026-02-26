@@ -74,6 +74,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Suspension** — Temporarily disable API keys without revoking them — suspended keys are denied at the gate but can be resumed, and admin operations (topup, ACL, etc.) still work on suspended keys
 - **Per-Key Usage** — `GET /keys/usage?key=...` returns detailed usage breakdown for a specific key: per-tool stats, hourly time-series, deny reasons, recent events, and key metadata
 - **Webhook Test** — `POST /webhooks/test` sends a test event to your configured webhook URL with synchronous response including status code, response time, and delivery success/failure — verifies webhook connectivity without generating real events
+- **Webhook Delivery Log** — `GET /webhooks/log` returns a queryable log of all webhook delivery attempts with timestamps, HTTP status codes, response times, success/failure, retry attempts, event counts, and event types — filter by success status, time range, and limit
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -352,6 +353,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/webhooks/filters/delete` | POST | `X-Admin-Key` | Delete a webhook filter rule |
 | `/webhooks/replay` | POST | `X-Admin-Key` | Replay dead letter webhook events (all or by index) |
 | `/webhooks/test` | POST | `X-Admin-Key` | Send test event to configured webhook URL (synchronous) |
+| `/webhooks/log` | GET | `X-Admin-Key` | Webhook delivery log with status, timing, and filters |
 | `/config/reload` | POST | `X-Admin-Key` | Hot-reload config file (pricing, rate limits, webhooks, quotas) |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
@@ -1133,6 +1135,41 @@ Response:
 | `error` | Error message (only on failure) |
 
 The test event includes `X-PayGate-Test: 1` header and `X-PayGate-Signature` when a webhook secret is configured. Returns 400 if no webhook URL is configured. Creates an audit trail entry (`webhook.test`).
+
+### Webhook Delivery Log
+
+Query the log of all webhook delivery attempts — successes, failures, and retries:
+
+```bash
+# Get recent deliveries (default: last 50, newest first)
+curl http://localhost:3402/webhooks/log \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by success/failure
+curl "http://localhost:3402/webhooks/log?success=false" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by time and limit
+curl "http://localhost:3402/webhooks/log?since=2025-01-01T00:00:00Z&limit=10" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+Each entry includes:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Auto-incrementing delivery ID |
+| `timestamp` | When the delivery attempt was made |
+| `url` | Webhook URL (credentials masked) |
+| `statusCode` | HTTP status code (0 for connection errors) |
+| `success` | `true` if webhook returned 2xx |
+| `responseTime` | Round-trip time in milliseconds |
+| `attempt` | Retry attempt number (0 = first attempt) |
+| `error` | Error message (only on failure) |
+| `eventCount` | Number of events in the batch |
+| `eventTypes` | Distinct event types (e.g. `["usage"]`, `["key.created"]`) |
+
+Query parameters: `limit` (default 50, max 200), `since` (ISO 8601), `success` (`true` or `false`). Entries are capped at 500 in memory. Use alongside `/webhooks/stats` for aggregate counters.
 
 ### IP Allowlisting
 

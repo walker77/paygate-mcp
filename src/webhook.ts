@@ -50,6 +50,31 @@ export interface DeadLetterEntry {
   url: string;
 }
 
+// ─── Delivery Log Entry ──────────────────────────────────────────────────────
+
+export interface DeliveryLogEntry {
+  /** Auto-incrementing ID */
+  id: number;
+  /** When the delivery attempt was made */
+  timestamp: string;
+  /** Target webhook URL (credentials masked) */
+  url: string;
+  /** HTTP status code (0 for connection errors) */
+  statusCode: number;
+  /** Whether the delivery was successful (2xx) */
+  success: boolean;
+  /** Round-trip time in milliseconds */
+  responseTime: number;
+  /** Retry attempt number (0 = first attempt) */
+  attempt: number;
+  /** Error message (only on failure) */
+  error?: string;
+  /** Number of events in the batch */
+  eventCount: number;
+  /** Distinct event types in the batch */
+  eventTypes: string[];
+}
+
 // ─── Retry Queue Entry ─────────────────────────────────────────────────────
 
 interface RetryEntry {
@@ -86,6 +111,11 @@ export class WebhookEmitter {
   private _totalFailed = 0;
   private _totalRetries = 0;
 
+  /** Delivery log (capped at maxDeliveryLog entries, newest last) */
+  private deliveryLog: DeliveryLogEntry[] = [];
+  private readonly maxDeliveryLog: number;
+  private _deliveryLogSeq = 0;
+
   constructor(url: string, options?: {
     secret?: string | null;
     batchSize?: number;
@@ -93,6 +123,7 @@ export class WebhookEmitter {
     maxRetries?: number;
     baseDelayMs?: number;
     maxDeadLetters?: number;
+    maxDeliveryLog?: number;
   }) {
     this.url = url;
     this.secret = options?.secret || null;
@@ -102,6 +133,7 @@ export class WebhookEmitter {
     this.maxRetries = options?.maxRetries ?? 5;
     this.baseDelayMs = options?.baseDelayMs ?? 1000;
     this.maxDeadLetters = options?.maxDeadLetters ?? 1000;
+    this.maxDeliveryLog = options?.maxDeliveryLog ?? 500;
 
     this.timer = setInterval(() => this.flush(), this.flushIntervalMs);
     if (this.timer.unref) this.timer.unref();
@@ -303,7 +335,83 @@ export class WebhookEmitter {
     };
   }
 
+  // ─── Delivery Log ──────────────────────────────────────────────────────────
+
+  /**
+   * Record a delivery attempt in the log.
+   */
+  private recordDelivery(entry: Omit<DeliveryLogEntry, 'id'>): void {
+    this.deliveryLog.push({
+      ...entry,
+      id: ++this._deliveryLogSeq,
+    });
+    // Cap the log size
+    if (this.deliveryLog.length > this.maxDeliveryLog) {
+      this.deliveryLog = this.deliveryLog.slice(-this.maxDeliveryLog);
+    }
+  }
+
+  /**
+   * Get delivery log entries, newest first.
+   * @param options - Filter options
+   */
+  getDeliveryLog(options?: {
+    limit?: number;
+    since?: string;
+    success?: boolean;
+  }): DeliveryLogEntry[] {
+    let entries = [...this.deliveryLog];
+
+    // Filter by time
+    if (options?.since) {
+      entries = entries.filter(e => e.timestamp >= options.since!);
+    }
+
+    // Filter by success/failure
+    if (options?.success !== undefined) {
+      entries = entries.filter(e => e.success === options.success);
+    }
+
+    // Newest first
+    entries.reverse();
+
+    // Limit
+    const limit = Math.min(options?.limit ?? 50, 200);
+    return entries.slice(0, limit);
+  }
+
   // ─── Send ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Mask credentials in a URL for logging.
+   */
+  private static maskUrl(url: string): string {
+    try {
+      const parsed = new URL(url);
+      if (parsed.password) parsed.password = '***';
+      if (parsed.username && parsed.username.length > 4) {
+        parsed.username = parsed.username.slice(0, 4) + '***';
+      }
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  }
+
+  /**
+   * Extract distinct event types from a batch.
+   */
+  private static eventTypes(events: WebhookEvent[]): string[] {
+    const types = new Set<string>();
+    for (const e of events) {
+      if (isAdminEvent(e)) {
+        types.add(e.type);
+      } else {
+        types.add('usage');
+      }
+    }
+    return [...types];
+  }
 
   private send(events: WebhookEvent[], attempt: number, firstAttempt: string, previousError?: string): void {
     // Separate events by type for the payload
@@ -329,10 +437,25 @@ export class WebhookEmitter {
     try {
       parsed = new URL(this.url);
     } catch {
-      // Invalid URL — send to dead letter
+      // Invalid URL — send to dead letter and log
       this.addDeadLetter(events, attempt, 'Invalid webhook URL', firstAttempt);
+      this.recordDelivery({
+        timestamp: new Date().toISOString(),
+        url: WebhookEmitter.maskUrl(this.url),
+        statusCode: 0,
+        success: false,
+        responseTime: 0,
+        attempt,
+        error: 'Invalid webhook URL',
+        eventCount: events.length,
+        eventTypes: WebhookEmitter.eventTypes(events),
+      });
       return;
     }
+
+    const maskedUrl = WebhookEmitter.maskUrl(this.url);
+    const startTime = Date.now();
+    const eventTypesArr = WebhookEmitter.eventTypes(events);
 
     const headers: Record<string, string | number> = {
       'Content-Type': 'application/json',
@@ -365,22 +488,68 @@ export class WebhookEmitter {
     }, (res) => {
       // Drain response to free socket
       res.resume();
+      const responseTime = Date.now() - startTime;
       if (res.statusCode && res.statusCode >= 400) {
         const errorMsg = `HTTP ${res.statusCode}`;
         this.scheduleRetry(events, attempt, firstAttempt, errorMsg);
+        this.recordDelivery({
+          timestamp: new Date().toISOString(),
+          url: maskedUrl,
+          statusCode: res.statusCode,
+          success: false,
+          responseTime,
+          attempt,
+          error: errorMsg,
+          eventCount: events.length,
+          eventTypes: eventTypesArr,
+        });
       } else {
         this._totalDelivered++;
+        this.recordDelivery({
+          timestamp: new Date().toISOString(),
+          url: maskedUrl,
+          statusCode: res.statusCode || 200,
+          success: true,
+          responseTime,
+          attempt,
+          eventCount: events.length,
+          eventTypes: eventTypesArr,
+        });
       }
     });
 
     req.on('error', (err: Error) => {
       const errorMsg = err.message || 'Connection error';
+      const responseTime = Date.now() - startTime;
       this.scheduleRetry(events, attempt, firstAttempt, errorMsg);
+      this.recordDelivery({
+        timestamp: new Date().toISOString(),
+        url: maskedUrl,
+        statusCode: 0,
+        success: false,
+        responseTime,
+        attempt,
+        error: errorMsg,
+        eventCount: events.length,
+        eventTypes: eventTypesArr,
+      });
     });
 
     req.on('timeout', () => {
       req.destroy();
+      const responseTime = Date.now() - startTime;
       this.scheduleRetry(events, attempt, firstAttempt, 'Timeout (10s)');
+      this.recordDelivery({
+        timestamp: new Date().toISOString(),
+        url: maskedUrl,
+        statusCode: 0,
+        success: false,
+        responseTime,
+        attempt,
+        error: 'Timeout (10s)',
+        eventCount: events.length,
+        eventTypes: eventTypesArr,
+      });
     });
 
     req.write(body);

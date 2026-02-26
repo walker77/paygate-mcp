@@ -444,6 +444,8 @@ export class PayGateServer {
         return this.handleWebhookReplay(req, res);
       case '/webhooks/stats':
         return this.handleWebhookStats(req, res);
+      case '/webhooks/log':
+        return this.handleWebhookLog(req, res);
       case '/webhooks/test':
         return this.handleWebhookTest(req, res);
       case '/webhooks/filters':
@@ -955,6 +957,7 @@ export class PayGateServer {
         webhookReplay: 'POST /webhooks/replay — Replay dead letter webhook events (requires X-Admin-Key)',
         webhookTest: 'POST /webhooks/test — Send test event to webhook URL and return result (requires X-Admin-Key)',
         webhookStats: 'GET /webhooks/stats — Webhook delivery statistics (requires X-Admin-Key)',
+        webhookLog: 'GET /webhooks/log — Webhook delivery log with status, timing, and filters (requires X-Admin-Key)',
         webhookFilters: 'GET|POST /webhooks/filters — List or create webhook filter rules (requires X-Admin-Key)',
         updateWebhookFilter: 'POST /webhooks/filters/update — Update a webhook filter rule (requires X-Admin-Key)',
         deleteWebhookFilter: 'POST /webhooks/filters/delete — Delete a webhook filter rule (requires X-Admin-Key)',
@@ -3205,6 +3208,51 @@ export class PayGateServer {
       maxRetries: this.gate.webhook.maxRetries,
       ...stats,
       ...(routerStats ? { filters: routerStats } : {}),
+    }));
+  }
+
+  // ─── /webhooks/log — Webhook delivery log ───────────────────────────────
+
+  private handleWebhookLog(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        configured: false,
+        message: 'No webhook configured',
+        entries: [],
+      }));
+      return;
+    }
+
+    // Parse query params
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const limitParam = url.searchParams.get('limit');
+    const sinceParam = url.searchParams.get('since');
+    const successParam = url.searchParams.get('success');
+
+    const options: { limit?: number; since?: string; success?: boolean } = {};
+    if (limitParam) {
+      const n = parseInt(limitParam, 10);
+      if (!isNaN(n) && n > 0) options.limit = n;
+    }
+    if (sinceParam) options.since = sinceParam;
+    if (successParam === 'true') options.success = true;
+    else if (successParam === 'false') options.success = false;
+
+    const entries = this.gate.webhook.getDeliveryLog(options);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      configured: true,
+      total: entries.length,
+      entries,
     }));
   }
 
