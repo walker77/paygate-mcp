@@ -14,6 +14,7 @@ export type AuditEventType =
   | 'key.revoked'
   | 'key.suspended'
   | 'key.resumed'
+  | 'key.cloned'
   | 'key.rotated'
   | 'key.topup'
   | 'key.acl_updated'

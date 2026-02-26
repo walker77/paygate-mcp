@@ -376,6 +376,8 @@ export class PayGateServer {
         return this.handleSuspendKey(req, res);
       case '/keys/resume':
         return this.handleResumeKey(req, res);
+      case '/keys/clone':
+        return this.handleCloneKey(req, res);
       case '/keys/rotate':
         return this.handleRotateKey(req, res);
       case '/keys/acl':
@@ -920,6 +922,7 @@ export class PayGateServer {
         revokeKey: 'POST /keys/revoke — Revoke a key permanently (requires X-Admin-Key)',
         suspendKey: 'POST /keys/suspend — Temporarily suspend a key (requires X-Admin-Key)',
         resumeKey: 'POST /keys/resume — Resume a suspended key (requires X-Admin-Key)',
+        cloneKey: 'POST /keys/clone — Clone a key with same config (requires X-Admin-Key)',
         rotateKey: 'POST /keys/rotate — Rotate a key (requires X-Admin-Key)',
         setAcl: 'POST /keys/acl — Set tool ACL (requires X-Admin-Key)',
         setExpiry: 'POST /keys/expiry — Set key expiry (requires X-Admin-Key)',
@@ -1750,6 +1753,92 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Key resumed', suspended: false }));
+  }
+
+  // ─── /keys/clone — Clone API key ─────────────────────────────────────────
+
+  private async handleCloneKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; name?: string; credits?: number; tags?: Record<string, string>; namespace?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    // Use getKeyRaw to allow cloning suspended/expired keys (but not revoked)
+    const source = this.gate.store.getKeyRaw(params.key);
+    if (!source) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Source key not found' }));
+      return;
+    }
+    if (!source.active) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot clone a revoked key' }));
+      return;
+    }
+
+    const cloned = this.gate.store.cloneKey(params.key, {
+      name: params.name,
+      credits: params.credits,
+      tags: params.tags,
+      namespace: params.namespace,
+    });
+    if (!cloned) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Clone failed' }));
+      return;
+    }
+
+    // Sync new key to Redis
+    this.syncKeyMutation(cloned.key);
+
+    this.audit.log('key.cloned', 'admin', `Key cloned from ${maskKeyForAudit(params.key)}`, {
+      sourceKeyMasked: maskKeyForAudit(params.key),
+      newKeyMasked: maskKeyForAudit(cloned.key),
+      name: cloned.name,
+      credits: cloned.credits,
+    });
+    this.emitWebhookAdmin('key.cloned', 'admin', {
+      sourceKeyMasked: maskKeyForAudit(params.key),
+      newKeyMasked: maskKeyForAudit(cloned.key),
+      name: cloned.name,
+      credits: cloned.credits,
+    });
+
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      message: 'Key cloned',
+      key: cloned.key,
+      name: cloned.name,
+      credits: cloned.credits,
+      sourceName: source.name,
+      allowedTools: cloned.allowedTools,
+      deniedTools: cloned.deniedTools,
+      expiresAt: cloned.expiresAt,
+      quota: cloned.quota,
+      tags: cloned.tags,
+      ipAllowlist: cloned.ipAllowlist,
+      namespace: cloned.namespace,
+      group: cloned.group,
+      spendingLimit: cloned.spendingLimit,
+    }));
   }
 
   // ─── /keys/rotate — Rotate API key ─────────────────────────────────────────

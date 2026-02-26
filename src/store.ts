@@ -133,6 +133,59 @@ export class KeyStore {
   }
 
   /**
+   * Clone an existing key with the same configuration but a new key string and fresh counters.
+   * Copies: allowedTools, deniedTools, expiresAt, quota, tags, ipAllowlist, namespace, group,
+   * spendingLimit, autoTopup. Does NOT copy: suspended state, usage counters, lastUsedAt.
+   * Returns null if source key not found or revoked.
+   */
+  cloneKey(sourceKey: string, overrides?: {
+    name?: string;
+    credits?: number;
+    tags?: Record<string, string>;
+    namespace?: string;
+  }): ApiKeyRecord | null {
+    const source = this.keys.get(sourceKey);
+    if (!source || !source.active) return null;
+
+    const key = `pg_${randomBytes(24).toString('hex')}`;
+    const today = new Date().toISOString().slice(0, 10);
+    const month = new Date().toISOString().slice(0, 7);
+
+    const record: ApiKeyRecord = {
+      key,
+      name: this.sanitizeName(overrides?.name || `${source.name}-clone`),
+      credits: this.sanitizeCredits(overrides?.credits ?? source.credits),
+      totalSpent: 0,
+      totalCalls: 0,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
+      active: true,
+      spendingLimit: source.spendingLimit,
+      allowedTools: [...source.allowedTools],
+      deniedTools: [...source.deniedTools],
+      expiresAt: source.expiresAt,
+      quota: source.quota ? { ...source.quota } : undefined,
+      tags: overrides?.tags ? this.sanitizeTags(overrides.tags) : { ...source.tags },
+      ipAllowlist: [...source.ipAllowlist],
+      namespace: this.sanitizeNamespace(overrides?.namespace ?? source.namespace),
+      group: source.group,
+      autoTopup: source.autoTopup ? { ...source.autoTopup } : undefined,
+      quotaDailyCalls: 0,
+      quotaMonthlyCalls: 0,
+      quotaDailyCredits: 0,
+      quotaMonthlyCredits: 0,
+      quotaLastResetDay: today,
+      quotaLastResetMonth: month,
+      autoTopupTodayCount: 0,
+      autoTopupLastResetDay: today,
+    };
+
+    this.keys.set(key, record);
+    this.save();
+    return record;
+  }
+
+  /**
    * Look up an API key. Returns null if not found, inactive, or expired.
    */
   getKey(key: string): ApiKeyRecord | null {

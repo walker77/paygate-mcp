@@ -70,6 +70,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Bulk Key Operations** — Execute multiple key operations (create, topup, revoke) in a single request with per-operation error handling and index tracking
 - **Key Import/Export** — Export all API keys for backup/migration (JSON or CSV) and import with conflict resolution (skip, overwrite, error modes)
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
+- **Key Cloning** — `POST /keys/clone` creates a new API key with the same config (ACL, quotas, tags, IP, namespace, group, spending limit, expiry, auto-topup) but fresh counters — ideal for provisioning similar keys
 - **Key Suspension** — Temporarily disable API keys without revoking them — suspended keys are denied at the gate but can be resumed, and admin operations (topup, ACL, etc.) still work on suspended keys
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
@@ -292,6 +293,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys/revoke` | POST | `X-Admin-Key` | Permanently revoke an API key |
 | `/keys/suspend` | POST | `X-Admin-Key` | Temporarily suspend a key (reversible) |
 | `/keys/resume` | POST | `X-Admin-Key` | Resume a suspended key |
+| `/keys/clone` | POST | `X-Admin-Key` | Clone a key (new key, same config, fresh counters) |
 | `/keys/rotate` | POST | `X-Admin-Key` | Rotate key (new key, same credits/ACL/quotas) |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
 | `/keys/expiry` | POST | `X-Admin-Key` | Set or remove key expiry (TTL) |
@@ -1012,6 +1014,25 @@ paygate_uptime_seconds 3600
 - `paygate_uptime_seconds` — Server uptime (gauge)
 
 The `/metrics` endpoint is **public** (no auth required) for easy Prometheus scraping.
+
+### Key Cloning
+
+Create a new API key with the same configuration as an existing key but fresh counters. Ideal for provisioning similar keys for team members, staging environments, or batch key creation:
+
+```bash
+# Clone with same config and credits
+curl -X POST http://localhost:3402/keys/clone \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_source..."}'
+# → { "message": "Key cloned", "key": "pg_newkey...", "name": "source-clone", "credits": 200, ... }
+
+# Clone with overrides
+curl -X POST http://localhost:3402/keys/clone \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_source...", "name": "staging-key", "credits": 50, "namespace": "staging"}'
+```
+
+**What gets cloned:** allowedTools, deniedTools, expiresAt, quota, tags, ipAllowlist, namespace, group, spendingLimit, autoTopup config. **What gets reset:** totalSpent, totalCalls, lastUsedAt, quotaDailyCalls, suspended state. You can override `name`, `credits`, `tags`, and `namespace` in the clone request. Suspended and expired keys can be cloned (but not revoked keys).
 
 ### Key Rotation
 
