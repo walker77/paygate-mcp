@@ -31,6 +31,8 @@ export type { OAuthClientRecord, OAuthTokenRecord, OAuthServerMetadata, OAuthCon
 export { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
 export { AuditLogger, maskKeyForAudit } from './audit';
 export type { AuditEvent, AuditEventType, AuditLogConfig, AuditQuery, AuditQueryResult } from './audit';
+export { ToolRegistry } from './registry';
+export type { ToolPricingInfo, ServerPaymentMetadata, PricingResponse } from './registry';
 export type { McpSession, SessionManagerConfig } from './session';
 export { getDashboardHtml } from './dashboard';
 export { PayGateClient, PayGateError } from './client';

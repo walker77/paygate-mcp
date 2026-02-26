@@ -32,6 +32,7 @@ import { StripeWebhookHandler } from './stripe';
 import { OAuthProvider } from './oauth';
 import { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
 import { AuditLogger, maskKeyForAudit } from './audit';
+import { ToolRegistry } from './registry';
 import { getDashboardHtml } from './dashboard';
 
 /** Max request body size: 1MB */
@@ -66,6 +67,8 @@ export class PayGateServer {
   readonly sessions: SessionManager;
   /** Structured audit log */
   readonly audit: AuditLogger;
+  /** Tool registry for pricing discovery */
+  readonly registry: ToolRegistry;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -116,6 +119,9 @@ export class PayGateServer {
 
     // Audit logger
     this.audit = new AuditLogger();
+
+    // Tool registry for pricing discovery
+    this.registry = new ToolRegistry(this.config, !!this.oauth);
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
@@ -191,6 +197,11 @@ export class PayGateServer {
         return this.handleAuditExport(req, res);
       case '/audit/stats':
         return this.handleAuditStats(req, res);
+      // ─── Registry / Discovery endpoints ──────────────────────────────
+      case '/.well-known/mcp-payment':
+        return this.handlePaymentMetadata(req, res);
+      case '/pricing':
+        return this.handlePricing(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -258,6 +269,14 @@ export class PayGateServer {
     }
 
     const response = await this.handler.handleRequest(request, apiKey);
+
+    // Inject pricing metadata into tools/list responses
+    if (request.method === 'tools/list' && response.result) {
+      const result = response.result as { tools?: Array<{ name: string; [k: string]: unknown }> };
+      if (result.tools && Array.isArray(result.tools)) {
+        result.tools = this.registry.injectPricingIntoToolsList(result.tools);
+      }
+    }
 
     // Audit gate decision
     if (request.method === 'tools/call') {
@@ -412,6 +431,8 @@ export class PayGateServer {
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
         setQuota: 'POST /keys/quota — Set usage quota (requires X-Admin-Key)',
+        pricing: 'GET /pricing — Tool pricing breakdown (public)',
+        mcpPayment: 'GET /.well-known/mcp-payment — Payment metadata (SEP-2007)',
         audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
         auditExport: 'GET /audit/export — Export audit log (requires X-Admin-Key)',
         auditStats: 'GET /audit/stats — Audit log statistics (requires X-Admin-Key)',
@@ -1265,6 +1286,20 @@ export class PayGateServer {
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
+
+  // ─── /.well-known/mcp-payment — Payment metadata (SEP-2007) ────────────────
+
+  private handlePaymentMetadata(_req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(this.registry.getServerMetadata(), null, 2));
+  }
+
+  // ─── /pricing — Full pricing breakdown ────────────────────────────────────
+
+  private handlePricing(_req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(this.registry.getFullPricing(), null, 2));
+  }
 
   // ─── /audit — Query audit log ─────────────────────────────────────────────
 

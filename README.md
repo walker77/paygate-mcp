@@ -42,6 +42,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **OAuth 2.1** — Full authorization server with PKCE, client registration, Bearer tokens
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
+- **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment` and `/pricing`
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -271,6 +272,8 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/oauth/token` | POST | None | Token endpoint (code exchange + refresh) |
 | `/oauth/revoke` | POST | None | Token revocation (RFC 7009) |
 | `/oauth/clients` | GET | `X-Admin-Key` | List registered OAuth clients |
+| `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
+| `/pricing` | GET | None | Full per-tool pricing breakdown |
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
@@ -592,6 +595,28 @@ curl http://localhost:3402/audit/stats \
 
 **Retention:** Ring buffer (default 10,000 events), age-based cleanup (default 30 days), automatic periodic enforcement.
 
+### Registry/Discovery (Agent-Discoverable Pricing)
+
+AI agents can programmatically discover your server's pricing and payment requirements before calling tools. Aligns with SEP-2007 (MCP Payment Spec Draft).
+
+```bash
+# Discover server payment metadata (public, no auth)
+curl http://localhost:3402/.well-known/mcp-payment
+# → { "specVersion": "2007-draft", "billingModel": "credits", "defaultCreditsPerCall": 1, ... }
+
+# Get full pricing breakdown (public, no auth)
+curl http://localhost:3402/pricing
+# → { "server": {...}, "tools": [{ "name": "search", "creditsPerCall": 5, "pricingModel": "dynamic" }, ...] }
+```
+
+**How it works:**
+- `/.well-known/mcp-payment` — Server-level payment metadata (billing model, auth methods, error codes)
+- `/pricing` — Full per-tool pricing breakdown with overrides
+- `tools/list` responses include `_pricing` metadata on each tool (creditsPerCall, pricingModel, rateLimitPerMin)
+- `-32402` error responses include pricing details so agents know how to afford the tool
+
+Both discovery endpoints are **public** (no auth required) so agents can check pricing before obtaining an API key.
+
 ### Config File Mode
 
 Load all settings from a JSON file instead of CLI flags:
@@ -692,6 +717,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - SSE sessions auto-expire (30 min), max 1000 concurrent, max 3 SSE per session
 - Audit log with retention policies (ring buffer, age-based cleanup)
 - API keys masked in audit events (only first 7 + last 4 chars visible)
+- Discovery endpoints (/.well-known/mcp-payment, /pricing) are public but read-only
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
@@ -721,7 +747,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] OAuth 2.1 — PKCE, client registration, Bearer tokens, token refresh/revocation
 - [x] SSE streaming — Full MCP Streamable HTTP transport with session management
 - [x] Audit log — Structured audit trail with retention, query API, CSV/JSON export
-- [ ] Registry/discovery — Agent-discoverable paid tools
+- [x] Registry/discovery — Agent-discoverable pricing (/.well-known/mcp-payment, /pricing, tools/list _pricing)
 - [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements
