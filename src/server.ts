@@ -47,6 +47,7 @@ import { AdminKeyManager, AdminRole, ROLE_HIERARCHY } from './admin-keys';
 import { PluginManager, PayGatePlugin, PluginToolContext } from './plugin';
 import { KeyGroupManager } from './groups';
 import { WebhookRouter } from './webhook-router';
+import { ExpiryScanner } from './expiry-scanner';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -101,6 +102,8 @@ export class PayGateServer {
   /** Plugin manager for extensible middleware hooks */
   readonly plugins: PluginManager;
   readonly groups: KeyGroupManager;
+  /** Background key expiry scanner */
+  readonly expiryScanner: ExpiryScanner;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -242,6 +245,29 @@ export class PayGateServer {
       return this.groups.count;
     });
 
+    // Key expiry scanner — proactive background scanning for expiring keys
+    const scannerConfig = this.config.expiryScanner;
+    this.expiryScanner = new ExpiryScanner(scannerConfig ? {
+      enabled: scannerConfig.enabled !== false,
+      intervalSeconds: scannerConfig.intervalSeconds || 3600,
+      thresholds: scannerConfig.thresholds || [604800, 86400, 3600],
+    } : undefined);
+
+    // Wire scanner callbacks: audit + webhook
+    this.expiryScanner.onWarning = (warning) => {
+      const keyMasked = maskKeyForAudit(warning.key);
+      this.audit.log('key.expiry_warning', 'system',
+        `Key "${warning.name}" expires in ${warning.remainingHuman} (threshold: ${warning.thresholdSeconds}s)`,
+        { keyMasked, expiresAt: warning.expiresAt, remainingSeconds: warning.remainingSeconds, thresholdSeconds: warning.thresholdSeconds, alias: warning.alias || null },
+      );
+      this.emitWebhookAdmin('key.expiry_warning', 'system', {
+        keyMasked, keyName: warning.name, alias: warning.alias || null,
+        namespace: warning.namespace, expiresAt: warning.expiresAt,
+        remainingSeconds: warning.remainingSeconds, remainingHuman: warning.remainingHuman,
+        thresholdSeconds: warning.thresholdSeconds,
+      });
+    };
+
     // Scoped token manager (uses bootstrap admin key as signing secret, padded to min length)
     const tokenSecret = this.bootstrapAdminKey.length >= 8
       ? this.bootstrapAdminKey
@@ -307,6 +333,9 @@ export class PayGateServer {
     }
 
     await this.handler.start();
+
+    // Start the key expiry scanner (proactive background scanning)
+    this.expiryScanner.start(() => this.gate.store.getAllRecords());
 
     // Plugin lifecycle: onStart
     if (this.plugins.count > 0) {
@@ -398,6 +427,8 @@ export class PayGateServer {
         return this.handleSetAutoTopup(req, res);
       case '/keys/usage':
         return this.handleKeyUsage(req, res);
+      case '/keys/expiring':
+        return this.handleKeysExpiring(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
       case '/keys/transfer':
@@ -952,6 +983,7 @@ export class PayGateServer {
         searchKeys: 'POST /keys/search — Search keys by tags (requires X-Admin-Key)',
         autoTopup: 'POST /keys/auto-topup — Configure auto-topup for a key (requires X-Admin-Key)',
         keyUsage: 'GET /keys/usage?key=... — Per-key usage breakdown (requires X-Admin-Key)',
+        keysExpiring: 'GET /keys/expiring?within=86400 — List keys expiring within N seconds (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
         mcpPayment: 'GET /.well-known/mcp-payment — Payment metadata (SEP-2007)',
         audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
@@ -2343,6 +2375,39 @@ export class PayGateServer {
       suspended: record.suspended || false,
       since: since || 'all',
       ...usage,
+    }, null, 2));
+  }
+
+  // ─── /keys/expiring — List keys expiring within a time window ───────────────
+
+  private handleKeysExpiring(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const withinStr = params.get('within');
+    const within = withinStr ? parseInt(withinStr, 10) : 86400; // Default: 24 hours
+
+    if (isNaN(within) || within <= 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid within parameter — must be a positive number of seconds' }));
+      return;
+    }
+
+    const allKeys = this.gate.store.getAllRecords();
+    const expiring = ExpiryScanner.queryExpiring(allKeys, within);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      within,
+      count: expiring.length,
+      scanner: this.expiryScanner.status,
+      keys: expiring,
     }, null, 2));
   }
 
@@ -4672,6 +4737,7 @@ export class PayGateServer {
     this.sessions.destroy();
     this.audit.destroy();
     this.tokens.destroy();
+    this.expiryScanner.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }
@@ -4730,6 +4796,7 @@ export class PayGateServer {
     this.sessions.destroy();
     this.audit.destroy();
     this.tokens.destroy();
+    this.expiryScanner.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }

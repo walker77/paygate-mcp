@@ -21,7 +21,7 @@ import { UsageEvent } from './types';
 // ─── Admin Lifecycle Events ─────────────────────────────────────────────────
 
 export interface WebhookAdminEvent {
-  type: 'key.created' | 'key.cloned' | 'key.revoked' | 'key.suspended' | 'key.resumed' | 'key.rotated' | 'key.topup' | 'key.expired' | 'key.credits_transferred' | 'alert.fired' | 'key.auto_topup_configured' | 'key.auto_topped_up' | 'admin_key.created' | 'admin_key.revoked';
+  type: 'key.created' | 'key.cloned' | 'key.revoked' | 'key.suspended' | 'key.resumed' | 'key.rotated' | 'key.topup' | 'key.expired' | 'key.credits_transferred' | 'alert.fired' | 'key.auto_topup_configured' | 'key.auto_topped_up' | 'admin_key.created' | 'admin_key.revoked' | 'key.expiry_warning';
   timestamp: string;
   actor: string;
   metadata: Record<string, unknown>;

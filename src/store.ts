@@ -665,6 +665,14 @@ export class KeyStore {
   }
 
   /**
+   * Get all key records (for background scanning).
+   * Returns raw records without filtering by active/expiry status.
+   */
+  getAllRecords(): ApiKeyRecord[] {
+    return Array.from(this.keys.values());
+  }
+
+  /**
    * List all unique namespaces with summary stats.
    */
   listNamespaces(): Array<{ namespace: string; keyCount: number; activeKeys: number; totalCredits: number; totalSpent: number }> {

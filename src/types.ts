@@ -109,6 +109,15 @@ export interface PayGateConfig {
     threshold: number;
     cooldownSeconds?: number;
   }>;
+  /** Key expiry scanner config. Proactively scans for expiring keys on a timer. */
+  expiryScanner?: {
+    /** Whether the scanner is enabled. Default: true. */
+    enabled: boolean;
+    /** Scan interval in seconds. Default: 3600 (1 hour). Min: 60. */
+    intervalSeconds?: number;
+    /** Seconds before expiry to notify. Default: [604800, 86400, 3600] (7d, 24h, 1h). */
+    thresholds?: number[];
+  };
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────
