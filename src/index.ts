@@ -32,6 +32,8 @@ export { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } fro
 export { AuditLogger, maskKeyForAudit } from './audit';
 export type { AuditEvent, AuditEventType, AuditLogConfig, AuditQuery, AuditQueryResult } from './audit';
 export { ToolRegistry } from './registry';
+export { MetricsCollector } from './metrics';
+export type { MetricLabels } from './metrics';
 export type { ToolPricingInfo, ServerPaymentMetadata, PricingResponse } from './registry';
 export type { McpSession, SessionManagerConfig } from './session';
 export { getDashboardHtml } from './dashboard';

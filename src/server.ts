@@ -33,6 +33,7 @@ import { OAuthProvider } from './oauth';
 import { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
 import { AuditLogger, maskKeyForAudit } from './audit';
 import { ToolRegistry } from './registry';
+import { MetricsCollector } from './metrics';
 import { getDashboardHtml } from './dashboard';
 
 /** Max request body size: 1MB */
@@ -69,6 +70,8 @@ export class PayGateServer {
   readonly audit: AuditLogger;
   /** Tool registry for pricing discovery */
   readonly registry: ToolRegistry;
+  /** Prometheus-compatible metrics collector */
+  readonly metrics: MetricsCollector;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -122,6 +125,19 @@ export class PayGateServer {
 
     // Tool registry for pricing discovery
     this.registry = new ToolRegistry(this.config, !!this.oauth);
+
+    // Prometheus-compatible metrics
+    this.metrics = new MetricsCollector();
+    // Register dynamic gauges that read from live state
+    this.metrics.registerGauge('paygate_active_keys_total', 'Number of active (non-revoked) API keys', () => {
+      return this.gate.store.listKeys().filter(k => k.active).length;
+    });
+    this.metrics.registerGauge('paygate_active_sessions_total', 'Number of active MCP sessions', () => {
+      return this.sessions.sessionCount;
+    });
+    this.metrics.registerGauge('paygate_total_credits_available', 'Total credits across all active keys', () => {
+      return this.gate.store.listKeys().filter(k => k.active).reduce((sum, k) => sum + k.credits, 0);
+    });
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
@@ -202,6 +218,8 @@ export class PayGateServer {
         return this.handlePaymentMetadata(req, res);
       case '/pricing':
         return this.handlePricing(req, res);
+      case '/metrics':
+        return this.handleMetrics(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -278,19 +296,30 @@ export class PayGateServer {
       }
     }
 
-    // Audit gate decision
+    // Audit + metrics for gate decisions
     if (request.method === 'tools/call') {
       const toolName = (request.params as Record<string, unknown>)?.name as string || 'unknown';
       if (response.error) {
+        const reason = response.error.code === -32402 ? 'insufficient_credits'
+          : response.error.code === -32001 ? 'rate_limited'
+          : response.error.message || 'denied';
         this.audit.log('gate.deny', maskKeyForAudit(apiKey || 'anonymous'), `Denied: ${toolName}`, {
           tool: toolName,
           errorCode: response.error.code,
           reason: response.error.message,
         });
+        this.metrics.recordToolCall(toolName, false, 0, reason);
+        if (response.error.code === -32001) {
+          this.metrics.recordRateLimitHit(toolName);
+        }
       } else {
         this.audit.log('gate.allow', maskKeyForAudit(apiKey || 'anonymous'), `Allowed: ${toolName}`, {
           tool: toolName,
         });
+        // Estimate credits from config (actual deduction tracked in gate)
+        const price = this.gate.getToolPrice(toolName,
+          (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined);
+        this.metrics.recordToolCall(toolName, true, price);
       }
     }
 
@@ -436,6 +465,7 @@ export class PayGateServer {
         audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
         auditExport: 'GET /audit/export — Export audit log (requires X-Admin-Key)',
         auditStats: 'GET /audit/stats — Audit log statistics (requires X-Admin-Key)',
+        metrics: 'GET /metrics — Prometheus metrics (public)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -1299,6 +1329,13 @@ export class PayGateServer {
   private handlePricing(_req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(this.registry.getFullPricing(), null, 2));
+  }
+
+  // ─── /metrics — Prometheus metrics ──────────────────────────────────────────
+
+  private handleMetrics(_req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
+    res.end(this.metrics.serialize());
   }
 
   // ─── /audit — Query audit log ─────────────────────────────────────────────

@@ -43,6 +43,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment` and `/pricing`
+- **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -274,6 +275,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/oauth/clients` | GET | `X-Admin-Key` | List registered OAuth clients |
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
+| `/metrics` | GET | None | Prometheus metrics (counters, gauges, uptime) |
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
@@ -617,6 +619,49 @@ curl http://localhost:3402/pricing
 
 Both discovery endpoints are **public** (no auth required) so agents can check pricing before obtaining an API key.
 
+### Prometheus Metrics
+
+Monitor your PayGate server with any Prometheus-compatible monitoring system:
+
+```bash
+curl http://localhost:3402/metrics
+```
+
+Returns metrics in standard Prometheus text exposition format:
+
+```
+# HELP paygate_tool_calls_total Total tool calls processed
+# TYPE paygate_tool_calls_total counter
+paygate_tool_calls_total{status="allowed",tool="search"} 42
+paygate_tool_calls_total{status="denied",tool="premium"} 3
+
+# HELP paygate_credits_charged_total Total credits charged
+# TYPE paygate_credits_charged_total counter
+paygate_credits_charged_total{tool="search"} 210
+
+# HELP paygate_active_keys_total Number of active (non-revoked) API keys
+# TYPE paygate_active_keys_total gauge
+paygate_active_keys_total 5
+
+# HELP paygate_uptime_seconds Server uptime in seconds
+# TYPE paygate_uptime_seconds gauge
+paygate_uptime_seconds 3600
+```
+
+**Available metrics:**
+- `paygate_tool_calls_total{tool,status}` — Tool calls (allowed/denied)
+- `paygate_credits_charged_total{tool}` — Credits charged per tool
+- `paygate_denials_total{reason}` — Denials by reason (insufficient_credits, rate_limited, etc.)
+- `paygate_rate_limit_hits_total{tool}` — Rate limit hits per tool
+- `paygate_refunds_total{tool}` — Credit refunds per tool
+- `paygate_http_requests_total{method,path,status}` — HTTP requests
+- `paygate_active_keys_total` — Active API keys (gauge)
+- `paygate_active_sessions_total` — Active MCP sessions (gauge)
+- `paygate_total_credits_available` — Total credits across all keys (gauge)
+- `paygate_uptime_seconds` — Server uptime (gauge)
+
+The `/metrics` endpoint is **public** (no auth required) for easy Prometheus scraping.
+
 ### Config File Mode
 
 Load all settings from a JSON file instead of CLI flags:
@@ -748,6 +793,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] SSE streaming — Full MCP Streamable HTTP transport with session management
 - [x] Audit log — Structured audit trail with retention, query API, CSV/JSON export
 - [x] Registry/discovery — Agent-discoverable pricing (/.well-known/mcp-payment, /pricing, tools/list _pricing)
+- [x] Prometheus metrics — /metrics endpoint with counters, gauges, and uptime
 - [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements
