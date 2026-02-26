@@ -56,6 +56,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, persistent usage audit trail, real-time pub/sub notifications, and admin API sync
 - **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring and clearing
 - **Health Check + Graceful Shutdown** — `GET /health` public endpoint with status, uptime, version, in-flight requests, Redis & webhook stats; `gracefulStop()` drains in-flight requests before teardown
+- **Config Validation + Dry Run** — `paygate-mcp validate --config paygate.json` catches misconfigurations before starting; `--dry-run` discovers tools, prints pricing table, then exits
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -984,6 +985,57 @@ During graceful shutdown, `/health` returns HTTP 503 with `"status": "draining"`
 ```typescript
 // Graceful shutdown with custom timeout (default 30s)
 await server.gracefulStop(15_000);
+```
+
+### Config Validation + Dry Run
+
+Validate a config file before starting the server:
+
+```bash
+# Validate a config file — exits 0 if valid, 1 if errors found
+paygate-mcp validate --config paygate.json
+```
+
+Output on error:
+```
+✗ 2 error(s):
+  ERROR  [port] Invalid port 99999. Must be 0–65535.
+  ERROR  [redisUrl] Invalid redisUrl protocol "http:". Expected "redis://" or "rediss://".
+⚠ 1 warning(s):
+  WARN   [shadowMode] Shadow mode is enabled. Payment will not be enforced.
+```
+
+Dry run mode starts the server, discovers tools from the backend, prints a pricing table, then exits:
+
+```bash
+paygate-mcp wrap --server "node my-server.js" --dry-run
+```
+
+```
+  ── DRY RUN ──────────────────────────────────────
+  Discovered 3 tool(s):
+
+  ────────────────────────────────────────────────────────────
+  Tool                          Credits/Call   Rate Limit
+  ────────────────────────────────────────────────────────────
+  search                        5              30/min
+  generate                      10             10/min
+  list_items                    1              60/min
+  ────────────────────────────────────────────────────────────
+
+  Dry run complete — shutting down.
+```
+
+**Programmatic API:**
+
+```typescript
+import { validateConfig, formatDiagnostics } from 'paygate-mcp';
+
+const diags = validateConfig(myConfig);
+if (diags.some(d => d.level === 'error')) {
+  console.error(formatDiagnostics(diags));
+  process.exit(1);
+}
 ```
 
 ### Horizontal Scaling (Redis)

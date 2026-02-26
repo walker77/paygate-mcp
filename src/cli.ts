@@ -10,6 +10,7 @@
 
 import { PayGateServer } from './server';
 import { PayGateConfig, ToolPricing, ServerBackendConfig } from './types';
+import { validateConfig, formatDiagnostics, ValidatableConfig } from './config-validator';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -51,6 +52,8 @@ function printUsage(): void {
     paygate-mcp wrap --server <command> [options]     # stdio transport
     paygate-mcp wrap --remote-url <url> [options]     # Streamable HTTP transport
     paygate-mcp wrap --config <path> [options]        # load from config file
+    paygate-mcp validate --config <path>              # validate config without starting
+    paygate-mcp version                               # print version
 
   OPTIONS:
     --server <cmd>         MCP server command to wrap via stdio (required unless --remote-url or --config)
@@ -73,6 +76,7 @@ function printUsage(): void {
     --webhook-retries <n>  Max retries for failed webhook deliveries (default: 5)
     --refund-on-failure    Refund credits when downstream tool call fails
     --redis-url <url>      Redis URL for distributed state (e.g. "redis://localhost:6379")
+    --dry-run              Start, discover tools, print pricing table, then exit
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -95,8 +99,11 @@ function printUsage(): void {
     # Shadow mode (observe without enforcing)
     paygate-mcp wrap --server "node server.js" --shadow
 
-    # Load config from file
-    paygate-mcp wrap --config paygate.json
+    # Validate a config file before starting
+    paygate-mcp validate --config paygate.json
+
+    # Dry run — discover tools and print pricing, then exit
+    paygate-mcp wrap --server "node server.js" --dry-run
   `);
 }
 
@@ -166,6 +173,33 @@ async function main(): Promise<void> {
           console.error(`Error loading config file: ${(err as Error).message}`);
           process.exit(1);
         }
+      }
+
+      // ─── Config validation ─────────────────────────────────────────────────
+      // Build a merged config object for validation (config file + CLI flags)
+      const mergedForValidation: ValidatableConfig = {
+        ...fileConfig,
+        ...(flags['server'] ? { serverCommand: flags['server'].split(/\s+/)[0] } : {}),
+        ...(flags['remote-url'] ? { remoteUrl: flags['remote-url'] } : {}),
+        ...(flags['port'] ? { port: parseInt(flags['port'], 10) } : {}),
+        ...(flags['price'] ? { defaultCreditsPerCall: parseInt(flags['price'], 10) } : {}),
+        ...(flags['rate-limit'] ? { globalRateLimitPerMin: parseInt(flags['rate-limit'], 10) } : {}),
+        ...(flags['webhook-url'] ? { webhookUrl: flags['webhook-url'] } : {}),
+        ...(flags['webhook-secret'] ? { webhookSecret: flags['webhook-secret'] } : {}),
+        ...(flags['webhook-retries'] ? { webhookMaxRetries: parseInt(flags['webhook-retries'], 10) } : {}),
+        ...(flags['redis-url'] ? { redisUrl: flags['redis-url'] } : {}),
+        ...(flags['shadow'] ? { shadowMode: true } : {}),
+      };
+      const configDiags = validateConfig(mergedForValidation);
+      const configErrors = configDiags.filter(d => d.level === 'error');
+      if (configErrors.length > 0) {
+        console.error(formatDiagnostics(configDiags));
+        process.exit(1);
+      }
+      // Print warnings (if any) but continue
+      const configWarnings = configDiags.filter(d => d.level === 'warning');
+      if (configWarnings.length > 0) {
+        console.warn(formatDiagnostics(configWarnings.map(w => ({ ...w }))));
       }
 
       // Multi-server mode check
@@ -324,11 +358,83 @@ async function main(): Promise<void> {
         }
 
         console.log(`  Admin key (save this): ${result.adminKey}\n`);
+
+        // ─── Dry run mode ─────────────────────────────────────────────────
+        const isDryRun = flags['dry-run'] === 'true' || 'dry-run' in flags;
+        if (isDryRun) {
+          console.log('  ── DRY RUN ──────────────────────────────────────');
+          console.log('  Discovering tools from backend…\n');
+
+          // Give the backend a moment to fully initialize
+          await new Promise(r => setTimeout(r, 1000));
+
+          // Discover tools by sending a tools/list request through the handler
+          try {
+            const handler = (server as any).handler;
+            const toolsResponse = await handler.handleRequest(
+              { jsonrpc: '2.0', id: 'dry-run-1', method: 'tools/list', params: {} },
+              null // no API key needed for tools/list
+            );
+
+            const tools: Array<{ name: string; description?: string }> =
+              (toolsResponse?.result as any)?.tools || [];
+
+            if (tools.length === 0) {
+              console.log('  No tools discovered.\n');
+            } else {
+              console.log(`  Discovered ${tools.length} tool(s):\n`);
+              console.log('  ' + '─'.repeat(60));
+              console.log('  ' + 'Tool'.padEnd(30) + 'Credits/Call'.padEnd(15) + 'Rate Limit');
+              console.log('  ' + '─'.repeat(60));
+
+              for (const tool of tools) {
+                const tp = toolPricing[tool.name] as any;
+                const credits = tp?.creditsPerCall ?? price;
+                const rl = tp?.rateLimitPerMin ?? rateLimit;
+                const rlDisplay = rl === 0 ? 'unlimited' : `${rl}/min`;
+                console.log('  ' + tool.name.padEnd(30) + String(credits).padEnd(15) + rlDisplay);
+              }
+              console.log('  ' + '─'.repeat(60));
+              console.log(`\n  Default price: ${price} credit(s) per call`);
+              console.log(`  Global rate limit: ${rateLimit === 0 ? 'unlimited' : rateLimit + '/min'}`);
+            }
+          } catch (err) {
+            console.log(`  Could not discover tools: ${(err as Error).message}`);
+          }
+
+          console.log('\n  Dry run complete — shutting down.\n');
+          await server.stop();
+          process.exit(0);
+        }
       } catch (error) {
         console.error('Failed to start server:', error);
         process.exit(1);
       }
       break;
+    }
+
+    case 'validate': {
+      const configPath = flags['config'];
+      if (!configPath) {
+        console.error('Error: --config <path> is required for validate command.\n');
+        printUsage();
+        process.exit(1);
+      }
+
+      let rawConfig: ValidatableConfig;
+      try {
+        const raw = readFileSync(configPath, 'utf-8');
+        rawConfig = JSON.parse(raw);
+      } catch (err) {
+        console.error(`Error loading config file: ${(err as Error).message}`);
+        process.exit(1);
+      }
+
+      const diags = validateConfig(rawConfig);
+      console.log(formatDiagnostics(diags));
+
+      const errors = diags.filter(d => d.level === 'error');
+      process.exit(errors.length > 0 ? 1 : 0);
     }
 
     case 'help':
