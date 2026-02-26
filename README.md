@@ -53,7 +53,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Usage Analytics** — Time-series analytics API with tool breakdown, top consumers, and trend comparison
 - **Alert Webhooks** — Configurable alerts for spending thresholds, low credits, quota warnings, key expiry, rate limit spikes
 - **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
-- **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, and persistent usage audit trail
+- **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, persistent usage audit trail, and real-time pub/sub notifications
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -953,38 +953,45 @@ PayGate uses a write-through cache pattern for maximum performance:
 - **Reads** — Served from in-memory KeyStore (zero latency, no Redis round-trip)
 - **Writes** — Propagated to Redis for cross-process shared state
 - **Credit deduction** — Uses Redis Lua scripts for atomic check-and-deduct (prevents double-spend across processes)
-- **Periodic sync** — Local caches refresh from Redis every 5 seconds to pick up changes from other instances
+- **Periodic sync** — Local caches refresh from Redis every 5 seconds as a safety net
+- **Pub/sub notifications** — Key mutations and credit changes propagate to all instances in real-time via Redis PUBLISH/SUBSCRIBE (sub-millisecond latency)
 
-This means Gate.evaluate() stays synchronous and fast, while credit operations remain atomic across your entire fleet. The server automatically wires Redis hooks into the gate — every usage event and credit deduction flows to Redis without any code changes.
+This means Gate.evaluate() stays synchronous and fast, while credit operations remain atomic across your entire fleet. The server automatically wires Redis hooks into the gate — every usage event and credit deduction flows to Redis without any code changes. Pub/sub ensures other instances see changes near-instantly (no 5-second wait).
 
 **What Gets Synced**
 
 | State | Redis Key Pattern | Sync Method |
 |-------|-------------------|-------------|
-| API keys | `pg:key:<keyId>` (Hash) | Write-through + periodic refresh |
+| API keys | `pg:key:<keyId>` (Hash) | Write-through + pub/sub + periodic refresh |
 | Key registry | `pg:keys` (Set) | Write-through |
-| Credit deduction | `pg:key:<keyId>` | Atomic Lua script |
-| Credit top-up | `pg:key:<keyId>` | Atomic Lua script |
+| Credit deduction | `pg:key:<keyId>` | Atomic Lua script + pub/sub broadcast |
+| Credit top-up | `pg:key:<keyId>` | Atomic Lua script + pub/sub broadcast |
 | Rate limiting | `pg:rate:<key>` (Sorted Set) | Atomic Lua (sliding window) |
 | Usage events | `pg:usage` (List) | Fire-and-forget RPUSH |
+| Cross-instance events | `pg:events` (Pub/Sub) | PUBLISH/SUBSCRIBE with inline data |
 
 **Deployment Pattern**
 
 ```
                     ┌──────────────┐
                     │   Redis 7+   │
-                    └──────┬───────┘
+                    │  ┌────────┐  │
+                    │  │pub/sub │  │
+                    └──┴───┬────┴──┘
                            │
               ┌────────────┼────────────┐
               │            │            │
         ┌─────┴─────┐ ┌───┴───┐ ┌─────┴─────┐
         │ PayGate 1 │ │  PG 2 │ │ PayGate 3 │
+        │ (sub+pub) │ │ (sub) │ │ (sub+pub) │
         └─────┬─────┘ └───┬───┘ └─────┬─────┘
               │            │            │
         ┌─────┴────────────┴────────────┴─────┐
         │          Load Balancer               │
         └──────────────────────────────────────┘
 ```
+
+**Real-Time Pub/Sub** — When one instance creates/revokes a key or changes credits, it publishes an event to the `pg:events` channel. All other instances receive it instantly and update their local KeyStore without waiting for the 5-second sync. Credit changes include inline data (credits, totalSpent, totalCalls) so receivers skip the Redis roundtrip entirely. Each instance has a unique ID for self-message filtering — no echo loops. If pub/sub fails, the periodic sync continues as a fallback.
 
 **Distributed Rate Limiting** — Rate limits are enforced atomically across all instances using Redis sorted sets with Lua scripts. Each rate check does ZREMRANGEBYSCORE + ZCARD + ZADD in a single round-trip, preventing burst bypass across processes. Falls open (allows) if Redis is temporarily unavailable.
 
@@ -1112,12 +1119,14 @@ const result = await client.callTool('search', { query: 'hello' });
 - Redis auth supported via password in URL (redis://:password@host:port)
 - Graceful Redis fallback — local operations continue if Redis disconnects
 - Rate limiter fails open on Redis error (allows request, never blocks on network issues)
+- Pub/sub self-message filtering via unique instance IDs (no echo loops)
+- Pub/sub subscriber uses a dedicated Redis connection (required by Redis protocol)
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
 
 - **No response size limits for HTTP transport** — Large responses from remote servers are forwarded as-is.
-- **Redis sync is eventual for key metadata** — Cross-process key state refreshes every 5 seconds (credits, rate limits, and usage are always atomic).
+- **Redis key metadata has two sync paths** — Pub/sub delivers near-instant updates; periodic sync (5s) serves as a safety net for missed messages. Credits, rate limits, and usage are always atomic.
 - **SSE sessions are per-instance** — Each PayGate instance manages its own SSE connections (HTTP streams can't be serialized to Redis).
 
 ## Roadmap

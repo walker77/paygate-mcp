@@ -44,9 +44,10 @@ export { AlertEngine } from './alerts';
 export type { Alert, AlertRule, AlertType, AlertEngineConfig } from './alerts';
 export { TeamManager } from './teams';
 export type { TeamRecord, TeamUsageSummary } from './teams';
-export { RedisClient, parseRedisUrl } from './redis-client';
-export type { RedisClientOptions } from './redis-client';
+export { RedisClient, parseRedisUrl, RedisSubscriber } from './redis-client';
+export type { RedisClientOptions, MessageHandler } from './redis-client';
 export { RedisSync } from './redis-sync';
+export type { PubSubEvent } from './redis-sync';
 export { PayGateClient, PayGateError } from './client';
 export type { PayGateClientConfig, CreditsNeededInfo, BalanceInfo } from './client';
 

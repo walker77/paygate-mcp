@@ -15,15 +15,36 @@
  * multiple PayGate instances (prevents double-spend race conditions).
  */
 
-import { RedisClient } from './redis-client';
+import { RedisClient, RedisSubscriber, parseRedisUrl } from './redis-client';
+import type { RedisClientOptions } from './redis-client';
 import { KeyStore } from './store';
 import { ApiKeyRecord, QuotaConfig, UsageEvent } from './types';
+import { randomBytes } from 'crypto';
 
 const KEY_PREFIX = 'pg:key:';
 const KEY_SET = 'pg:keys';
 const META_KEY = 'pg:meta';
 const USAGE_LIST = 'pg:usage';
 const RATE_PREFIX = 'pg:rate:';
+const PG_CHANNEL = 'pg:events';
+
+// ─── Pub/Sub Event Types ──────────────────────────────────────────────────────
+
+export interface PubSubEvent {
+  /** Event type */
+  type: 'key_updated' | 'key_revoked' | 'credits_changed' | 'key_created';
+  /** API key affected */
+  key: string;
+  /** Originating instance ID (for self-message filtering) */
+  instanceId: string;
+  /** Inline data for fast path (avoids Redis roundtrip on receiver) */
+  data?: {
+    credits?: number;
+    totalSpent?: number;
+    totalCalls?: number;
+    active?: boolean;
+  };
+}
 
 /** Lua: atomic credit deduction — check + deduct + increment in one round trip */
 const DEDUCT_LUA = `
@@ -84,31 +105,48 @@ export class RedisSync {
   private readonly store: KeyStore;
   private syncInterval: ReturnType<typeof setInterval> | null = null;
   private readonly syncMs: number;
+  /** Unique instance ID for self-message filtering in pub/sub */
+  readonly instanceId: string;
+  /** Dedicated subscriber connection (Redis requires separate connection for SUBSCRIBE) */
+  private subscriber: RedisSubscriber | null = null;
+  /** Redis connection options (needed to create subscriber on same host) */
+  private redisOpts: RedisClientOptions | null = null;
+  /** Whether pub/sub is actively listening */
+  private pubsubActive = false;
+  /** Callback for external consumers of pub/sub events (testing, monitoring) */
+  onPubSubEvent?: (event: PubSubEvent) => void;
 
   constructor(redis: RedisClient, store: KeyStore, syncIntervalMs = 5000) {
     this.redis = redis;
     this.store = store;
     this.syncMs = syncIntervalMs;
+    this.instanceId = randomBytes(8).toString('hex');
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
   /**
-   * Initialize: connect to Redis and load existing state into local KeyStore.
+   * Initialize: connect to Redis, load existing state, and start pub/sub listener.
    */
-  async init(): Promise<void> {
+  async init(subscriberOpts?: RedisClientOptions): Promise<void> {
     await this.redis.connect();
     await this.redis.ping();
     console.log('[paygate:redis] Connected to Redis');
 
     await this.loadFromRedis();
 
-    // Start periodic refresh
+    // Start periodic refresh (fallback for missed pub/sub messages)
     this.syncInterval = setInterval(() => {
       this.loadFromRedis().catch(err => {
         console.error('[paygate:redis] Sync error:', err.message);
       });
     }, this.syncMs);
+
+    // Start pub/sub subscriber if connection options available
+    if (subscriberOpts) {
+      this.redisOpts = subscriberOpts;
+      await this.startPubSub(subscriberOpts);
+    }
   }
 
   async destroy(): Promise<void> {
@@ -116,7 +154,115 @@ export class RedisSync {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
     }
+    // Tear down pub/sub subscriber
+    if (this.subscriber) {
+      await this.subscriber.disconnect();
+      this.subscriber = null;
+      this.pubsubActive = false;
+    }
     await this.redis.disconnect();
+  }
+
+  // ─── Pub/Sub ────────────────────────────────────────────────────────────────
+
+  /**
+   * Start a dedicated subscriber connection for real-time cross-instance events.
+   * Messages from the same instance (matching instanceId) are ignored.
+   */
+  private async startPubSub(opts: RedisClientOptions): Promise<void> {
+    try {
+      this.subscriber = new RedisSubscriber(opts);
+      await this.subscriber.connect();
+      await this.subscriber.subscribe(PG_CHANNEL, (channel, message) => {
+        this.handlePubSubMessage(message);
+      });
+      this.pubsubActive = true;
+      console.log(`[paygate:redis] Pub/sub active (instance: ${this.instanceId.slice(0, 8)})`);
+    } catch (err) {
+      console.error(`[paygate:redis] Pub/sub setup failed: ${(err as Error).message}`);
+      // Non-fatal: periodic sync is still running as fallback
+    }
+  }
+
+  /**
+   * Publish an event to all PayGate instances via Redis pub/sub.
+   * Fire-and-forget — errors are logged but not thrown.
+   */
+  async publishEvent(event: Omit<PubSubEvent, 'instanceId'>): Promise<void> {
+    try {
+      const fullEvent: PubSubEvent = { ...event, instanceId: this.instanceId };
+      await this.redis.publish(PG_CHANNEL, JSON.stringify(fullEvent));
+    } catch (err) {
+      console.error(`[paygate:redis] Publish error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Handle an incoming pub/sub message from another instance.
+   * Self-messages (same instanceId) are ignored. Other events trigger
+   * immediate local KeyStore updates from inline data or a Redis HGETALL.
+   */
+  private handlePubSubMessage(message: string): void {
+    try {
+      const event: PubSubEvent = JSON.parse(message);
+
+      // Ignore messages from ourselves
+      if (event.instanceId === this.instanceId) return;
+
+      // Notify external consumers (for testing/monitoring)
+      this.onPubSubEvent?.(event);
+
+      const localKeys = (this.store as any).keys as Map<string, ApiKeyRecord>;
+
+      switch (event.type) {
+        case 'credits_changed': {
+          // Fast path: update credits from inline data (no Redis roundtrip)
+          const record = localKeys.get(event.key);
+          if (record && event.data) {
+            if (event.data.credits !== undefined) record.credits = event.data.credits;
+            if (event.data.totalSpent !== undefined) record.totalSpent = event.data.totalSpent;
+            if (event.data.totalCalls !== undefined) record.totalCalls = event.data.totalCalls;
+          }
+          break;
+        }
+        case 'key_revoked': {
+          const record = localKeys.get(event.key);
+          if (record) {
+            record.active = false;
+          }
+          break;
+        }
+        case 'key_updated':
+        case 'key_created': {
+          // Full refresh of this key from Redis (needs latest data)
+          this.refreshSingleKey(event.key).catch(() => {});
+          break;
+        }
+      }
+    } catch {
+      // Malformed message — silently ignore
+    }
+  }
+
+  /**
+   * Refresh a single key from Redis into the local KeyStore.
+   */
+  private async refreshSingleKey(apiKey: string): Promise<void> {
+    try {
+      const hash = await this.redis.hgetall(KEY_PREFIX + apiKey);
+      if (!hash || !hash.key) return;
+      const record = this.hashToRecord(hash);
+      if (!record) return;
+      const localKeys = (this.store as any).keys as Map<string, ApiKeyRecord>;
+      localKeys.set(record.key, record);
+    } catch (err) {
+      console.error(`[paygate:redis] Single key refresh error: ${(err as Error).message}`);
+    }
+  }
+
+  /** Whether pub/sub is actively listening */
+  get isPubSubActive(): boolean {
+    return this.pubsubActive;
   }
 
   // ─── Write-through operations ──────────────────────────────────────────────
@@ -130,6 +276,8 @@ export class RedisSync {
       const redisKey = KEY_PREFIX + record.key;
       await this.redis.hset(redisKey, ...this.recordToHash(record));
       await this.redis.command('SADD', KEY_SET, record.key);
+      // Notify other instances
+      await this.publishEvent({ type: 'key_updated', key: record.key });
     } catch (err) {
       console.error(`[paygate:redis] Save key error: ${(err as Error).message}`);
     }
@@ -176,6 +324,16 @@ export class RedisSync {
           record.totalSpent += amount;
           record.totalCalls++;
           record.lastUsedAt = new Date().toISOString();
+          // Notify other instances with inline data (no roundtrip needed on receivers)
+          this.publishEvent({
+            type: 'credits_changed',
+            key: apiKey,
+            data: {
+              credits: record.credits,
+              totalSpent: record.totalSpent,
+              totalCalls: record.totalCalls,
+            },
+          }).catch(() => {});
         }
         return true;
       }
@@ -203,6 +361,12 @@ export class RedisSync {
         const record = (this.store as any).keys.get(apiKey) as ApiKeyRecord | undefined;
         if (record) {
           record.credits += amount;
+          // Notify other instances
+          this.publishEvent({
+            type: 'credits_changed',
+            key: apiKey,
+            data: { credits: record.credits },
+          }).catch(() => {});
         }
         return true;
       }
@@ -220,6 +384,8 @@ export class RedisSync {
     const localResult = this.store.revokeKey(apiKey);
     try {
       await this.redis.hset(KEY_PREFIX + apiKey, 'active', '0');
+      // Notify other instances
+      await this.publishEvent({ type: 'key_revoked', key: apiKey });
     } catch (err) {
       console.error(`[paygate:redis] Revoke error: ${(err as Error).message}`);
     }

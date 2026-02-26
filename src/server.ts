@@ -186,6 +186,8 @@ export class PayGateServer {
       const redisOpts = parseRedisUrl(redisUrl);
       const redisClient = new RedisClient(redisOpts);
       const sync = new RedisSync(redisClient, this.gate.store);
+      // Store opts for pub/sub subscriber connection
+      (sync as any)._subscriberOpts = redisOpts;
       (this as any).redisSync = sync;
 
       // Wire Redis hooks: fire-and-forget async operations on every gate event
@@ -199,9 +201,10 @@ export class PayGateServer {
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
-    // Initialize Redis sync before starting (loads state from Redis)
+    // Initialize Redis sync before starting (loads state from Redis + starts pub/sub)
     if (this.redisSync) {
-      await this.redisSync.init();
+      const subOpts = (this.redisSync as any)._subscriberOpts;
+      await this.redisSync.init(subOpts);
       console.log('[paygate] Redis distributed state enabled');
     }
 

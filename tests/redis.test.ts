@@ -8,8 +8,8 @@
  * 4. Server constructor with redisUrl parameter
  */
 
-import { RedisClient, parseRedisUrl, RedisClientOptions } from '../src/redis-client';
-import { RedisSync } from '../src/redis-sync';
+import { RedisClient, parseRedisUrl, RedisClientOptions, RedisSubscriber } from '../src/redis-client';
+import { RedisSync, PubSubEvent } from '../src/redis-sync';
 import { KeyStore } from '../src/store';
 import { PayGateServer } from '../src/server';
 import { Socket } from 'net';
@@ -613,5 +613,347 @@ describe('CLI --redis-url', () => {
     expect(parsed.host).toBe('redis.internal');
     expect(parsed.port).toBe(6379);
     expect(parsed.db).toBe(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Redis Pub/Sub Tests — v2.3.0
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── RedisSubscriber unit tests ──────────────────────────────────────────────
+
+describe('RedisSubscriber', () => {
+  it('should construct with options', () => {
+    const sub = new RedisSubscriber({
+      host: 'localhost',
+      port: 6379,
+    });
+    expect(sub).toBeDefined();
+    expect(sub.isConnected).toBe(false);
+    expect(sub.isSubscribed).toBe(false);
+  });
+
+  it('should handle disconnect when not connected', async () => {
+    const sub = new RedisSubscriber({ host: 'localhost', port: 6379 });
+    await sub.disconnect();
+    expect(sub.isConnected).toBe(false);
+    expect(sub.isSubscribed).toBe(false);
+  });
+
+  it('should fail to connect to non-existent server', async () => {
+    const sub = new RedisSubscriber({
+      host: '127.0.0.1',
+      port: 59998,
+      connectTimeout: 500,
+    });
+    await expect(sub.connect()).rejects.toThrow();
+  });
+
+  it('should support custom timeouts', () => {
+    const sub = new RedisSubscriber({
+      host: 'localhost',
+      port: 6379,
+      connectTimeout: 1000,
+      commandTimeout: 2000,
+    });
+    expect(sub).toBeDefined();
+  });
+});
+
+// ─── RedisClient publish() tests ─────────────────────────────────────────────
+
+describe('RedisClient publish', () => {
+  it('should have publish method', () => {
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    expect(typeof client.publish).toBe('function');
+  });
+
+  it('should have list command methods', () => {
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    expect(typeof client.rpush).toBe('function');
+    expect(typeof client.lrange).toBe('function');
+    expect(typeof client.llen).toBe('function');
+    expect(typeof client.ltrim).toBe('function');
+  });
+});
+
+// ─── RedisSync pub/sub integration tests ─────────────────────────────────────
+
+describe('RedisSync pub/sub', () => {
+  let store: KeyStore;
+  let client: RedisClient;
+  let sync: RedisSync;
+
+  beforeEach(() => {
+    store = new KeyStore();
+    client = new RedisClient({ host: 'localhost', port: 6379 });
+    sync = new RedisSync(client, store);
+  });
+
+  it('should generate unique instanceId', () => {
+    const sync2 = new RedisSync(client, store);
+    expect(sync.instanceId).toBeDefined();
+    expect(sync.instanceId.length).toBe(16); // 8 bytes = 16 hex chars
+    expect(sync.instanceId).not.toBe(sync2.instanceId);
+  });
+
+  it('should have publishEvent method', () => {
+    expect(typeof sync.publishEvent).toBe('function');
+  });
+
+  it('should have isPubSubActive getter', () => {
+    expect(sync.isPubSubActive).toBe(false); // Not initialized yet
+  });
+
+  it('should have onPubSubEvent callback property', () => {
+    expect(sync.onPubSubEvent).toBeUndefined();
+    const events: PubSubEvent[] = [];
+    sync.onPubSubEvent = (event) => events.push(event);
+    expect(typeof sync.onPubSubEvent).toBe('function');
+  });
+
+  it('publishEvent should handle errors gracefully when not connected', async () => {
+    // Should not throw — errors are caught internally
+    await expect(sync.publishEvent({
+      type: 'key_updated',
+      key: 'pg_test123',
+    })).resolves.not.toThrow();
+  });
+
+  it('publishEvent should include instanceId', async () => {
+    // Mock the publish method on the client to capture the message
+    let captured: string | null = null;
+    (client as any).publish = async (_channel: string, message: string) => {
+      captured = message;
+      return 0;
+    };
+    // Force connected state for publish
+    (client as any).connected = true;
+
+    await sync.publishEvent({ type: 'key_updated', key: 'pg_test123' });
+
+    expect(captured).not.toBeNull();
+    const parsed = JSON.parse(captured!);
+    expect(parsed.instanceId).toBe(sync.instanceId);
+    expect(parsed.type).toBe('key_updated');
+    expect(parsed.key).toBe('pg_test123');
+  });
+
+  it('should ignore self-messages in handlePubSubMessage', () => {
+    const store2 = new KeyStore();
+    const record = store2.createKey('test-key', 100);
+    // Create sync with a known store
+    const sync2 = new RedisSync(client, store2);
+
+    const receivedEvents: PubSubEvent[] = [];
+    sync2.onPubSubEvent = (event) => receivedEvents.push(event);
+
+    // Simulate receiving a message from ourselves
+    const selfMessage: PubSubEvent = {
+      type: 'key_revoked',
+      key: record.key,
+      instanceId: sync2.instanceId, // same instance!
+    };
+    (sync2 as any).handlePubSubMessage(JSON.stringify(selfMessage));
+
+    // Should be ignored — no callback fired
+    expect(receivedEvents.length).toBe(0);
+    // And key should NOT be revoked locally
+    const retrieved = store2.getKey(record.key);
+    expect(retrieved?.active).toBe(true);
+  });
+
+  it('should process credits_changed from other instances', () => {
+    const record = store.createKey('test-key', 500);
+
+    const receivedEvents: PubSubEvent[] = [];
+    sync.onPubSubEvent = (event) => receivedEvents.push(event);
+
+    // Simulate receiving a credits_changed message from another instance
+    const otherMessage: PubSubEvent = {
+      type: 'credits_changed',
+      key: record.key,
+      instanceId: 'other_instance_id_1234',
+      data: {
+        credits: 450,
+        totalSpent: 50,
+        totalCalls: 5,
+      },
+    };
+    (sync as any).handlePubSubMessage(JSON.stringify(otherMessage));
+
+    // Callback should fire
+    expect(receivedEvents.length).toBe(1);
+    expect(receivedEvents[0].type).toBe('credits_changed');
+
+    // Local store should be updated with inline data
+    const updated = store.getKey(record.key);
+    expect(updated?.credits).toBe(450);
+    expect(updated?.totalSpent).toBe(50);
+    expect(updated?.totalCalls).toBe(5);
+  });
+
+  it('should process key_revoked from other instances', () => {
+    const record = store.createKey('revoke-test', 200);
+    expect(store.getKey(record.key)?.active).toBe(true);
+
+    // Simulate key_revoked from another instance
+    const revokeMsg: PubSubEvent = {
+      type: 'key_revoked',
+      key: record.key,
+      instanceId: 'other_instance_9999',
+    };
+    (sync as any).handlePubSubMessage(JSON.stringify(revokeMsg));
+
+    // Local key should be marked inactive — access internal map directly
+    // (store.getKey returns null for inactive keys)
+    const localKeys = (store as any).keys as Map<string, any>;
+    const found = localKeys.get(record.key);
+    expect(found?.active).toBe(false);
+  });
+
+  it('should handle malformed pub/sub messages gracefully', () => {
+    // Should not throw on invalid JSON
+    expect(() => {
+      (sync as any).handlePubSubMessage('not valid json {{{');
+    }).not.toThrow();
+
+    // Should not throw on valid JSON but wrong shape
+    expect(() => {
+      (sync as any).handlePubSubMessage(JSON.stringify({ foo: 'bar' }));
+    }).not.toThrow();
+
+    // Should not throw on empty string
+    expect(() => {
+      (sync as any).handlePubSubMessage('');
+    }).not.toThrow();
+  });
+
+  it('should handle credits_changed for non-existent key', () => {
+    // Receiving update for a key we don't have locally — should not throw
+    const msg: PubSubEvent = {
+      type: 'credits_changed',
+      key: 'pg_nonexistent_key',
+      instanceId: 'other_instance',
+      data: { credits: 100 },
+    };
+    expect(() => {
+      (sync as any).handlePubSubMessage(JSON.stringify(msg));
+    }).not.toThrow();
+  });
+
+  it('should handle key_updated by triggering refreshSingleKey', () => {
+    // key_updated triggers an async refresh from Redis
+    // We just verify it doesn't throw (actual refresh would need Redis connection)
+    const msg: PubSubEvent = {
+      type: 'key_updated',
+      key: 'pg_some_key',
+      instanceId: 'other_instance',
+    };
+    expect(() => {
+      (sync as any).handlePubSubMessage(JSON.stringify(msg));
+    }).not.toThrow();
+  });
+
+  it('should handle key_created by triggering refreshSingleKey', () => {
+    const msg: PubSubEvent = {
+      type: 'key_created',
+      key: 'pg_new_key',
+      instanceId: 'other_instance',
+    };
+    expect(() => {
+      (sync as any).handlePubSubMessage(JSON.stringify(msg));
+    }).not.toThrow();
+  });
+});
+
+// ─── PubSubEvent type tests ──────────────────────────────────────────────────
+
+describe('PubSubEvent types', () => {
+  it('should support all event types', () => {
+    const types: PubSubEvent['type'][] = ['key_updated', 'key_revoked', 'credits_changed', 'key_created'];
+    for (const type of types) {
+      const event: PubSubEvent = {
+        type,
+        key: 'pg_test',
+        instanceId: 'test_instance',
+      };
+      expect(event.type).toBe(type);
+    }
+  });
+
+  it('should support optional inline data', () => {
+    const event: PubSubEvent = {
+      type: 'credits_changed',
+      key: 'pg_test',
+      instanceId: 'test_instance',
+      data: {
+        credits: 100,
+        totalSpent: 50,
+        totalCalls: 10,
+        active: true,
+      },
+    };
+    expect(event.data?.credits).toBe(100);
+    expect(event.data?.active).toBe(true);
+  });
+
+  it('should work without inline data', () => {
+    const event: PubSubEvent = {
+      type: 'key_updated',
+      key: 'pg_test',
+      instanceId: 'test_instance',
+    };
+    expect(event.data).toBeUndefined();
+  });
+});
+
+// ─── Server pub/sub wiring tests ─────────────────────────────────────────────
+
+describe('Server Redis pub/sub', () => {
+  it('should store subscriber opts when redisUrl is provided', () => {
+    const server = new PayGateServer(
+      {
+        serverCommand: 'echo',
+        serverArgs: ['test'],
+        port: 0,
+        defaultCreditsPerCall: 1,
+        globalRateLimitPerMin: 60,
+      },
+      'admin_test123',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'redis://localhost:6379'
+    );
+
+    expect(server.redisSync).not.toBeNull();
+    const subOpts = (server.redisSync as any)._subscriberOpts;
+    expect(subOpts).toBeDefined();
+    expect(subOpts.host).toBe('localhost');
+    expect(subOpts.port).toBe(6379);
+  });
+
+  it('should have unique instanceId per RedisSync', () => {
+    const server1 = new PayGateServer(
+      { serverCommand: 'echo', serverArgs: ['test'], port: 0, defaultCreditsPerCall: 1, globalRateLimitPerMin: 60 },
+      'admin_1', undefined, undefined, undefined, undefined, 'redis://localhost:6379'
+    );
+    const server2 = new PayGateServer(
+      { serverCommand: 'echo', serverArgs: ['test'], port: 0, defaultCreditsPerCall: 1, globalRateLimitPerMin: 60 },
+      'admin_2', undefined, undefined, undefined, undefined, 'redis://localhost:6379'
+    );
+
+    expect(server1.redisSync!.instanceId).not.toBe(server2.redisSync!.instanceId);
+  });
+
+  it('redisSync should not be pubsub active before start()', () => {
+    const server = new PayGateServer(
+      { serverCommand: 'echo', serverArgs: ['test'], port: 0, defaultCreditsPerCall: 1, globalRateLimitPerMin: 60 },
+      'admin_test', undefined, undefined, undefined, undefined, 'redis://localhost:6379'
+    );
+
+    expect(server.redisSync!.isPubSubActive).toBe(false);
   });
 });

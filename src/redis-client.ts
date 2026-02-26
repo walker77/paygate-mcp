@@ -159,6 +159,33 @@ export class RedisClient {
     return (await this.command('ZCARD', key)) as number;
   }
 
+  // ─── Pub/Sub (publish only — subscribe requires RedisSubscriber) ──────────
+
+  /**
+   * Publish a message to a Redis channel. Returns the number of receivers.
+   */
+  async publish(channel: string, message: string): Promise<number> {
+    return (await this.command('PUBLISH', channel, message)) as number;
+  }
+
+  // ─── List commands ────────────────────────────────────────────────────────
+
+  async rpush(key: string, ...values: string[]): Promise<number> {
+    return (await this.command('RPUSH', key, ...values)) as number;
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    return (await this.command('LRANGE', key, String(start), String(stop))) as string[];
+  }
+
+  async llen(key: string): Promise<number> {
+    return (await this.command('LLEN', key)) as number;
+  }
+
+  async ltrim(key: string, start: number, stop: number): Promise<string> {
+    return (await this.command('LTRIM', key, String(start), String(stop))) as string;
+  }
+
   // ─── Lua scripting (for atomic operations) ─────────────────────────────────
 
   /**
@@ -382,6 +409,246 @@ export class RedisClient {
 
       default:
         return [new Error(`Unknown RESP type: ${type}`), consumed];
+    }
+  }
+
+  private findCRLF(buf: Buffer, start: number): number {
+    for (let i = start; i < buf.length - 1; i++) {
+      if (buf[i] === 0x0d && buf[i + 1] === 0x0a) return i;
+    }
+    return -1;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RedisSubscriber — Dedicated subscription connection for Redis pub/sub.
+//
+// Redis requires a separate connection for SUBSCRIBE mode because a subscribed
+// client can only issue SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING.
+// Messages arrive asynchronously as RESP arrays: ["message", channel, data].
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type MessageHandler = (channel: string, message: string) => void;
+
+export class RedisSubscriber {
+  private socket: Socket | null = null;
+  private connected = false;
+  private buffer = Buffer.alloc(0);
+  private readonly opts: Required<RedisClientOptions>;
+  private handler: MessageHandler | null = null;
+  private closed = false;
+  private subscribed = false;
+
+  constructor(opts: RedisClientOptions) {
+    this.opts = {
+      host: opts.host,
+      port: opts.port,
+      password: opts.password || '',
+      db: opts.db || 0,
+      connectTimeout: opts.connectTimeout || 5000,
+      commandTimeout: opts.commandTimeout || 10000,
+    };
+  }
+
+  /**
+   * Connect to Redis and optionally authenticate + select DB.
+   */
+  async connect(): Promise<void> {
+    if (this.connected) return;
+
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Redis subscriber connect timeout (${this.opts.connectTimeout}ms)`));
+      }, this.opts.connectTimeout);
+
+      this.socket = new Socket();
+      this.socket.setNoDelay(true);
+
+      this.socket.on('data', (chunk: Buffer) => {
+        this.buffer = Buffer.concat([this.buffer, chunk]);
+        this.processMessages();
+      });
+
+      this.socket.on('error', (err) => {
+        clearTimeout(timer);
+        if (!this.connected) reject(err);
+      });
+
+      this.socket.on('close', () => {
+        this.connected = false;
+        this.subscribed = false;
+      });
+
+      this.socket.connect(this.opts.port, this.opts.host, async () => {
+        clearTimeout(timer);
+        this.connected = true;
+
+        try {
+          // AUTH if password provided
+          if (this.opts.password) {
+            await this.sendAndWait('AUTH', this.opts.password);
+          }
+          // SELECT db if non-zero
+          if (this.opts.db > 0) {
+            await this.sendAndWait('SELECT', String(this.opts.db));
+          }
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  /**
+   * Subscribe to a channel and register a message handler.
+   * All incoming messages on any subscribed channel will be routed to the handler.
+   */
+  async subscribe(channel: string, handler: MessageHandler): Promise<void> {
+    this.handler = handler;
+    this.socket!.write(this.encodeResp(['SUBSCRIBE', channel]));
+    this.subscribed = true;
+  }
+
+  /**
+   * Disconnect the subscriber.
+   */
+  async disconnect(): Promise<void> {
+    this.closed = true;
+    this.handler = null;
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = null;
+    }
+    this.connected = false;
+    this.subscribed = false;
+  }
+
+  get isConnected(): boolean {
+    return this.connected;
+  }
+
+  get isSubscribed(): boolean {
+    return this.subscribed;
+  }
+
+  // ─── Internal helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Send a command and wait for one RESP reply (used for AUTH/SELECT before SUBSCRIBE mode).
+   */
+  private sendAndWait(...args: string[]): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Subscriber command timeout')), this.opts.commandTimeout);
+
+      // Temporarily override data handler to capture one reply
+      const origHandler = this.socket!.listeners('data');
+      this.socket!.removeAllListeners('data');
+
+      let buf = Buffer.alloc(0);
+      const onData = (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk]);
+        const result = this.parseOneReply(buf, 0);
+        if (result !== null) {
+          clearTimeout(timer);
+          this.socket!.removeListener('data', onData);
+          // Re-attach original data handler
+          this.socket!.on('data', (c: Buffer) => {
+            this.buffer = Buffer.concat([this.buffer, c]);
+            this.processMessages();
+          });
+          const [reply] = result;
+          if (reply instanceof Error) {
+            reject(reply);
+          } else {
+            resolve();
+          }
+        }
+      };
+      this.socket!.on('data', onData);
+      this.socket!.write(this.encodeResp(args));
+    });
+  }
+
+  /**
+   * Process incoming RESP messages from the subscription connection.
+   * In subscription mode, Redis sends arrays like: ["message", channel, data]
+   * or ["subscribe", channel, count] (subscription confirmations).
+   */
+  private processMessages(): void {
+    while (this.buffer.length > 0) {
+      const result = this.parseOneReply(this.buffer, 0);
+      if (result === null) break; // Incomplete data
+
+      const [reply, consumed] = result;
+      this.buffer = this.buffer.subarray(consumed);
+
+      if (reply instanceof Error) continue;
+
+      // Route "message" events to handler
+      if (Array.isArray(reply) && reply.length === 3 && reply[0] === 'message') {
+        const channel = reply[1] as string;
+        const data = reply[2] as string;
+        if (this.handler && !this.closed) {
+          try {
+            this.handler(channel, data);
+          } catch {
+            // Handler errors are silently ignored
+          }
+        }
+      }
+      // "subscribe" confirmations are silently consumed
+    }
+  }
+
+  private encodeResp(args: string[]): string {
+    let resp = `*${args.length}\r\n`;
+    for (const arg of args) {
+      const buf = Buffer.from(arg);
+      resp += `$${buf.length}\r\n${arg}\r\n`;
+    }
+    return resp;
+  }
+
+  /**
+   * Parse a single RESP reply. Returns [value, bytes_consumed] or null if incomplete.
+   */
+  private parseOneReply(buf: Buffer, offset: number): [RedisReply | Error, number] | null {
+    if (offset >= buf.length) return null;
+    const type = String.fromCharCode(buf[offset]);
+    const lineEnd = this.findCRLF(buf, offset);
+    if (lineEnd === -1) return null;
+
+    const line = buf.subarray(offset + 1, lineEnd).toString();
+    const consumed = lineEnd + 2;
+
+    switch (type) {
+      case '+': return [line, consumed];
+      case '-': return [new Error(line), consumed];
+      case ':': return [parseInt(line, 10), consumed];
+      case '$': {
+        const len = parseInt(line, 10);
+        if (len === -1) return [null, consumed];
+        if (consumed + len + 2 > buf.length) return null;
+        const data = buf.subarray(consumed, consumed + len).toString();
+        return [data, consumed + len + 2];
+      }
+      case '*': {
+        const count = parseInt(line, 10);
+        if (count === -1) return [null, consumed];
+        const items: RedisReply[] = [];
+        let pos = consumed;
+        for (let i = 0; i < count; i++) {
+          const item = this.parseOneReply(buf, pos);
+          if (item === null) return null;
+          const [val, itemConsumed] = item;
+          if (val instanceof Error) return [val, itemConsumed];
+          items.push(val);
+          pos = itemConsumed;
+        }
+        return [items, pos];
+      }
+      default: return [new Error(`Unknown RESP type: ${type}`), consumed];
     }
   }
 
