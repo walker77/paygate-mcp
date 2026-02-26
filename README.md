@@ -90,6 +90,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Statistics** — `GET /keys/stats` returns aggregate statistics across all keys — total/active/suspended/expired/revoked counts, credit aggregates (allocated/spent/remaining), total calls, namespace and group breakdowns, optional `?namespace=` filter
 - **Rate Limit Status** — `GET /keys/rate-limit-status?key=...` returns the current rate limit window state for any key — global calls used/remaining/reset time, per-tool rate limits with individual usage, read-only (doesn't consume a call)
 - **Quota Status** — `GET /keys/quota-status?key=...` returns daily/monthly quota usage for any key — calls and credits used/remaining/limits, reset periods, quota source (per-key vs global vs none)
+- **Credit History** — `GET /keys/credit-history?key=...` returns per-key credit mutation log — tracks initial allocation, topups, transfers (in/out), auto-topups, with type/limit/since filters, balance-before/after on every entry, newest-first ordering, capped at 100 entries per key
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1716,6 +1717,46 @@ curl "http://localhost:3402/keys/quota-status?key=pg_..." -H "X-Admin-Key: YOUR_
 ```
 
 `quotaSource` indicates where the quota is configured: `"per-key"` (key-level override), `"global"` (server-wide config), or `"none"` (no quota). When a limit is `0` (unlimited), `remaining` is `null`.
+
+### Credit History
+
+`GET /keys/credit-history?key=...` returns the credit mutation log for a key:
+
+```bash
+curl "http://localhost:3402/keys/credit-history?key=pg_..." -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by type, limit, or since timestamp
+curl "http://localhost:3402/keys/credit-history?key=pg_...&type=topup&limit=10" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_abc123...",
+  "name": "my-key",
+  "currentBalance": 700,
+  "totalEntries": 3,
+  "entries": [
+    {
+      "timestamp": "2026-02-26T12:30:00.000Z",
+      "type": "topup",
+      "amount": 200,
+      "balanceBefore": 500,
+      "balanceAfter": 700
+    },
+    {
+      "timestamp": "2026-02-26T12:00:00.000Z",
+      "type": "initial",
+      "amount": 500,
+      "balanceBefore": 0,
+      "balanceAfter": 500
+    }
+  ]
+}
+```
+
+Entry types: `initial`, `topup`, `transfer_in`, `transfer_out`, `auto_topup`, `deduction`, `refund`, `bulk_topup`. Entries are newest-first, capped at 100 per key. Transfers include a `memo` field when provided.
 
 ### IP Allowlisting
 

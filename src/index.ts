@@ -33,6 +33,8 @@ export type { OAuthClientRecord, OAuthTokenRecord, OAuthServerMetadata, OAuthCon
 export { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
 export { AuditLogger, maskKeyForAudit } from './audit';
 export type { AuditEvent, AuditEventType, AuditLogConfig, AuditQuery, AuditQueryResult } from './audit';
+export { CreditLedger } from './credit-ledger';
+export type { CreditEntry } from './credit-ledger';
 export { ToolRegistry } from './registry';
 export { MetricsCollector } from './metrics';
 export type { MetricLabels } from './metrics';

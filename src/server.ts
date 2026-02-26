@@ -35,6 +35,7 @@ import { StripeWebhookHandler } from './stripe';
 import { OAuthProvider } from './oauth';
 import { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
 import { AuditLogger, maskKeyForAudit } from './audit';
+import { CreditLedger } from './credit-ledger';
 import { ToolRegistry } from './registry';
 import { MetricsCollector } from './metrics';
 import { getDashboardHtml } from './dashboard';
@@ -191,6 +192,8 @@ export class PayGateServer {
   readonly expiryScanner: ExpiryScanner;
   /** Key template manager for reusable key presets */
   readonly templates: KeyTemplateManager;
+  /** Per-key credit mutation history */
+  readonly creditLedger: CreditLedger;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -307,6 +310,9 @@ export class PayGateServer {
     // Wire auto-topup hook: audit log + webhook + Redis sync
     this.gate.onAutoTopup = (apiKey: string, amount: number, newBalance: number) => {
       const keyMasked = maskKeyForAudit(apiKey);
+      this.creditLedger.record(apiKey, {
+        type: 'auto_topup', amount, balanceBefore: newBalance - amount, balanceAfter: newBalance,
+      });
       this.audit.log('key.auto_topped_up', 'system', `Auto-topup: added ${amount} credits`, {
         keyMasked, creditsAdded: amount, newBalance,
       });
@@ -358,6 +364,7 @@ export class PayGateServer {
     // Key template manager for reusable key creation presets
     const templatesStatePath = statePath ? statePath.replace(/\.json$/, '-templates.json') : undefined;
     this.templates = new KeyTemplateManager(templatesStatePath);
+    this.creditLedger = new CreditLedger();
     this.metrics.registerGauge('paygate_templates_total', 'Number of key templates', () => {
       return this.templates.count;
     });
@@ -555,6 +562,8 @@ export class PayGateServer {
         return this.handleRateLimitStatus(req, res);
       case '/keys/quota-status':
         return this.handleQuotaStatus(req, res);
+      case '/keys/credit-history':
+        return this.handleCreditHistory(req, res);
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1129,6 +1138,7 @@ export class PayGateServer {
         keyStats: 'GET /keys/stats — Aggregate key statistics (requires X-Admin-Key)',
         rateLimitStatus: 'GET /keys/rate-limit-status?key=... — Current rate limit window state (requires X-Admin-Key)',
         quotaStatus: 'GET /keys/quota-status?key=... — Current daily/monthly quota usage (requires X-Admin-Key)',
+        creditHistory: 'GET /keys/credit-history?key=... — Per-key credit mutation history (requires X-Admin-Key)',
         keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
         deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
@@ -1468,6 +1478,10 @@ export class PayGateServer {
       this.redisSync.publishEvent({ type: 'key_created', key: record.key }).catch(() => {});
     }
 
+    this.creditLedger.record(record.key, {
+      type: 'initial', amount: credits, balanceBefore: 0, balanceAfter: credits,
+    });
+
     this.audit.log('key.created', 'admin', `Key created: ${name}`, {
       keyMasked: maskKeyForAudit(record.key),
       name,
@@ -1574,6 +1588,8 @@ export class PayGateServer {
     const resolved = this.gate.store.resolveKey(params.key);
     const actualKey = resolved ? resolved.key : params.key;
 
+    const balanceBefore = this.gate.store.getKey(actualKey)?.credits ?? 0;
+
     // Use Redis atomic topup when available, fall back to local store
     let success: boolean;
     if (this.redisSync) {
@@ -1588,6 +1604,10 @@ export class PayGateServer {
     }
 
     const record = this.gate.store.getKey(actualKey);
+
+    this.creditLedger.record(actualKey, {
+      type: 'topup', amount: credits, balanceBefore, balanceAfter: record?.credits ?? balanceBefore + credits,
+    });
 
     this.audit.log('key.topup', 'admin', `Added ${credits} credits`, {
       keyMasked: maskKeyForAudit(params.key),
@@ -1664,6 +1684,9 @@ export class PayGateServer {
       return;
     }
 
+    const sourceBalanceBefore = sourceRecord.credits;
+    const destBalanceBefore = destRecord.credits;
+
     // Perform transfer atomically (deduct from source, add to destination)
     if (this.redisSync) {
       // Redis atomic transfer: deduct first, then add
@@ -1684,6 +1707,13 @@ export class PayGateServer {
     const fromBalance = sourceRecord.credits;
     const toBalance = destRecord.credits;
     const memo = params.memo || '';
+
+    this.creditLedger.record(sourceRecord.key, {
+      type: 'transfer_out', amount: credits, balanceBefore: sourceBalanceBefore, balanceAfter: fromBalance, memo: memo || undefined,
+    });
+    this.creditLedger.record(destRecord.key, {
+      type: 'transfer_in', amount: credits, balanceBefore: destBalanceBefore, balanceAfter: toBalance, memo: memo || undefined,
+    });
 
     this.audit.log('key.credits_transferred', 'admin', `Transferred ${credits} credits`, {
       fromKeyMasked: maskKeyForAudit(sourceRecord.key),
@@ -2951,6 +2981,52 @@ export class PayGateServer {
       quotaSource: keyRecord.quota ? 'per-key' : (this.config.globalQuota ? 'global' : 'none'),
       daily,
       monthly,
+    }));
+  }
+
+  // ─── /keys/credit-history — Per-key credit mutation history ──────────────────
+
+  private handleCreditHistory(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const key = params.get('key');
+
+    if (!key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+
+    // Resolve alias
+    const resolved = this.gate.store.resolveKey(key);
+    const actualKey = resolved ? resolved.key : key;
+    const keyRecord = this.gate.store.getKey(actualKey);
+    if (!keyRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const type = params.get('type') || undefined;
+    const limit = Math.min(Math.max(1, Number(params.get('limit')) || 50), 200);
+    const since = params.get('since') || undefined;
+
+    const entries = this.creditLedger.getHistory(actualKey, { type, limit, since });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: actualKey.slice(0, 10) + '...',
+      name: keyRecord.name,
+      currentBalance: keyRecord.credits,
+      totalEntries: this.creditLedger.count(actualKey),
+      entries,
     }));
   }
 
