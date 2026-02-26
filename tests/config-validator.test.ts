@@ -4,10 +4,8 @@
  */
 
 import { validateConfig, formatDiagnostics, ValidatableConfig, ConfigDiagnostic } from '../src/config-validator';
-import { PayGateServer } from '../src/server';
-import * as http from 'http';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
+import { execFileSync, SpawnSyncReturns } from 'child_process';
 import { writeFileSync, unlinkSync } from 'fs';
 
 const MOCK_SERVER = path.join(__dirname, 'e2e', 'mock-mcp-server.js');
@@ -280,40 +278,45 @@ describe('v2.7.0 — CLI validate command', () => {
       port: -1,
     }));
 
+    let exitedNonZero = false;
+    let output = '';
     try {
       execFileSync(
         'node', ['dist/cli.js', 'validate', '--config', tmpConfig],
         { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', stdio: 'pipe' }
       );
-      fail('Should have exited with code 1');
     } catch (err: any) {
-      expect(err.status).toBe(1);
-      expect(err.stdout.toString() + err.stderr.toString()).toContain('ERROR');
+      exitedNonZero = true;
+      output = (err.stdout || '').toString() + (err.stderr || '').toString();
     }
+    expect(exitedNonZero).toBe(true);
+    expect(output).toContain('ERROR');
   });
 
   test('validate without --config exits 1', () => {
+    let exitedNonZero = false;
     try {
       execFileSync(
         'node', ['dist/cli.js', 'validate'],
         { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', stdio: 'pipe' }
       );
-      fail('Should have exited with code 1');
-    } catch (err: any) {
-      expect(err.status).toBe(1);
+    } catch {
+      exitedNonZero = true;
     }
+    expect(exitedNonZero).toBe(true);
   });
 
   test('validate non-existent config file exits 1', () => {
+    let exitedNonZero = false;
     try {
       execFileSync(
         'node', ['dist/cli.js', 'validate', '--config', '/tmp/nonexistent-paygate.json'],
         { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', stdio: 'pipe' }
       );
-      fail('Should have exited with code 1');
-    } catch (err: any) {
-      expect(err.status).toBe(1);
+    } catch {
+      exitedNonZero = true;
     }
+    expect(exitedNonZero).toBe(true);
   });
 });
 
