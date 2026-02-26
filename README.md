@@ -40,6 +40,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Usage Quotas** — Daily/monthly call and credit limits per key (with UTC auto-reset)
 - **Dynamic Pricing** — Charge extra credits based on input size (`creditsPerKbInput`)
 - **OAuth 2.1** — Full authorization server with PKCE, client registration, Bearer tokens
+- **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -247,7 +248,9 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/mcp` | POST | `X-API-Key` or `Bearer` | JSON-RPC 2.0 proxy to wrapped MCP server |
+| `/mcp` | POST | `X-API-Key` or `Bearer` | JSON-RPC 2.0 proxy (returns JSON or SSE) |
+| `/mcp` | GET | `X-API-Key` or `Bearer` | SSE notification stream (Streamable HTTP) |
+| `/mcp` | DELETE | `Mcp-Session-Id` | Terminate an MCP session |
 | `/balance` | GET | `X-API-Key` | Client self-service — check credits, quota, ACL, expiry |
 | `/keys` | POST | `X-Admin-Key` | Create API key (with ACL, expiry, quota, credits) |
 | `/keys` | GET | `X-Admin-Key` | List all keys (masked, with expiry status) |
@@ -527,6 +530,42 @@ curl -X POST http://localhost:3402/oauth/token \
 
 OAuth tokens are backed by API keys — each token maps to an API key for billing. The `/mcp` endpoint accepts both `X-API-Key` and `Authorization: Bearer` headers.
 
+### SSE Streaming (MCP Streamable HTTP)
+
+PayGate implements the full MCP Streamable HTTP transport with SSE support:
+
+```bash
+# POST /mcp with SSE response (add Accept header)
+curl -N -X POST http://localhost:3402/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -H "X-API-Key: YOUR_KEY" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"analyze","arguments":{}}}'
+# Response: SSE stream with event: message + data: {jsonrpc response}
+
+# GET /mcp — Open SSE notification stream
+curl -N http://localhost:3402/mcp \
+  -H "Accept: text/event-stream" \
+  -H "Mcp-Session-Id: mcp_sess_..."
+# Receives server-initiated notifications as SSE events
+
+# DELETE /mcp — Terminate session
+curl -X DELETE http://localhost:3402/mcp \
+  -H "Mcp-Session-Id: mcp_sess_..."
+```
+
+**Session Management:**
+- Every POST `/mcp` response includes an `Mcp-Session-Id` header
+- Clients reuse sessions by sending `Mcp-Session-Id` on subsequent requests
+- GET `/mcp` opens a long-lived SSE connection for server-to-client notifications
+- DELETE `/mcp` terminates a session and closes all SSE connections
+- Sessions auto-expire after 30 minutes of inactivity
+
+**Transport modes:**
+- `POST /mcp` without `Accept: text/event-stream` → standard JSON response (backward compatible)
+- `POST /mcp` with `Accept: text/event-stream` → SSE-wrapped JSON-RPC response
+- `GET /mcp` with `Accept: text/event-stream` → long-lived notification stream
+
 ### Config File Mode
 
 Load all settings from a JSON file instead of CLI flags:
@@ -624,6 +663,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - OAuth 2.1 with PKCE (S256) — no implicit grant, no plain challenge
 - OAuth tokens are opaque hex strings (no JWT data leakage)
 - Quota counters reset atomically at UTC boundaries
+- SSE sessions auto-expire (30 min), max 1000 concurrent, max 3 SSE per session
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
@@ -651,6 +691,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Usage quotas — daily/monthly call and credit limits per key
 - [x] Dynamic pricing — charge by input size (`creditsPerKbInput`)
 - [x] OAuth 2.1 — PKCE, client registration, Bearer tokens, token refresh/revocation
+- [x] SSE streaming — Full MCP Streamable HTTP transport with session management
 
 ## Requirements
 

@@ -28,6 +28,8 @@ export { WebhookEmitter } from './webhook';
 export { QuotaTracker } from './quota';
 export { OAuthProvider } from './oauth';
 export type { OAuthClientRecord, OAuthTokenRecord, OAuthServerMetadata, OAuthConfig } from './oauth';
+export { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
+export type { McpSession, SessionManagerConfig } from './session';
 export { getDashboardHtml } from './dashboard';
 export { PayGateClient, PayGateError } from './client';
 export type { PayGateClientConfig, CreditsNeededInfo, BalanceInfo } from './client';

@@ -30,6 +30,7 @@ import { HttpMcpProxy } from './http-proxy';
 import { MultiServerRouter } from './router';
 import { StripeWebhookHandler } from './stripe';
 import { OAuthProvider } from './oauth';
+import { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
 import { getDashboardHtml } from './dashboard';
 
 /** Max request body size: 1MB */
@@ -60,6 +61,8 @@ export class PayGateServer {
   private stripeHandler: StripeWebhookHandler | null = null;
   /** OAuth 2.1 provider (null if OAuth is not enabled) */
   readonly oauth: OAuthProvider | null = null;
+  /** Session manager for Streamable HTTP transport */
+  readonly sessions: SessionManager;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -104,6 +107,9 @@ export class PayGateServer {
         scopes: this.config.oauth.scopes,
       }, oauthStatePath);
     }
+
+    // Session manager for SSE streaming
+    this.sessions = new SessionManager();
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
@@ -132,8 +138,9 @@ export class PayGateServer {
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -195,27 +202,29 @@ export class PayGateServer {
     }
   }
 
-  // ─── /mcp — JSON-RPC endpoint ───────────────────────────────────────────────
+  // ─── /mcp — JSON-RPC endpoint (MCP Streamable HTTP transport) ──────────────
 
   private async handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Resolve API key from X-API-Key or Bearer token
+    const apiKey = this.resolveApiKey(req);
+
+    // GET /mcp — Open SSE stream for server-to-client notifications
+    if (req.method === 'GET') {
+      return this.handleMcpSseStream(req, res, apiKey);
+    }
+
+    // DELETE /mcp — Terminate session
+    if (req.method === 'DELETE') {
+      return this.handleMcpDeleteSession(req, res);
+    }
+
+    // POST /mcp — JSON-RPC request/response (may return SSE or JSON)
     if (req.method !== 'POST') {
       res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Method not allowed' }));
       return;
     }
 
-    // Auth: X-API-Key header OR Bearer token (OAuth 2.1)
-    let apiKey = (req.headers['x-api-key'] as string) || null;
-    if (!apiKey && this.oauth) {
-      const authHeader = req.headers['authorization'] as string;
-      if (authHeader?.startsWith('Bearer ')) {
-        const bearerToken = authHeader.slice(7);
-        const tokenInfo = this.oauth.validateToken(bearerToken);
-        if (tokenInfo) {
-          apiKey = tokenInfo.apiKey;
-        }
-      }
-    }
     const body = await this.readBody(req);
 
     let request: JsonRpcRequest;
@@ -227,10 +236,124 @@ export class PayGateServer {
       return;
     }
 
+    // Session management: reuse or create
+    let sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (!sessionId || !this.sessions.getSession(sessionId)) {
+      sessionId = this.sessions.createSession(apiKey);
+    }
+
     const response = await this.handler.handleRequest(request, apiKey);
 
+    // Check if client accepts SSE
+    const accept = req.headers['accept'] || '';
+    const wantsSse = accept.includes('text/event-stream');
+
+    if (wantsSse) {
+      // Return response as SSE stream
+      writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+      writeSseEvent(res, response, 'message');
+      res.end();
+    } else {
+      // Standard JSON response
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Mcp-Session-Id': sessionId,
+      });
+      res.end(JSON.stringify(response));
+    }
+  }
+
+  /**
+   * GET /mcp — Open an SSE stream for server-to-client notifications.
+   * The connection stays open until the client disconnects or session is deleted.
+   */
+  private handleMcpSseStream(req: IncomingMessage, res: ServerResponse, apiKey: string | null): void {
+    const accept = req.headers['accept'] || '';
+    if (!accept.includes('text/event-stream')) {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'GET /mcp requires Accept: text/event-stream' }));
+      return;
+    }
+
+    // Session: reuse or create
+    let sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (!sessionId || !this.sessions.getSession(sessionId)) {
+      sessionId = this.sessions.createSession(apiKey);
+    }
+
+    // Register this SSE connection
+    const added = this.sessions.addSseConnection(sessionId, res);
+    if (!added) {
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Too many SSE connections for this session' }));
+      return;
+    }
+
+    // Start SSE stream
+    writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+
+    // Send initial endpoint event (helps clients know the session is live)
+    writeSseEvent(res, {
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+      params: { sessionId },
+    }, 'message');
+
+    // Keep-alive interval (every 30s)
+    const keepAlive = setInterval(() => {
+      try {
+        writeSseKeepAlive(res);
+      } catch {
+        clearInterval(keepAlive);
+      }
+    }, 30_000);
+
+    // Cleanup on close
+    req.on('close', () => {
+      clearInterval(keepAlive);
+    });
+  }
+
+  /**
+   * DELETE /mcp — Terminate a session.
+   */
+  private handleMcpDeleteSession(req: IncomingMessage, res: ServerResponse): void {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+    if (!sessionId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing Mcp-Session-Id header' }));
+      return;
+    }
+
+    const destroyed = this.sessions.destroySession(sessionId);
+    if (!destroyed) {
+      // Per MCP spec, 404 if session doesn't exist
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Session not found' }));
+      return;
+    }
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(response));
+    res.end(JSON.stringify({ message: 'Session terminated' }));
+  }
+
+  /**
+   * Resolve API key from X-API-Key header or OAuth Bearer token.
+   */
+  private resolveApiKey(req: IncomingMessage): string | null {
+    let apiKey = (req.headers['x-api-key'] as string) || null;
+    if (!apiKey && this.oauth) {
+      const authHeader = req.headers['authorization'] as string;
+      if (authHeader?.startsWith('Bearer ')) {
+        const bearerToken = authHeader.slice(7);
+        const tokenInfo = this.oauth.validateToken(bearerToken);
+        if (tokenInfo) {
+          apiKey = tokenInfo.apiKey;
+        }
+      }
+    }
+    return apiKey;
   }
 
   // ─── / — Root info ──────────────────────────────────────────────────────────
@@ -1094,6 +1217,7 @@ export class PayGateServer {
     await this.handler.stop();
     this.gate.destroy();
     this.oauth?.destroy();
+    this.sessions.destroy();
     if (this.server) {
       return new Promise((resolve) => {
         this.server!.close(() => resolve());
