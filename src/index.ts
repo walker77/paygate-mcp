@@ -15,7 +15,7 @@
  * ```
  */
 
-export { PayGateServer } from './server';
+export { PayGateServer, generateRequestId, getRequestId } from './server';
 export { Gate } from './gate';
 export { McpProxy } from './proxy';
 export { HttpMcpProxy } from './http-proxy';

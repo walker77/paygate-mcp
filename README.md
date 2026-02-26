@@ -80,6 +80,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Expiry Scanner** — Proactive background scanner that detects expiring API keys before they expire — configurable scan interval and notification thresholds (default: 7d, 24h, 1h), de-duplicated `key.expiry_warning` webhook events, audit trail, `GET /keys/expiring?within=86400` query endpoint, and graceful shutdown
 - **Key Templates** — Named templates for API key creation — define reusable presets (credits, ACL, quotas, IP, tags, namespace, expiry TTL, spending limit, auto-topup) and create keys with `template: "free-tier"` — explicit params override template defaults, CRUD admin API, Prometheus gauge, file persistence, max 100 templates
 - **Environment Variables Config** — Configure everything via `PAYGATE_*` env vars for Docker/K8s deployments — 18 env vars covering all CLI flags, with priority: CLI flags > env vars > config file > defaults, `PAYGATE_CONFIG` loads config file path, help text with Docker examples
+- **Request ID Tracking** — Every HTTP response includes `X-Request-Id` header (auto-generated `req_` prefix + 16 hex chars) for distributed tracing — propagates incoming `X-Request-Id` from load balancers/proxies, included in gate audit log metadata, CORS-exposed, available via `getRequestId(req)` helper
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1376,6 +1377,28 @@ All 18 supported environment variables:
 | `PAYGATE_STRIPE_SECRET` | `--stripe-secret` | Stripe secret key for payments |
 
 **Priority:** CLI flags > env vars > config file > defaults. This means you can set defaults via env vars in Docker and override specific values on the command line.
+
+### Request ID Tracking
+
+Every HTTP response includes an `X-Request-Id` header for distributed tracing. If the incoming request has an `X-Request-Id` header (e.g., from a load balancer or API gateway), it is propagated through. Otherwise, a new ID is auto-generated with the format `req_<16 hex chars>`.
+
+```bash
+# Auto-generated request ID
+curl -v http://localhost:3402/health
+# < X-Request-Id: req_a1b2c3d4e5f67890
+
+# Propagate your own trace ID
+curl -v -H "X-Request-Id: my-trace-123" http://localhost:3402/health
+# < X-Request-Id: my-trace-123
+```
+
+| Feature | Details |
+|---------|---------|
+| Format | `req_` + 16 hex chars (8 bytes of randomness) |
+| Propagation | Incoming `X-Request-Id` header is preserved and returned |
+| CORS | Included in `Access-Control-Allow-Headers` and `Access-Control-Expose-Headers` |
+| Audit | Request ID appears in `gate.allow`, `gate.deny`, and `session.created` audit metadata |
+| Exports | `generateRequestId()` and `getRequestId(req)` available in SDK |
 
 ### IP Allowlisting
 

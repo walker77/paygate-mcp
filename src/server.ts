@@ -16,6 +16,7 @@
 import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG } from './types';
 import { validateConfig, ValidatableConfig } from './config-validator';
 
@@ -52,6 +53,16 @@ import { KeyTemplateManager } from './key-templates';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
+
+/** Generate a unique request ID (16 hex chars = 8 bytes of randomness) */
+export function generateRequestId(): string {
+  return `req_${randomBytes(8).toString('hex')}`;
+}
+
+/** Extract request ID from an IncomingMessage (set by PayGateServer handleRequest) */
+export function getRequestId(req: IncomingMessage): string | undefined {
+  return (req as any)._requestId;
+}
 
 /** Union type for both proxy backends */
 type ProxyBackend = McpProxy | HttpMcpProxy;
@@ -373,11 +384,17 @@ export class PayGateServer {
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Request ID: propagate from incoming header or generate new one
+    const requestId = (req.headers['x-request-id'] as string) || generateRequestId();
+    res.setHeader('X-Request-Id', requestId);
+    // Stash on request for downstream access
+    (req as any)._requestId = requestId;
+
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization, X-Request-Id');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -589,6 +606,9 @@ export class PayGateServer {
     this.inflight++;
     res.on('close', () => { this.inflight--; });
 
+    // Extract request ID (set by handleRequest)
+    const requestId = (req as any)._requestId as string;
+
     // Resolve API key from X-API-Key or Bearer token
     const apiKey = this.resolveApiKey(req);
 
@@ -625,6 +645,7 @@ export class PayGateServer {
     if (!sessionId || !this.sessions.getSession(sessionId)) {
       sessionId = this.sessions.createSession(apiKey);
       this.audit.log('session.created', maskKeyForAudit(apiKey || 'anonymous'), `Session created`, {
+        requestId,
         sessionId: sessionId.slice(0, 16) + '...',
       });
     }
@@ -657,6 +678,7 @@ export class PayGateServer {
       // Audit + metrics for batch
       if (batchResponse.error) {
         this.audit.log('gate.deny', maskKeyForAudit(apiKey || 'anonymous'), `Batch denied (${calls.length} calls)`, {
+          requestId,
           callCount: calls.length,
           errorCode: batchResponse.error.code,
           reason: batchResponse.error.message,
@@ -667,6 +689,7 @@ export class PayGateServer {
       } else {
         const resultData = batchResponse.result as { results?: Array<{ tool: string; error?: unknown; creditsCharged: number }>, totalCreditsCharged?: number };
         this.audit.log('gate.allow', maskKeyForAudit(apiKey || 'anonymous'), `Batch allowed (${calls.length} calls)`, {
+          requestId,
           callCount: calls.length,
           totalCredits: resultData?.totalCreditsCharged ?? 0,
         });
@@ -731,6 +754,7 @@ export class PayGateServer {
           : response.error.code === -32001 ? 'rate_limited'
           : response.error.message || 'denied';
         this.audit.log('gate.deny', maskKeyForAudit(apiKey || 'anonymous'), `Denied: ${toolName}`, {
+          requestId,
           tool: toolName,
           errorCode: response.error.code,
           reason: response.error.message,
@@ -745,6 +769,7 @@ export class PayGateServer {
         }
       } else {
         this.audit.log('gate.allow', maskKeyForAudit(apiKey || 'anonymous'), `Allowed: ${toolName}`, {
+          requestId,
           tool: toolName,
         });
         // Estimate credits from config (actual deduction tracked in gate)
