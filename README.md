@@ -92,6 +92,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Quota Status** — `GET /keys/quota-status?key=...` returns daily/monthly quota usage for any key — calls and credits used/remaining/limits, reset periods, quota source (per-key vs global vs none)
 - **Credit History** — `GET /keys/credit-history?key=...` returns per-key credit mutation log — tracks initial allocation, topups, transfers (in/out), auto-topups, with type/limit/since filters, balance-before/after on every entry, newest-first ordering, capped at 100 entries per key
 - **Spending Velocity** — `GET /keys/spending-velocity?key=...` returns credit burn rate and depletion forecast — credits/calls per hour/day, estimated depletion date, top tools by spend, configurable analysis window (1h–30d)
+- **Key Comparison** — `GET /keys/compare?keys=pg_a,pg_b` returns side-by-side comparison of 2–10 keys — credits, usage, velocity, rate limits, status, metadata (namespace/group/tags) — with not-found key reporting
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1795,6 +1796,46 @@ curl "http://localhost:3402/keys/spending-velocity?key=pg_...&window=48" -H "X-A
 ```
 
 `estimatedDepletionDate` and `estimatedHoursRemaining` are `null` when there's no spending activity. `topTools` shows the 5 highest-spend tools from usage data.
+
+### Key Comparison
+
+`GET /keys/compare?keys=pg_a,pg_b,pg_c` returns side-by-side comparison of 2–10 keys:
+
+```bash
+curl "http://localhost:3402/keys/compare?keys=pg_abc,pg_xyz" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "compared": 2,
+  "keys": [
+    {
+      "key": "pg_abc123...",
+      "name": "prod-agent",
+      "status": "active",
+      "credits": { "current": 750, "totalSpent": 250 },
+      "usage": { "totalCalls": 50, "totalAllowed": 48, "totalDenied": 2 },
+      "velocity": { "creditsPerHour": 12.5, "creditsPerDay": 300, "estimatedHoursRemaining": 60 },
+      "rateLimit": { "used": 3, "limit": 60, "remaining": 57 },
+      "metadata": { "namespace": "prod", "group": "team-a", "createdAt": "2026-02-01T00:00:00Z", "tags": { "env": "prod" } }
+    },
+    {
+      "key": "pg_xyz789...",
+      "name": "staging-agent",
+      "status": "active",
+      "credits": { "current": 200, "totalSpent": 800 },
+      "usage": { "totalCalls": 120, "totalAllowed": 120, "totalDenied": 0 },
+      "velocity": { "creditsPerHour": 8.3, "creditsPerDay": 200, "estimatedHoursRemaining": 24 },
+      "rateLimit": { "used": 0, "limit": 60, "remaining": 60 },
+      "metadata": { "namespace": "staging", "group": null, "createdAt": "2026-02-15T00:00:00Z", "tags": {} }
+    }
+  ]
+}
+```
+
+Keys not found are reported in a `notFound` array. Supports aliases. Maximum 10 keys per comparison.
 
 ### IP Allowlisting
 

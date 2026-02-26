@@ -566,6 +566,8 @@ export class PayGateServer {
         return this.handleCreditHistory(req, res);
       case '/keys/spending-velocity':
         return this.handleSpendingVelocity(req, res);
+      case '/keys/compare':
+        return this.handleKeyComparison(req, res);
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1142,6 +1144,7 @@ export class PayGateServer {
         quotaStatus: 'GET /keys/quota-status?key=... — Current daily/monthly quota usage (requires X-Admin-Key)',
         creditHistory: 'GET /keys/credit-history?key=... — Per-key credit mutation history (requires X-Admin-Key)',
         spendingVelocity: 'GET /keys/spending-velocity?key=... — Spending rate and depletion forecast (requires X-Admin-Key)',
+        keyComparison: 'GET /keys/compare?keys=pg_a,pg_b — Side-by-side key comparison (requires X-Admin-Key)',
         keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
         deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
@@ -3086,6 +3089,106 @@ export class PayGateServer {
       currentBalance: keyRecord.credits,
       velocity,
       topTools,
+    }));
+  }
+
+  // ─── /keys/compare — Side-by-side key comparison ────────────────────────────
+
+  private handleKeyComparison(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keysParam = params.get('keys');
+
+    if (!keysParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: keys (comma-separated)' }));
+      return;
+    }
+
+    const keyIds = keysParam.split(',').map(k => k.trim()).filter(Boolean);
+    if (keyIds.length < 2) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'At least 2 keys required for comparison' }));
+      return;
+    }
+    if (keyIds.length > 10) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Maximum 10 keys per comparison' }));
+      return;
+    }
+
+    const comparisons: any[] = [];
+    const notFound: string[] = [];
+
+    for (const keyId of keyIds) {
+      const resolved = this.gate.store.resolveKey(keyId);
+      const actualKey = resolved ? resolved.key : keyId;
+      const record = this.gate.store.getKey(actualKey);
+
+      if (!record) {
+        notFound.push(keyId);
+        continue;
+      }
+
+      // Get usage stats
+      const keyUsage = this.gate.meter.getKeyUsage(actualKey);
+
+      // Get velocity (24h window)
+      const velocity = this.creditLedger.getSpendingVelocity(actualKey, record.credits, 24);
+
+      // Get rate limit status
+      const rateStatus = this.gate.rateLimiter.getStatus(actualKey);
+
+      // Determine key status
+      let status = 'active';
+      if (!record.active) status = 'revoked';
+      else if (record.suspended) status = 'suspended';
+      else if (record.expiresAt && new Date(record.expiresAt).getTime() < Date.now()) status = 'expired';
+
+      comparisons.push({
+        key: actualKey.slice(0, 10) + '...',
+        name: record.name,
+        status,
+        credits: {
+          current: record.credits,
+          totalSpent: keyUsage.totalCreditsSpent,
+        },
+        usage: {
+          totalCalls: keyUsage.totalCalls,
+          totalAllowed: keyUsage.totalAllowed,
+          totalDenied: keyUsage.totalDenied,
+        },
+        velocity: {
+          creditsPerHour: velocity.creditsPerHour,
+          creditsPerDay: velocity.creditsPerDay,
+          estimatedHoursRemaining: velocity.estimatedHoursRemaining,
+        },
+        rateLimit: {
+          used: rateStatus.used,
+          limit: rateStatus.limit,
+          remaining: rateStatus.remaining,
+        },
+        metadata: {
+          namespace: record.namespace || null,
+          group: record.group || null,
+          createdAt: record.createdAt,
+          tags: record.tags || {},
+        },
+      });
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      compared: comparisons.length,
+      notFound: notFound.length > 0 ? notFound : undefined,
+      keys: comparisons,
     }));
   }
 
