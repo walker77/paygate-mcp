@@ -31,6 +31,7 @@ import { MultiServerRouter } from './router';
 import { StripeWebhookHandler } from './stripe';
 import { OAuthProvider } from './oauth';
 import { SessionManager, writeSseHeaders, writeSseEvent, writeSseKeepAlive } from './session';
+import { AuditLogger, maskKeyForAudit } from './audit';
 import { getDashboardHtml } from './dashboard';
 
 /** Max request body size: 1MB */
@@ -63,6 +64,8 @@ export class PayGateServer {
   readonly oauth: OAuthProvider | null = null;
   /** Session manager for Streamable HTTP transport */
   readonly sessions: SessionManager;
+  /** Structured audit log */
+  readonly audit: AuditLogger;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -110,6 +113,9 @@ export class PayGateServer {
 
     // Session manager for SSE streaming
     this.sessions = new SessionManager();
+
+    // Audit logger
+    this.audit = new AuditLogger();
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
@@ -179,6 +185,12 @@ export class PayGateServer {
         return this.handleStripeWebhook(req, res);
       case '/dashboard':
         return this.handleDashboard(req, res);
+      case '/audit':
+        return this.handleAudit(req, res);
+      case '/audit/export':
+        return this.handleAuditExport(req, res);
+      case '/audit/stats':
+        return this.handleAuditStats(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -240,9 +252,28 @@ export class PayGateServer {
     let sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !this.sessions.getSession(sessionId)) {
       sessionId = this.sessions.createSession(apiKey);
+      this.audit.log('session.created', maskKeyForAudit(apiKey || 'anonymous'), `Session created`, {
+        sessionId: sessionId.slice(0, 16) + '...',
+      });
     }
 
     const response = await this.handler.handleRequest(request, apiKey);
+
+    // Audit gate decision
+    if (request.method === 'tools/call') {
+      const toolName = (request.params as Record<string, unknown>)?.name as string || 'unknown';
+      if (response.error) {
+        this.audit.log('gate.deny', maskKeyForAudit(apiKey || 'anonymous'), `Denied: ${toolName}`, {
+          tool: toolName,
+          errorCode: response.error.code,
+          reason: response.error.message,
+        });
+      } else {
+        this.audit.log('gate.allow', maskKeyForAudit(apiKey || 'anonymous'), `Allowed: ${toolName}`, {
+          tool: toolName,
+        });
+      }
+    }
 
     // Check if client accepts SSE
     const accept = req.headers['accept'] || '';
@@ -334,6 +365,10 @@ export class PayGateServer {
       return;
     }
 
+    this.audit.log('session.destroyed', 'client', `Session terminated`, {
+      sessionId: sessionId.slice(0, 16) + '...',
+    });
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Session terminated' }));
   }
@@ -377,6 +412,9 @@ export class PayGateServer {
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
         setQuota: 'POST /keys/quota — Set usage quota (requires X-Admin-Key)',
+        audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
+        auditExport: 'GET /audit/export — Export audit log (requires X-Admin-Key)',
+        auditStats: 'GET /audit/stats — Audit log statistics (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -450,6 +488,15 @@ export class PayGateServer {
       quota,
     });
 
+    this.audit.log('key.created', 'admin', `Key created: ${name}`, {
+      keyMasked: maskKeyForAudit(record.key),
+      name,
+      credits,
+      allowedTools: record.allowedTools,
+      deniedTools: record.deniedTools,
+      expiresAt: record.expiresAt,
+    });
+
     res.writeHead(201, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       key: record.key,
@@ -512,6 +559,13 @@ export class PayGateServer {
     }
 
     const record = this.gate.store.getKey(params.key);
+
+    this.audit.log('key.topup', 'admin', `Added ${credits} credits`, {
+      keyMasked: maskKeyForAudit(params.key),
+      creditsAdded: credits,
+      newBalance: record?.credits,
+    });
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ credits: record?.credits, message: `Added ${credits} credits` }));
   }
@@ -548,6 +602,10 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Key not found' }));
       return;
     }
+
+    this.audit.log('key.revoked', 'admin', `Key revoked`, {
+      keyMasked: maskKeyForAudit(params.key),
+    });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Key revoked' }));
@@ -587,6 +645,13 @@ export class PayGateServer {
     }
 
     const record = this.gate.store.getKey(params.key);
+
+    this.audit.log('key.acl_updated', 'admin', `ACL updated`, {
+      keyMasked: maskKeyForAudit(params.key),
+      allowedTools: record?.allowedTools || [],
+      deniedTools: record?.deniedTools || [],
+    });
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       allowedTools: record?.allowedTools || [],
@@ -637,6 +702,12 @@ export class PayGateServer {
     }
 
     const record = this.gate.store.getKeyRaw(params.key);
+
+    this.audit.log('key.expiry_updated', 'admin', expiresAt ? `Key expiry set to ${expiresAt}` : 'Key expiry removed', {
+      keyMasked: maskKeyForAudit(params.key),
+      expiresAt: record?.expiresAt || null,
+    });
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       expiresAt: record?.expiresAt || null,
@@ -695,6 +766,11 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Key not found' }));
       return;
     }
+
+    this.audit.log('key.quota_updated', 'admin', `Quota set`, {
+      keyMasked: maskKeyForAudit(params.key),
+      quota,
+    });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ quota, message: 'Quota set' }));
@@ -789,6 +865,11 @@ export class PayGateServer {
     const limit = Math.max(0, Math.floor(Number(params.spendingLimit) || 0));
     record.spendingLimit = limit;
     this.gate.store.save();
+
+    this.audit.log('key.limit_updated', 'admin', limit > 0 ? `Spending limit set to ${limit}` : 'Spending limit removed', {
+      keyMasked: maskKeyForAudit(params.key),
+      spendingLimit: limit,
+    });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -1185,9 +1266,87 @@ export class PayGateServer {
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
+  // ─── /audit — Query audit log ─────────────────────────────────────────────
+
+  private handleAudit(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+
+    const types = params.get('types')?.split(',').filter(Boolean) as import('./audit').AuditEventType[] | undefined;
+    const actor = params.get('actor') || undefined;
+    const since = params.get('since') || undefined;
+    const until = params.get('until') || undefined;
+    const limit = params.get('limit') ? parseInt(params.get('limit')!, 10) : undefined;
+    const offset = params.get('offset') ? parseInt(params.get('offset')!, 10) : undefined;
+
+    const result = this.audit.query({ types, actor, since, until, limit, offset });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result, null, 2));
+  }
+
+  // ─── /audit/export — Export audit log ────────────────────────────────────
+
+  private handleAuditExport(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const format = params.get('format') || 'json';
+
+    if (format === 'csv') {
+      const csv = this.audit.exportCsv({
+        types: params.get('types')?.split(',').filter(Boolean) as import('./audit').AuditEventType[] | undefined,
+        since: params.get('since') || undefined,
+        until: params.get('until') || undefined,
+      });
+      res.writeHead(200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': 'attachment; filename="paygate-audit.csv"',
+      });
+      res.end(csv);
+    } else {
+      const events = this.audit.exportAll();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ count: events.length, events }, null, 2));
+    }
+  }
+
+  // ─── /audit/stats — Audit log statistics ────────────────────────────────
+
+  private handleAuditStats(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(this.audit.stats(), null, 2));
+  }
+
+  // ─── Helpers ────────────────────────────────────────────────────────────────
+
   private checkAdmin(req: IncomingMessage, res: ServerResponse): boolean {
     const adminKey = req.headers['x-admin-key'] as string;
     if (adminKey !== this.adminKey) {
+      this.audit.log('admin.auth_failed', 'unknown', `Admin auth failed on ${req.url}`, {
+        url: req.url,
+        method: req.method,
+      });
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid admin key' }));
       return false;
@@ -1218,6 +1377,7 @@ export class PayGateServer {
     this.gate.destroy();
     this.oauth?.destroy();
     this.sessions.destroy();
+    this.audit.destroy();
     if (this.server) {
       return new Promise((resolve) => {
         this.server!.close(() => resolve());

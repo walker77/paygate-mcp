@@ -41,6 +41,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Dynamic Pricing** — Charge extra credits based on input size (`creditsPerKbInput`)
 - **OAuth 2.1** — Full authorization server with PKCE, client registration, Bearer tokens
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
+- **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -270,6 +271,9 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/oauth/token` | POST | None | Token endpoint (code exchange + refresh) |
 | `/oauth/revoke` | POST | None | Token revocation (RFC 7009) |
 | `/oauth/clients` | GET | `X-Admin-Key` | List registered OAuth clients |
+| `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
+| `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
+| `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
 | `/` | GET | None | Health check |
 
 ### Free Methods
@@ -566,6 +570,28 @@ curl -X DELETE http://localhost:3402/mcp \
 - `POST /mcp` with `Accept: text/event-stream` → SSE-wrapped JSON-RPC response
 - `GET /mcp` with `Accept: text/event-stream` → long-lived notification stream
 
+### Audit Log
+
+Every significant operation is recorded in a structured audit trail:
+
+```bash
+# Query audit events (with filtering)
+curl http://localhost:3402/audit?types=key.created,gate.deny&limit=50 \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Export full audit log as CSV
+curl http://localhost:3402/audit/export?format=csv \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" > audit.csv
+
+# Get audit statistics
+curl http://localhost:3402/audit/stats \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Tracked events:** `key.created`, `key.revoked`, `key.topup`, `key.acl_updated`, `key.expiry_updated`, `key.quota_updated`, `key.limit_updated`, `gate.allow`, `gate.deny`, `session.created`, `session.destroyed`, `oauth.client_registered`, `oauth.token_issued`, `oauth.token_revoked`, `admin.auth_failed`, `billing.refund`.
+
+**Retention:** Ring buffer (default 10,000 events), age-based cleanup (default 30 days), automatic periodic enforcement.
+
 ### Config File Mode
 
 Load all settings from a JSON file instead of CLI flags:
@@ -664,6 +690,8 @@ const result = await client.callTool('search', { query: 'hello' });
 - OAuth tokens are opaque hex strings (no JWT data leakage)
 - Quota counters reset atomically at UTC boundaries
 - SSE sessions auto-expire (30 min), max 1000 concurrent, max 3 SSE per session
+- Audit log with retention policies (ring buffer, age-based cleanup)
+- API keys masked in audit events (only first 7 + last 4 chars visible)
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
@@ -692,6 +720,9 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Dynamic pricing — charge by input size (`creditsPerKbInput`)
 - [x] OAuth 2.1 — PKCE, client registration, Bearer tokens, token refresh/revocation
 - [x] SSE streaming — Full MCP Streamable HTTP transport with session management
+- [x] Audit log — Structured audit trail with retention, query API, CSV/JSON export
+- [ ] Registry/discovery — Agent-discoverable paid tools
+- [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements
 
