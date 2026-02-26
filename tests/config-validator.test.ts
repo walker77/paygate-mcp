@@ -8,6 +8,7 @@ import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { writeFileSync, unlinkSync } from 'fs';
 
+const REPO_ROOT = path.join(__dirname, '..');
 const MOCK_SERVER = path.join(__dirname, 'e2e', 'mock-mcp-server.js');
 
 // ─── validateConfig() Unit Tests ─────────────────────────────────────────────
@@ -267,7 +268,7 @@ describe('v2.7.0 — CLI validate command', () => {
     }));
 
     const result = spawnSync('node', ['dist/cli.js', 'validate', '--config', tmpConfig], {
-      cwd: '/tmp/paygate-mcp-sync',
+      cwd: REPO_ROOT,
       encoding: 'utf-8',
     });
     expect(result.status).toBe(0);
@@ -280,7 +281,7 @@ describe('v2.7.0 — CLI validate command', () => {
     }));
 
     const result = spawnSync('node', ['dist/cli.js', 'validate', '--config', tmpConfig], {
-      cwd: '/tmp/paygate-mcp-sync',
+      cwd: REPO_ROOT,
       encoding: 'utf-8',
     });
     expect(result.status).toBe(1);
@@ -289,7 +290,7 @@ describe('v2.7.0 — CLI validate command', () => {
 
   test('validate without --config exits 1', () => {
     const result = spawnSync('node', ['dist/cli.js', 'validate'], {
-      cwd: '/tmp/paygate-mcp-sync',
+      cwd: REPO_ROOT,
       encoding: 'utf-8',
     });
     expect(result.status).toBe(1);
@@ -297,7 +298,7 @@ describe('v2.7.0 — CLI validate command', () => {
 
   test('validate non-existent config file exits 1', () => {
     const result = spawnSync('node', ['dist/cli.js', 'validate', '--config', '/tmp/nonexistent-paygate.json'], {
-      cwd: '/tmp/paygate-mcp-sync',
+      cwd: REPO_ROOT,
       encoding: 'utf-8',
     });
     expect(result.status).toBe(1);
@@ -310,7 +311,7 @@ describe('v2.7.0 — Dry Run (--dry-run)', () => {
   test('dry run discovers tools and exits', () => {
     const result = spawnSync(
       'node', ['dist/cli.js', 'wrap', '--server', `node ${MOCK_SERVER}`, '--port', '0', '--dry-run'],
-      { cwd: '/tmp/paygate-mcp-sync', encoding: 'utf-8', timeout: 15000 }
+      { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 15000 }
     );
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('DRY RUN');
