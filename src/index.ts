@@ -67,6 +67,8 @@ export type {
   UsageSummary,
   GateDecision,
   QuotaConfig,
+  BatchToolCall,
+  BatchGateResult,
 } from './types';
 
 export { DEFAULT_CONFIG } from './types';

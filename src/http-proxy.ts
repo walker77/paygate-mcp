@@ -13,7 +13,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { JsonRpcRequest, JsonRpcResponse, ToolCallParams } from './types';
+import { JsonRpcRequest, JsonRpcResponse, ToolCallParams, BatchToolCall } from './types';
 import { Gate } from './gate';
 import * as http from 'http';
 import * as https from 'https';
@@ -103,6 +103,78 @@ export class HttpMcpProxy extends EventEmitter {
 
     // Unknown method — forward
     return this.forwardToServer(request);
+  }
+
+  /**
+   * Handle a batch of tool calls (tools/call_batch).
+   * All-or-nothing: pre-validates all calls, then executes in parallel.
+   */
+  async handleBatchRequest(
+    calls: BatchToolCall[],
+    batchId: string | number | undefined,
+    apiKey: string | null,
+    clientIp?: string,
+  ): Promise<JsonRpcResponse> {
+    if (!this.started) {
+      return this.errorResponse(batchId, -32603, 'Proxy not started');
+    }
+
+    if (!calls || calls.length === 0) {
+      return this.errorResponse(batchId, -32602, 'Invalid batch: empty calls array');
+    }
+
+    const batchResult = this.gate.evaluateBatch(apiKey, calls, clientIp);
+
+    if (!batchResult.allAllowed) {
+      return {
+        jsonrpc: '2.0',
+        id: batchId,
+        error: {
+          code: -32402,
+          message: `Payment required: ${batchResult.reason}`,
+          data: {
+            failedIndex: batchResult.failedIndex,
+            totalCreditsRequired: calls.reduce((sum, c) => sum + this.gate.getToolPrice(c.name, c.arguments), 0),
+            remainingCredits: batchResult.remainingCredits,
+          },
+        },
+      };
+    }
+
+    // All approved — execute each call in parallel
+    const results = await Promise.all(calls.map((call, i) => {
+      const req: JsonRpcRequest = {
+        jsonrpc: '2.0',
+        id: `batch_${batchId}_${i}`,
+        method: 'tools/call',
+        params: { name: call.name, arguments: call.arguments },
+      };
+      return this.forwardToServer(req);
+    }));
+
+    const finalRemaining = this.gate.store.getKey(apiKey!)?.credits ?? batchResult.remainingCredits;
+
+    this.emit('batch-call', {
+      apiKey: apiKey?.slice(0, 10),
+      callCount: calls.length,
+      totalCreditsCharged: batchResult.totalCredits,
+      remainingCredits: finalRemaining,
+    });
+
+    return {
+      jsonrpc: '2.0',
+      id: batchId,
+      result: {
+        results: results.map((r, i) => ({
+          tool: calls[i].name,
+          result: r.result,
+          error: r.error,
+          creditsCharged: batchResult.decisions[i].creditsCharged,
+        })),
+        totalCreditsCharged: batchResult.totalCredits,
+        remainingCredits: finalRemaining,
+      },
+    };
   }
 
   /**

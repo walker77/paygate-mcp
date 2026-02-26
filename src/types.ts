@@ -208,3 +208,25 @@ export interface GateDecision {
   creditsCharged: number;
   remainingCredits: number;
 }
+
+// ─── Batch Tool Calls ───────────────────────────────────────────────────────────
+
+export interface BatchToolCall {
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+
+export interface BatchGateResult {
+  /** Whether all calls were pre-approved */
+  allAllowed: boolean;
+  /** Total credits that will be / were charged for the batch */
+  totalCredits: number;
+  /** Per-call gate decisions (in same order as input) */
+  decisions: GateDecision[];
+  /** Remaining credits after all deductions */
+  remainingCredits: number;
+  /** If denied, the first failure reason */
+  reason?: string;
+  /** Index of the first denied call (-1 if all allowed) */
+  failedIndex: number;
+}

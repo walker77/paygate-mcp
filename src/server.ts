@@ -50,6 +50,7 @@ type ProxyBackend = McpProxy | HttpMcpProxy;
 /** Common interface for request handling (single proxy or multi-server router) */
 interface RequestHandler {
   handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse>;
+  handleBatchRequest(calls: import('./types').BatchToolCall[], batchId: string | number | undefined, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse>;
   start(): Promise<void>;
   stop(): Promise<void>;
   readonly isRunning: boolean;
@@ -408,6 +409,66 @@ export class PayGateServer {
     // Extract client IP for IP allowlist checking
     const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
       || req.socket.remoteAddress || '';
+
+    // ─── Batch tool calls ────────────────────────────────────────────────
+    if (request.method === 'tools/call_batch') {
+      const params = request.params as Record<string, unknown> | undefined;
+      const calls = params?.calls as Array<{ name: string; arguments?: Record<string, unknown> }> | undefined;
+      if (!calls || !Array.isArray(calls)) {
+        const errResp: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: request.id,
+          error: { code: -32602, message: 'Invalid params: "calls" array is required' },
+        };
+        const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
+        res.end(JSON.stringify(errResp));
+        return;
+      }
+
+      const batchResponse = await this.handler.handleBatchRequest(calls, request.id, apiKey, clientIp);
+
+      // Audit + metrics for batch
+      if (batchResponse.error) {
+        this.audit.log('gate.deny', maskKeyForAudit(apiKey || 'anonymous'), `Batch denied (${calls.length} calls)`, {
+          callCount: calls.length,
+          errorCode: batchResponse.error.code,
+          reason: batchResponse.error.message,
+        });
+        for (const call of calls) {
+          this.metrics.recordToolCall(call.name, false, 0, 'batch_denied');
+        }
+      } else {
+        const resultData = batchResponse.result as { results?: Array<{ tool: string; error?: unknown; creditsCharged: number }>, totalCreditsCharged?: number };
+        this.audit.log('gate.allow', maskKeyForAudit(apiKey || 'anonymous'), `Batch allowed (${calls.length} calls)`, {
+          callCount: calls.length,
+          totalCredits: resultData?.totalCreditsCharged ?? 0,
+        });
+        if (resultData?.results) {
+          for (const r of resultData.results) {
+            this.metrics.recordToolCall(r.tool, !r.error, r.creditsCharged);
+          }
+        }
+      }
+
+      const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
+      const accept = req.headers['accept'] || '';
+      const wantsSse = accept.includes('text/event-stream');
+
+      if (wantsSse) {
+        writeSseHeaders(res, { 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
+        writeSseEvent(res, batchResponse, 'message');
+        res.end();
+      } else {
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': sessionId,
+          ...rateLimitHeaders,
+        });
+        res.end(JSON.stringify(batchResponse));
+      }
+      return;
+    }
 
     const response = await this.handler.handleRequest(request, apiKey, clientIp);
 

@@ -11,7 +11,7 @@
  * Shadow mode: log but don't enforce (always ALLOW).
  */
 
-import { PayGateConfig, GateDecision, UsageEvent, ToolCallParams, ApiKeyRecord, QuotaConfig } from './types';
+import { PayGateConfig, GateDecision, UsageEvent, ToolCallParams, ApiKeyRecord, QuotaConfig, BatchToolCall, BatchGateResult } from './types';
 import { KeyStore } from './store';
 import { RateLimiter } from './rate-limiter';
 import { UsageMeter } from './meter';
@@ -195,6 +195,284 @@ export class Gate {
     this.recordEvent(apiKey, keyRecord.name, toolName, creditsRequired, true);
 
     return { allowed: true, creditsCharged: creditsRequired, remainingCredits: remaining };
+  }
+
+  /**
+   * Evaluate a batch of tool calls atomically (all-or-nothing).
+   *
+   * Pre-validates all calls (auth, ACL, rate limits, credits, quotas, spending limits)
+   * before executing any. If any call would be denied, the entire batch is rejected
+   * and no credits are deducted.
+   *
+   * On success, deducts credits for all calls at once.
+   */
+  evaluateBatch(apiKey: string | null, calls: BatchToolCall[], clientIp?: string): BatchGateResult {
+    if (calls.length === 0) {
+      return { allAllowed: true, totalCredits: 0, decisions: [], remainingCredits: 0, failedIndex: -1 };
+    }
+
+    // Step 1: API key present?
+    if (!apiKey) {
+      if (this.config.shadowMode) {
+        return this.shadowBatchResult(calls, 'shadow:missing_api_key');
+      }
+      return {
+        allAllowed: false,
+        totalCredits: 0,
+        decisions: calls.map(() => ({ allowed: false, reason: 'missing_api_key', creditsCharged: 0, remainingCredits: 0 })),
+        remainingCredits: 0,
+        reason: 'missing_api_key',
+        failedIndex: 0,
+      };
+    }
+
+    // Step 2: Valid key?
+    const keyRecord = this.store.getKey(apiKey);
+    if (!keyRecord) {
+      const isExpired = this.store.isExpired(apiKey);
+      const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
+      if (this.config.shadowMode) {
+        return this.shadowBatchResult(calls, `shadow:${reason}`);
+      }
+      return {
+        allAllowed: false,
+        totalCredits: 0,
+        decisions: calls.map(() => ({ allowed: false, reason, creditsCharged: 0, remainingCredits: 0 })),
+        remainingCredits: 0,
+        reason,
+        failedIndex: 0,
+      };
+    }
+
+    // Step 3: IP allowlist check
+    if (clientIp && keyRecord.ipAllowlist.length > 0) {
+      if (!this.store.checkIp(apiKey, clientIp)) {
+        const reason = `ip_not_allowed: ${clientIp} not in allowlist`;
+        if (this.config.shadowMode) {
+          return this.shadowBatchResult(calls, `shadow:${reason}`);
+        }
+        return {
+          allAllowed: false,
+          totalCredits: 0,
+          decisions: calls.map(() => ({ allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits })),
+          remainingCredits: keyRecord.credits,
+          reason,
+          failedIndex: 0,
+        };
+      }
+    }
+
+    // Step 4: Per-call pre-validation (ACL, per-tool rate limits) + aggregate credits
+    let totalCreditsNeeded = 0;
+    const perCallCredits: number[] = [];
+    // Track per-tool occurrence counts within the batch for rate limit checking
+    const batchToolCounts = new Map<string, number>();
+
+    for (let i = 0; i < calls.length; i++) {
+      const call = calls[i];
+
+      // ACL check
+      const aclResult = this.checkToolAcl(keyRecord, call.name);
+      if (!aclResult.allowed) {
+        if (this.config.shadowMode) {
+          perCallCredits.push(this.getToolPrice(call.name, call.arguments));
+          continue;
+        }
+        return {
+          allAllowed: false,
+          totalCredits: 0,
+          decisions: calls.map((_, j) => ({
+            allowed: false,
+            reason: j === i ? aclResult.reason : 'batch_rejected',
+            creditsCharged: 0,
+            remainingCredits: keyRecord.credits,
+          })),
+          remainingCredits: keyRecord.credits,
+          reason: aclResult.reason,
+          failedIndex: i,
+        };
+      }
+
+      // Per-tool rate limit check (batch-aware: count occurrences in batch)
+      const toolPricing = this.config.toolPricing[call.name];
+      if (toolPricing?.rateLimitPerMin && toolPricing.rateLimitPerMin > 0) {
+        const compositeKey = `${apiKey}:tool:${call.name}`;
+        const batchCount = (batchToolCounts.get(call.name) || 0) + 1;
+        batchToolCounts.set(call.name, batchCount);
+        // Check existing window usage + batch occurrences
+        const existingCount = this.rateLimiter.getCurrentCount(compositeKey);
+        if (existingCount + batchCount > toolPricing.rateLimitPerMin) {
+          const reason = `tool_rate_limited: ${call.name} limited to ${toolPricing.rateLimitPerMin} calls/min`;
+          if (this.config.shadowMode) {
+            perCallCredits.push(this.getToolPrice(call.name, call.arguments));
+            continue;
+          }
+          return {
+            allAllowed: false,
+            totalCredits: 0,
+            decisions: calls.map((_, j) => ({
+              allowed: false,
+              reason: j === i ? reason : 'batch_rejected',
+              creditsCharged: 0,
+              remainingCredits: keyRecord.credits,
+            })),
+            remainingCredits: keyRecord.credits,
+            reason,
+            failedIndex: i,
+          };
+        }
+      }
+
+      const price = this.getToolPrice(call.name, call.arguments);
+      perCallCredits.push(price);
+      totalCreditsNeeded += price;
+    }
+
+    // Step 5: Global rate limit — check once for the batch
+    const rateResult = this.rateLimiter.check(apiKey);
+    if (!rateResult.allowed) {
+      if (!this.config.shadowMode) {
+        return {
+          allAllowed: false,
+          totalCredits: 0,
+          decisions: calls.map(() => ({ allowed: false, reason: rateResult.reason, creditsCharged: 0, remainingCredits: keyRecord.credits })),
+          remainingCredits: keyRecord.credits,
+          reason: rateResult.reason,
+          failedIndex: 0,
+        };
+      }
+    }
+
+    // Step 6: Aggregate credit check
+    if (!this.store.hasCredits(apiKey, totalCreditsNeeded)) {
+      if (!this.config.shadowMode) {
+        return {
+          allAllowed: false,
+          totalCredits: 0,
+          decisions: calls.map(() => ({
+            allowed: false,
+            reason: `insufficient_credits: need ${totalCreditsNeeded}, have ${keyRecord.credits}`,
+            creditsCharged: 0,
+            remainingCredits: keyRecord.credits,
+          })),
+          remainingCredits: keyRecord.credits,
+          reason: `insufficient_credits: need ${totalCreditsNeeded}, have ${keyRecord.credits}`,
+          failedIndex: 0,
+        };
+      }
+    }
+
+    // Step 7: Spending limit check (aggregate)
+    if (keyRecord.spendingLimit > 0) {
+      const wouldSpend = keyRecord.totalSpent + totalCreditsNeeded;
+      if (wouldSpend > keyRecord.spendingLimit) {
+        if (!this.config.shadowMode) {
+          return {
+            allAllowed: false,
+            totalCredits: 0,
+            decisions: calls.map(() => ({
+              allowed: false,
+              reason: `spending_limit_exceeded: limit ${keyRecord.spendingLimit}, spent ${keyRecord.totalSpent}, need ${totalCreditsNeeded}`,
+              creditsCharged: 0,
+              remainingCredits: keyRecord.credits,
+            })),
+            remainingCredits: keyRecord.credits,
+            reason: `spending_limit_exceeded: limit ${keyRecord.spendingLimit}, spent ${keyRecord.totalSpent}, need ${totalCreditsNeeded}`,
+            failedIndex: 0,
+          };
+        }
+      }
+    }
+
+    // Step 8: Quota check (aggregate, batch-aware)
+    const quotaResult = this.quotaTracker.checkBatch(keyRecord, calls.length, totalCreditsNeeded, this.config.globalQuota);
+    if (!quotaResult.allowed) {
+      if (!this.config.shadowMode) {
+        return {
+          allAllowed: false,
+          totalCredits: 0,
+          decisions: calls.map(() => ({
+            allowed: false,
+            reason: quotaResult.reason!,
+            creditsCharged: 0,
+            remainingCredits: keyRecord.credits,
+          })),
+          remainingCredits: keyRecord.credits,
+          reason: quotaResult.reason,
+          failedIndex: 0,
+        };
+      }
+    }
+
+    // Step 9: Team budget check (aggregate)
+    if (this.teamChecker) {
+      const teamResult = this.teamChecker(apiKey, totalCreditsNeeded);
+      if (!teamResult.allowed) {
+        if (!this.config.shadowMode) {
+          return {
+            allAllowed: false,
+            totalCredits: 0,
+            decisions: calls.map(() => ({
+              allowed: false,
+              reason: teamResult.reason!,
+              creditsCharged: 0,
+              remainingCredits: keyRecord.credits,
+            })),
+            remainingCredits: keyRecord.credits,
+            reason: teamResult.reason,
+            failedIndex: 0,
+          };
+        }
+      }
+    }
+
+    // Step 10: ALL ALLOWED — deduct credits atomically
+    this.store.deductCredits(apiKey, totalCreditsNeeded);
+    this.onCreditsDeducted?.(apiKey, totalCreditsNeeded);
+
+    // Record rate limits and quota for each call
+    this.rateLimiter.record(apiKey);
+    for (const call of calls) {
+      const toolPricing = this.config.toolPricing[call.name];
+      if (toolPricing?.rateLimitPerMin && toolPricing.rateLimitPerMin > 0) {
+        this.rateLimiter.recordCustom(`${apiKey}:tool:${call.name}`);
+      }
+    }
+    this.quotaTracker.recordBatch(keyRecord, calls.length, totalCreditsNeeded);
+    if (this.teamRecorder) {
+      this.teamRecorder(apiKey, totalCreditsNeeded);
+    }
+    this.store.save();
+
+    const remaining = this.store.getKey(apiKey)?.credits ?? 0;
+
+    // Record usage events for each call
+    for (let i = 0; i < calls.length; i++) {
+      this.recordEvent(apiKey, keyRecord.name, calls[i].name, perCallCredits[i], true);
+    }
+
+    return {
+      allAllowed: true,
+      totalCredits: totalCreditsNeeded,
+      decisions: calls.map((_, i) => ({
+        allowed: true,
+        creditsCharged: perCallCredits[i],
+        remainingCredits: remaining,
+      })),
+      remainingCredits: remaining,
+      failedIndex: -1,
+    };
+  }
+
+  /** Build a shadow-mode batch result (all allowed, zero charges). */
+  private shadowBatchResult(calls: BatchToolCall[], reason: string): BatchGateResult {
+    return {
+      allAllowed: true,
+      totalCredits: 0,
+      decisions: calls.map(() => ({ allowed: true, reason, creditsCharged: 0, remainingCredits: 0 })),
+      remainingCredits: 0,
+      failedIndex: -1,
+    };
   }
 
   /**

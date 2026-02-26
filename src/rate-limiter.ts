@@ -108,6 +108,18 @@ export class RateLimiter {
   }
 
   /**
+   * Get the current count of calls in the window for a key.
+   * Used by batch evaluation to pre-check aggregate limits.
+   */
+  getCurrentCount(key: string): number {
+    const entry = this.windows.get(key);
+    if (!entry) return 0;
+    const cutoff = Date.now() - this.windowMs;
+    entry.timestamps = entry.timestamps.filter(t => t > cutoff);
+    return entry.timestamps.length;
+  }
+
+  /**
    * Record a call for any key (including composite per-tool keys).
    */
   recordCustom(key: string): void {

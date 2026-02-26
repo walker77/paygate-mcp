@@ -57,6 +57,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring and clearing
 - **Health Check + Graceful Shutdown** — `GET /health` public endpoint with status, uptime, version, in-flight requests, Redis & webhook stats; `gracefulStop()` drains in-flight requests before teardown
 - **Config Validation + Dry Run** — `paygate-mcp validate --config paygate.json` catches misconfigurations before starting; `--dry-run` discovers tools, prints pricing table, then exits
+- **Batch Tool Calls** — `tools/call_batch` method for calling multiple tools in one request with all-or-nothing billing, aggregate credit checks, and parallel execution
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -313,6 +314,8 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 
 These MCP methods pass through without auth or billing:
 `initialize`, `initialized`, `ping`, `tools/list`, `resources/list`, `prompts/list`
+
+**Gated methods:** `tools/call` (single), `tools/call_batch` (batch — all-or-nothing billing, parallel execution). See [Batch Tool Calls](#batch-tool-calls).
 
 ## CLI Options
 
@@ -1035,6 +1038,67 @@ const diags = validateConfig(myConfig);
 if (diags.some(d => d.level === 'error')) {
   console.error(formatDiagnostics(diags));
   process.exit(1);
+}
+```
+
+### Batch Tool Calls
+
+Call multiple tools in a single request with all-or-nothing billing:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call_batch",
+  "params": {
+    "calls": [
+      { "name": "search", "arguments": { "q": "MCP servers" } },
+      { "name": "translate", "arguments": { "text": "hello", "to": "es" } },
+      { "name": "summarize", "arguments": { "url": "https://example.com" } }
+    ]
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "results": [
+      { "tool": "search", "result": { "content": [...] }, "creditsCharged": 5 },
+      { "tool": "translate", "result": { "content": [...] }, "creditsCharged": 3 },
+      { "tool": "summarize", "result": { "content": [...] }, "creditsCharged": 2 }
+    ],
+    "totalCreditsCharged": 10,
+    "remainingCredits": 90
+  }
+}
+```
+
+**Key features:**
+- **All-or-nothing** — All calls are pre-validated (auth, ACL, rate limits, credits, quotas) before any execute. If any call would be denied, the entire batch is rejected and zero credits are charged.
+- **Aggregate pricing** — Total credits are checked and deducted atomically. A batch of 3 calls needing 5+3+2=10 credits requires 10 credits available.
+- **Parallel execution** — After gate approval, all tool calls execute concurrently for minimum latency.
+- **Refund on failure** — With `refundOnFailure` enabled, individual tools that error downstream get their credits refunded.
+- **Multi-server support** — Works with prefixed tools in multi-server mode (e.g., `fs:read`, `github:search`).
+
+**Programmatic API:**
+
+```typescript
+import { Gate, BatchToolCall } from 'paygate-mcp';
+
+const calls: BatchToolCall[] = [
+  { name: 'search', arguments: { q: 'test' } },
+  { name: 'translate', arguments: { text: 'hi' } },
+];
+
+const result = gate.evaluateBatch(apiKey, calls, clientIp);
+if (!result.allAllowed) {
+  console.log(`Denied at index ${result.failedIndex}: ${result.reason}`);
+} else {
+  console.log(`Charged ${result.totalCredits} credits for ${calls.length} calls`);
 }
 ```
 

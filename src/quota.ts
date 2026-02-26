@@ -100,6 +100,62 @@ export class QuotaTracker {
   }
 
   /**
+   * Check if a batch of N calls is within quota limits.
+   * Like check() but accounts for the total call count and aggregate credits.
+   */
+  checkBatch(record: ApiKeyRecord, callCount: number, totalCreditsRequired: number, globalQuota?: QuotaConfig): QuotaCheckResult {
+    this.resetIfNeeded(record);
+
+    const quota = record.quota || globalQuota;
+    if (!quota) return { allowed: true };
+
+    // Daily call limit (batch-aware)
+    if (quota.dailyCallLimit > 0 && (record.quotaDailyCalls + callCount) > quota.dailyCallLimit) {
+      return {
+        allowed: false,
+        reason: `daily_call_quota_exceeded: ${record.quotaDailyCalls}+${callCount} would exceed ${quota.dailyCallLimit} calls/day`,
+      };
+    }
+
+    // Monthly call limit (batch-aware)
+    if (quota.monthlyCallLimit > 0 && (record.quotaMonthlyCalls + callCount) > quota.monthlyCallLimit) {
+      return {
+        allowed: false,
+        reason: `monthly_call_quota_exceeded: ${record.quotaMonthlyCalls}+${callCount} would exceed ${quota.monthlyCallLimit} calls/month`,
+      };
+    }
+
+    // Daily credit limit
+    if (quota.dailyCreditLimit > 0 && (record.quotaDailyCredits + totalCreditsRequired) > quota.dailyCreditLimit) {
+      return {
+        allowed: false,
+        reason: `daily_credit_quota_exceeded: ${record.quotaDailyCredits}+${totalCreditsRequired} would exceed ${quota.dailyCreditLimit} credits/day`,
+      };
+    }
+
+    // Monthly credit limit
+    if (quota.monthlyCreditLimit > 0 && (record.quotaMonthlyCredits + totalCreditsRequired) > quota.monthlyCreditLimit) {
+      return {
+        allowed: false,
+        reason: `monthly_credit_quota_exceeded: ${record.quotaMonthlyCredits}+${totalCreditsRequired} would exceed ${quota.monthlyCreditLimit} credits/month`,
+      };
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Record N successful calls against quota counters (for batches).
+   */
+  recordBatch(record: ApiKeyRecord, callCount: number, totalCreditsCharged: number): void {
+    this.resetIfNeeded(record);
+    record.quotaDailyCalls += callCount;
+    record.quotaMonthlyCalls += callCount;
+    record.quotaDailyCredits += totalCreditsCharged;
+    record.quotaMonthlyCredits += totalCreditsCharged;
+  }
+
+  /**
    * Record a successful call against quota counters.
    * Call AFTER the gate decision is ALLOW and credits are deducted.
    */
