@@ -32,7 +32,7 @@ const PG_CHANNEL = 'pg:events';
 
 export interface PubSubEvent {
   /** Event type */
-  type: 'key_updated' | 'key_revoked' | 'credits_changed' | 'key_created';
+  type: 'key_updated' | 'key_revoked' | 'credits_changed' | 'key_created' | 'token_revoked';
   /** API key affected */
   key: string;
   /** Originating instance ID (for self-message filtering) */
@@ -43,6 +43,10 @@ export interface PubSubEvent {
     totalSpent?: number;
     totalCalls?: number;
     active?: boolean;
+    // Token revocation data
+    expiresAt?: string;
+    revokedAt?: string;
+    reason?: string;
   };
 }
 
@@ -115,6 +119,8 @@ export class RedisSync {
   private pubsubActive = false;
   /** Callback for external consumers of pub/sub events (testing, monitoring) */
   onPubSubEvent?: (event: PubSubEvent) => void;
+  /** Callback for token revocation events (wired to ScopedTokenManager by server) */
+  onTokenRevoked?: (fingerprint: string, expiresAt: string, revokedAt: string, reason?: string) => void;
 
   constructor(redis: RedisClient, store: KeyStore, syncIntervalMs = 5000) {
     this.redis = redis;
@@ -236,6 +242,18 @@ export class RedisSync {
         case 'key_created': {
           // Full refresh of this key from Redis (needs latest data)
           this.refreshSingleKey(event.key).catch(() => {});
+          break;
+        }
+        case 'token_revoked': {
+          // Propagate token revocation to local ScopedTokenManager
+          if (this.onTokenRevoked && event.data) {
+            this.onTokenRevoked(
+              event.key, // fingerprint
+              event.data.expiresAt || '',
+              event.data.revokedAt || new Date().toISOString(),
+              event.data.reason,
+            );
+          }
           break;
         }
       }

@@ -60,6 +60,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Batch Tool Calls** — `tools/call_batch` method for calling multiple tools in one request with all-or-nothing billing, aggregate credit checks, and parallel execution
 - **Multi-Tenant Namespaces** — Isolate API keys and usage data by tenant with namespace-filtered admin endpoints, analytics, and usage export
 - **Scoped Tokens** — Issue short-lived `pgt_` tokens scoped to specific tools with auto-expiry (max 24h), HMAC-SHA256 signed, zero server-side state
+- **Token Revocation List** — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis cross-instance sync, and admin API
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -307,6 +308,8 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/teams/remove` | POST | `X-Admin-Key` | Remove an API key from a team |
 | `/teams/usage` | GET | `X-Admin-Key` | Team usage summary with member breakdown |
 | `/tokens` | POST | `X-Admin-Key` | Create a scoped token (short-lived, tool-restricted) |
+| `/tokens/revoke` | POST | `X-Admin-Key` | Revoke a scoped token (by full token string) |
+| `/tokens/revoked` | GET | `X-Admin-Key` | List all revoked token entries |
 | `/namespaces` | GET | `X-Admin-Key` | List all namespaces with key/credit/spending stats |
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
@@ -1256,6 +1259,68 @@ ScopedTokenManager.isToken('pgt_...'); // true
 ScopedTokenManager.isToken('pg_...');  // false
 ```
 
+### Token Revocation List
+
+Revoke scoped tokens before they expire. Once revoked, the token is immediately rejected by all PayGate instances (synced via Redis pub/sub in multi-instance deployments).
+
+**Revoke a token (admin):**
+
+```bash
+curl -X POST http://localhost:3402/tokens/revoke \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"token": "pgt_eyJhcGl...signature", "reason": "session ended"}'
+```
+
+Returns:
+
+```json
+{
+  "message": "Token revoked",
+  "fingerprint": "a1b2c3d4e5f6...",
+  "expiresAt": "2025-06-15T12:05:00.000Z",
+  "revokedAt": "2025-06-15T11:30:00.000Z"
+}
+```
+
+**List revoked tokens (admin):**
+
+```bash
+curl http://localhost:3402/tokens/revoked \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+Returns `{ count, entries: [{ fingerprint, expiresAt, revokedAt, reason }] }`.
+
+Revocation behavior:
+- **O(1) lookup** — SHA-256 fingerprints stored in a Map for constant-time rejection checks.
+- **Auto-cleanup** — Revocation entries are purged once the original token would have naturally expired (max 24h), so the list never grows unbounded.
+- **Redis sync** — In multi-instance deployments, revocations are propagated via `token_revoked` pub/sub events. Other instances add the entry to their local revocation list immediately.
+- **Audit trail** — Every revocation is logged as a `token.revoked` audit event with fingerprint and reason.
+- **Signature validation** — Only tokens signed by this server can be revoked (prevents revoking arbitrary strings).
+
+**Programmatic usage:**
+
+```typescript
+import { ScopedTokenManager } from 'paygate-mcp';
+
+const tokens = new ScopedTokenManager('your-signing-secret');
+const token = tokens.create({ apiKey: 'pg_key', ttlSeconds: 3600 });
+
+// Revoke
+const entry = tokens.revokeToken(token, 'session ended');
+console.log(entry.fingerprint); // SHA-256 hex
+
+// Validate — now returns { valid: false, reason: 'token_revoked' }
+tokens.validate(token); // { valid: false, reason: 'token_revoked' }
+
+// Check revocation list size
+tokens.revocationList.size; // 1
+
+// Clean up on shutdown
+tokens.destroy();
+```
+
 ### Horizontal Scaling (Redis)
 
 Enable Redis-backed state for multi-process deployments. Multiple PayGate instances share API keys, credits, and usage data through Redis:
@@ -1500,6 +1565,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Batch tool calls — `tools/call_batch` with all-or-nothing billing and parallel execution
 - [x] Multi-tenant namespaces — Isolate API keys and usage data by tenant with namespace-filtered endpoints
 - [x] Scoped tokens — Short-lived `pgt_` tokens with tool ACL narrowing, HMAC-SHA256 signed, zero server-side state
+- [x] Token revocation list — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis sync
 
 ## Requirements
 

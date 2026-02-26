@@ -14,7 +14,7 @@
  *   - Token delegation from a master key to a downstream agent
  */
 
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual, createHash } from 'crypto';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,15 +55,120 @@ export interface TokenCreateOptions {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+export interface RevokedTokenEntry {
+  /** SHA-256 fingerprint of the full token string */
+  fingerprint: string;
+  /** When the revoked token naturally expires (ISO 8601). Entry is purged after this. */
+  expiresAt: string;
+  /** When the token was revoked (ISO 8601) */
+  revokedAt: string;
+  /** Optional reason for audit */
+  reason?: string;
+}
+
 const TOKEN_PREFIX = 'pgt_';
 const MAX_TTL_SECONDS = 86400; // 24 hours
 const DEFAULT_TTL_SECONDS = 3600; // 1 hour
 const MAX_TOKEN_AGE_CHECK_MS = MAX_TTL_SECONDS * 1000;
+const CLEANUP_INTERVAL_MS = 60_000; // Clean expired entries every 60s
+
+// ─── Revocation List ──────────────────────────────────────────────────────────
+
+/**
+ * In-memory revocation list for scoped tokens.
+ *
+ * Stores SHA-256 fingerprints of revoked tokens with their natural expiry.
+ * Entries auto-purge once the original token would have expired anyway
+ * (max 24h), so the list never grows unbounded.
+ *
+ * O(1) lookup via Map. Periodic cleanup via timer.
+ */
+export class TokenRevocationList {
+  private readonly entries = new Map<string, RevokedTokenEntry>();
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    this.cleanupTimer = setInterval(() => this.purgeExpired(), CLEANUP_INTERVAL_MS);
+    if (this.cleanupTimer.unref) this.cleanupTimer.unref();
+  }
+
+  /** Compute fingerprint for a token string. */
+  static fingerprint(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  /** Revoke a token. Returns the entry created, or null if already revoked. */
+  revoke(token: string, expiresAt: string, reason?: string): RevokedTokenEntry | null {
+    const fp = TokenRevocationList.fingerprint(token);
+    if (this.entries.has(fp)) return null; // Already revoked
+
+    const entry: RevokedTokenEntry = {
+      fingerprint: fp,
+      expiresAt,
+      revokedAt: new Date().toISOString(),
+      ...(reason ? { reason } : {}),
+    };
+    this.entries.set(fp, entry);
+    return entry;
+  }
+
+  /** Add a pre-built entry (e.g., from Redis sync). */
+  addEntry(entry: RevokedTokenEntry): void {
+    this.entries.set(entry.fingerprint, entry);
+  }
+
+  /** Check if a token is revoked. O(1). */
+  isRevoked(token: string): boolean {
+    return this.entries.has(TokenRevocationList.fingerprint(token));
+  }
+
+  /** Check by fingerprint directly. O(1). */
+  isRevokedByFingerprint(fingerprint: string): boolean {
+    return this.entries.has(fingerprint);
+  }
+
+  /** Number of active revocation entries. */
+  get size(): number {
+    return this.entries.size;
+  }
+
+  /** List all current revocation entries. */
+  list(): RevokedTokenEntry[] {
+    return Array.from(this.entries.values());
+  }
+
+  /** Remove expired entries (token has naturally expired, no need to track). */
+  purgeExpired(): number {
+    const now = Date.now();
+    let purged = 0;
+    for (const [fp, entry] of this.entries) {
+      if (new Date(entry.expiresAt).getTime() <= now) {
+        this.entries.delete(fp);
+        purged++;
+      }
+    }
+    return purged;
+  }
+
+  /** Destroy the cleanup timer. */
+  destroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
+
+  /** Clear all entries. */
+  clear(): void {
+    this.entries.clear();
+  }
+}
 
 // ─── Manager ──────────────────────────────────────────────────────────────────
 
 export class ScopedTokenManager {
   private readonly secret: string;
+  readonly revocationList: TokenRevocationList;
 
   /**
    * @param secret — Signing secret (the admin key is used by default)
@@ -73,6 +178,7 @@ export class ScopedTokenManager {
       throw new Error('Token signing secret must be at least 8 characters');
     }
     this.secret = secret;
+    this.revocationList = new TokenRevocationList();
   }
 
   /**
@@ -123,6 +229,11 @@ export class ScopedTokenManager {
       return { valid: false, reason: 'invalid_signature' };
     }
 
+    // Check revocation list (before decoding payload — O(1) hash lookup)
+    if (this.revocationList.isRevoked(token)) {
+      return { valid: false, reason: 'token_revoked' };
+    }
+
     // Decode payload
     let payload: TokenPayload;
     try {
@@ -153,10 +264,43 @@ export class ScopedTokenManager {
   }
 
   /**
+   * Revoke a token so it can no longer be used, even before expiry.
+   * Returns the revocation entry, or null if already revoked or invalid.
+   */
+  revokeToken(token: string, reason?: string): RevokedTokenEntry | null {
+    // First validate to extract the expiresAt
+    // Temporarily skip revocation check for this validation
+    if (!token.startsWith(TOKEN_PREFIX)) return null;
+
+    const body = token.slice(TOKEN_PREFIX.length);
+    const dotIdx = body.lastIndexOf('.');
+    if (dotIdx === -1) return null;
+
+    const payloadB64 = body.slice(0, dotIdx);
+    const signatureB64 = body.slice(dotIdx + 1);
+    const expectedSig = this.sign(payloadB64);
+    if (!this.timingSafeCompare(signatureB64, expectedSig)) return null;
+
+    let payload: TokenPayload;
+    try {
+      payload = JSON.parse(this.base64urlDecode(payloadB64));
+    } catch {
+      return null;
+    }
+
+    return this.revocationList.revoke(token, payload.expiresAt, reason);
+  }
+
+  /**
    * Check if a string looks like a scoped token (prefix check only).
    */
   static isToken(value: string): boolean {
     return value.startsWith(TOKEN_PREFIX);
+  }
+
+  /** Destroy timers. Call on server shutdown. */
+  destroy(): void {
+    this.revocationList.destroy();
   }
 
   // ─── Crypto helpers ───────────────────────────────────────────────────────

@@ -43,6 +43,7 @@ export type AuditEventType =
   | 'webhook.dead_letter_cleared'
   // Scoped tokens
   | 'token.created'
+  | 'token.revoked'
   // Billing
   | 'billing.refund';
 

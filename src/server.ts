@@ -214,6 +214,10 @@ export class PayGateServer {
       this.gate.onCreditsDeducted = (apiKey, amount) => {
         sync.atomicDeduct(apiKey, amount).catch(() => {});
       };
+      // Wire token revocation sync: incoming pub/sub → local revocation list
+      sync.onTokenRevoked = (fingerprint, expiresAt, revokedAt, reason) => {
+        this.tokens.revocationList.addEntry({ fingerprint, expiresAt, revokedAt, reason });
+      };
     }
   }
 
@@ -354,6 +358,10 @@ export class PayGateServer {
       case '/tokens':
         if (req.method === 'POST') return this.handleCreateToken(req, res);
         break;
+      case '/tokens/revoke':
+        return this.handleRevokeToken(req, res);
+      case '/tokens/revoked':
+        return this.handleListRevokedTokens(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -782,6 +790,9 @@ export class PayGateServer {
         teamsAssign: 'POST /teams/assign — Assign key to team (requires X-Admin-Key)',
         teamsRemove: 'POST /teams/remove — Remove key from team (requires X-Admin-Key)',
         teamsUsage: 'GET /teams/usage?teamId=... — Team usage summary (requires X-Admin-Key)',
+        createToken: 'POST /tokens — Create scoped token (requires X-Admin-Key)',
+        revokeToken: 'POST /tokens/revoke — Revoke a scoped token (requires X-Admin-Key)',
+        listRevokedTokens: 'GET /tokens/revoked — List revoked tokens (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -2538,6 +2549,94 @@ export class PayGateServer {
     }));
   }
 
+  // ─── /tokens/revoke — Revoke a scoped token ────────────────────────────────
+
+  private async handleRevokeToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { token?: string; reason?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.token) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required param: token' }));
+      return;
+    }
+
+    // Validate that it's a real, validly-signed token (even if expired)
+    if (!ScopedTokenManager.isToken(params.token)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not a scoped token (must start with pgt_)' }));
+      return;
+    }
+
+    const entry = this.tokens.revokeToken(params.token, params.reason);
+    if (!entry) {
+      // Already revoked or invalid signature
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Token already revoked or invalid signature' }));
+      return;
+    }
+
+    this.audit.log('token.revoked', 'admin', `Scoped token revoked`, {
+      fingerprint: entry.fingerprint.slice(0, 12) + '...',
+      expiresAt: entry.expiresAt,
+      reason: entry.reason,
+    });
+
+    // Sync to Redis so other instances reject this token too
+    if (this.redisSync) {
+      this.redisSync.publishEvent({
+        type: 'token_revoked',
+        key: entry.fingerprint,
+        data: { expiresAt: entry.expiresAt, revokedAt: entry.revokedAt, reason: entry.reason },
+      }).catch(() => {});
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      message: 'Token revoked',
+      fingerprint: entry.fingerprint,
+      expiresAt: entry.expiresAt,
+      revokedAt: entry.revokedAt,
+    }));
+  }
+
+  // ─── /tokens/revoked — List revoked tokens ─────────────────────────────────
+
+  private handleListRevokedTokens(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const entries = this.tokens.revocationList.list();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      count: entries.length,
+      entries: entries.map(e => ({
+        fingerprint: e.fingerprint,
+        expiresAt: e.expiresAt,
+        revokedAt: e.revokedAt,
+        reason: e.reason || null,
+      })),
+    }));
+  }
+
   /**
    * Sync a key mutation to Redis. Call after any local KeyStore mutation
    * (setAcl, setExpiry, setQuota, setTags, setIpAllowlist, setSpendingLimit).
@@ -2577,6 +2676,7 @@ export class PayGateServer {
     this.oauth?.destroy();
     this.sessions.destroy();
     this.audit.destroy();
+    this.tokens.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }
@@ -2630,6 +2730,7 @@ export class PayGateServer {
     this.oauth?.destroy();
     this.sessions.destroy();
     this.audit.destroy();
+    this.tokens.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }
