@@ -67,6 +67,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Groups** — Policy templates that apply shared ACL, rate limits, pricing overrides, IP allowlists, and quotas to groups of API keys with automatic inheritance and key-level override support
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Credit Transfers** — Atomically transfer credits between API keys with validation, audit trail, and webhook events
+- **Bulk Key Operations** — Execute multiple key operations (create, topup, revoke) in a single request with per-operation error handling and index tracking
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -282,6 +283,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys` | GET | `X-Admin-Key` | List all keys (masked, with expiry status) |
 | `/topup` | POST | `X-Admin-Key` | Add credits to an existing key |
 | `/keys/transfer` | POST | `X-Admin-Key` | Transfer credits between API keys |
+| `/keys/bulk` | POST | `X-Admin-Key` | Execute multiple key operations (create, topup, revoke) in one request |
 | `/keys/revoke` | POST | `X-Admin-Key` | Revoke an API key |
 | `/keys/rotate` | POST | `X-Admin-Key` | Rotate key (new key, same credits/ACL/quotas) |
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
@@ -506,6 +508,45 @@ Response:
 **Validation:** Both keys must exist, be active (not revoked/expired), and the source must have sufficient credits. Fractional credits are floored to integers. Self-transfers are rejected.
 
 **Audit trail:** Every transfer logs a `key.credits_transferred` audit event with masked keys, amount, balances, and memo.
+
+### Bulk Key Operations
+
+Execute multiple key operations (create, topup, revoke) in a single request. Failed operations don't stop subsequent ones — each result includes success status and index for easy correlation.
+
+```bash
+curl -X POST http://localhost:3402/keys/bulk \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operations": [
+      { "action": "create", "name": "api-key-1", "credits": 500, "tags": { "env": "prod" } },
+      { "action": "create", "name": "api-key-2", "credits": 200 },
+      { "action": "topup", "key": "pg_existing_key", "credits": 1000 },
+      { "action": "revoke", "key": "pg_old_key" }
+    ]
+  }'
+```
+
+Response:
+```json
+{
+  "total": 4,
+  "succeeded": 4,
+  "failed": 0,
+  "results": [
+    { "index": 0, "action": "create", "success": true, "result": { "key": "pg_abc...", "name": "api-key-1", "credits": 500 } },
+    { "index": 1, "action": "create", "success": true, "result": { "key": "pg_def...", "name": "api-key-2", "credits": 200 } },
+    { "index": 2, "action": "topup", "success": true, "result": { "creditsAdded": 1000, "newBalance": 1500 } },
+    { "index": 3, "action": "revoke", "success": true, "result": { "message": "Key revoked" } }
+  ]
+}
+```
+
+**Actions:** `create` (with optional name, credits, tags, namespace, allowedTools, deniedTools), `topup` (key + credits), `revoke` (key). Unknown actions return an error result without stopping the batch.
+
+**Limits:** Maximum 100 operations per request. Empty operations array returns 400.
+
+**Audit trail:** Each successful operation logs an individual audit event with "(bulk)" suffix.
 
 ### Spending Limits
 
@@ -1990,6 +2031,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Admin API key management — Multiple admin keys with role-based permissions (super_admin, admin, viewer)
 - [x] Webhook filters — Route events to multiple destinations by event type and key prefix with independent retry queues
 - [x] Credit transfers — Atomically transfer credits between API keys with validation and audit trail
+- [x] Bulk key operations — Execute multiple create/topup/revoke operations in one request with per-operation error handling
 
 ## Requirements
 

@@ -381,6 +381,8 @@ export class PayGateServer {
         return this.handleTopUp(req, res);
       case '/keys/transfer':
         return this.handleCreditTransfer(req, res);
+      case '/keys/bulk':
+        return this.handleBulkOperations(req, res);
       case '/balance':
         return this.handleBalance(req, res);
       case '/limits':
@@ -897,6 +899,7 @@ export class PayGateServer {
         setExpiry: 'POST /keys/expiry — Set key expiry (requires X-Admin-Key)',
         topUp: 'POST /topup — Add credits (requires X-Admin-Key)',
         transfer: 'POST /keys/transfer — Transfer credits between keys (requires X-Admin-Key)',
+        bulk: 'POST /keys/bulk — Bulk key operations: create, topup, revoke (requires X-Admin-Key)',
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
         setQuota: 'POST /keys/quota — Set usage quota (requires X-Admin-Key)',
@@ -1274,6 +1277,146 @@ export class PayGateServer {
       to: { keyMasked: maskKeyForAudit(params.to), balance: toBalance },
       memo: memo || undefined,
       message: `Transferred ${credits} credits`,
+    }));
+  }
+
+  // ─── /keys/bulk — Bulk key operations ──────────────────────────────────────
+
+  private async handleBulkOperations(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { operations?: Array<{ action: string; [key: string]: unknown }> };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.operations || !Array.isArray(params.operations) || params.operations.length === 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing or empty "operations" array' }));
+      return;
+    }
+
+    if (params.operations.length > 100) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Maximum 100 operations per request' }));
+      return;
+    }
+
+    const results: Array<{ index: number; action: string; success: boolean; result?: Record<string, unknown>; error?: string }> = [];
+
+    for (let i = 0; i < params.operations.length; i++) {
+      const op = params.operations[i];
+      try {
+        switch (op.action) {
+          case 'create': {
+            const name = String(op.name || 'unnamed').slice(0, 200);
+            const credits = Math.max(0, Math.floor(Number(op.credits) || 100));
+            if (credits <= 0) {
+              results.push({ index: i, action: 'create', success: false, error: 'Credits must be positive' });
+              break;
+            }
+            const record = this.gate.store.createKey(name, credits, {
+              allowedTools: op.allowedTools as string[] | undefined,
+              deniedTools: op.deniedTools as string[] | undefined,
+              tags: op.tags as Record<string, string> | undefined,
+              namespace: op.namespace as string | undefined,
+            });
+            if (this.redisSync) {
+              this.redisSync.saveKey(record).catch(() => {});
+            }
+            this.audit.log('key.created', 'admin', `Key created (bulk): ${name}`, {
+              keyMasked: maskKeyForAudit(record.key), name, credits,
+            });
+            results.push({
+              index: i, action: 'create', success: true,
+              result: { key: record.key, name: record.name, credits: record.credits },
+            });
+            break;
+          }
+          case 'topup': {
+            const key = op.key as string;
+            const amount = Math.floor(Number(op.credits));
+            if (!key) {
+              results.push({ index: i, action: 'topup', success: false, error: 'Missing key' });
+              break;
+            }
+            if (!Number.isFinite(amount) || amount <= 0) {
+              results.push({ index: i, action: 'topup', success: false, error: 'Credits must be a positive integer' });
+              break;
+            }
+            let success: boolean;
+            if (this.redisSync) {
+              success = await this.redisSync.atomicTopup(key, amount);
+            } else {
+              success = this.gate.store.addCredits(key, amount);
+            }
+            if (!success) {
+              results.push({ index: i, action: 'topup', success: false, error: 'Key not found or inactive' });
+              break;
+            }
+            const record = this.gate.store.getKey(key);
+            this.audit.log('key.topup', 'admin', `Added ${amount} credits (bulk)`, {
+              keyMasked: maskKeyForAudit(key), creditsAdded: amount, newBalance: record?.credits,
+            });
+            results.push({
+              index: i, action: 'topup', success: true,
+              result: { keyMasked: maskKeyForAudit(key), creditsAdded: amount, newBalance: record?.credits },
+            });
+            break;
+          }
+          case 'revoke': {
+            const key = op.key as string;
+            if (!key) {
+              results.push({ index: i, action: 'revoke', success: false, error: 'Missing key' });
+              break;
+            }
+            let success: boolean;
+            if (this.redisSync) {
+              success = await this.redisSync.revokeKey(key);
+            } else {
+              success = this.gate.store.revokeKey(key);
+            }
+            if (!success) {
+              results.push({ index: i, action: 'revoke', success: false, error: 'Key not found' });
+              break;
+            }
+            this.audit.log('key.revoked', 'admin', 'Key revoked (bulk)', {
+              keyMasked: maskKeyForAudit(key),
+            });
+            this.emitWebhookAdmin('key.revoked', 'admin', { keyMasked: maskKeyForAudit(key) });
+            results.push({
+              index: i, action: 'revoke', success: true,
+              result: { keyMasked: maskKeyForAudit(key) },
+            });
+            break;
+          }
+          default:
+            results.push({ index: i, action: op.action || 'unknown', success: false, error: `Unknown action: ${op.action}` });
+        }
+      } catch (e: any) {
+        results.push({ index: i, action: op.action || 'unknown', success: false, error: e.message || 'Internal error' });
+      }
+    }
+
+    const succeeded = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      total: results.length,
+      succeeded,
+      failed,
+      results,
     }));
   }
 
