@@ -420,6 +420,8 @@ export class PayGateServer {
         return this.handleMcp(req, res);
       case '/health':
         return this.handleHealth(req, res);
+      case '/info':
+        return this.handleInfo(req, res);
       case '/status':
         return this.handleStatus(req, res);
       case '/keys':
@@ -998,6 +1000,7 @@ export class PayGateServer {
       version: PKG_VERSION,
       endpoints: {
         mcp: 'POST /mcp — JSON-RPC (MCP transport). Send X-API-Key header.',
+        info: 'GET /info — Server capabilities, features, pricing summary (public)',
         balance: 'GET /balance — Check own credits (requires X-API-Key)',
         dashboard: 'GET /dashboard — Admin web dashboard (browser UI)',
         status: 'GET /status — Usage data JSON (requires X-Admin-Key)',
@@ -1134,6 +1137,73 @@ export class PayGateServer {
 
     res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(health));
+  }
+
+  // ─── /info — Server capabilities and feature summary ────────────────────────
+
+  private handleInfo(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const features: Record<string, boolean> = {
+      shadowMode: this.config.shadowMode,
+      webhooks: !!this.config.webhookUrl,
+      webhookSignatures: !!this.config.webhookSecret,
+      webhookFilters: !!(this.config.webhookFilters && this.config.webhookFilters.length > 0),
+      refundOnFailure: this.config.refundOnFailure,
+      oauth: !!this.config.oauth,
+      redis: !!this.redisSync,
+      teams: this.teams.listTeams().length > 0,
+      plugins: this.plugins.count > 0,
+      alerts: !!(this.config.alertRules && this.config.alertRules.length > 0),
+      expiryScanner: !!(this.expiryScanner),
+      templates: this.templates.list().length > 0,
+      multiServer: !!this.router,
+      quotas: !!this.config.globalQuota,
+    };
+
+    const pricing: Record<string, unknown> = {
+      defaultCreditsPerCall: this.config.defaultCreditsPerCall,
+      toolPricing: Object.keys(this.config.toolPricing).length > 0
+        ? Object.fromEntries(
+            Object.entries(this.config.toolPricing).map(([tool, p]) => [tool, { creditsPerCall: p.creditsPerCall }])
+          )
+        : {},
+    };
+
+    const auth: string[] = ['api_key'];
+    if (this.config.oauth) auth.push('oauth2');
+    auth.push('scoped_token');
+
+    const info = {
+      name: this.config.name,
+      version: PKG_VERSION,
+      transport: this.router ? 'multi-server' : (this.proxy instanceof HttpMcpProxy ? 'http' : 'stdio'),
+      port: this.config.port,
+      auth,
+      features,
+      pricing,
+      rateLimit: {
+        globalPerMin: this.config.globalRateLimitPerMin,
+      },
+      endpoints: {
+        mcp: '/mcp',
+        health: '/health',
+        info: '/info',
+        status: '/status (admin)',
+        keys: '/keys (admin)',
+        metrics: '/metrics',
+        pricing: '/pricing',
+        audit: '/audit (admin)',
+        analytics: '/analytics (admin)',
+      },
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(info));
   }
 
   // ─── /keys — Create ─────────────────────────────────────────────────────────

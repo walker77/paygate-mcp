@@ -81,6 +81,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Templates** — Named templates for API key creation — define reusable presets (credits, ACL, quotas, IP, tags, namespace, expiry TTL, spending limit, auto-topup) and create keys with `template: "free-tier"` — explicit params override template defaults, CRUD admin API, Prometheus gauge, file persistence, max 100 templates
 - **Environment Variables Config** — Configure everything via `PAYGATE_*` env vars for Docker/K8s deployments — 18 env vars covering all CLI flags, with priority: CLI flags > env vars > config file > defaults, `PAYGATE_CONFIG` loads config file path, help text with Docker examples
 - **Request ID Tracking** — Every HTTP response includes `X-Request-Id` header (auto-generated `req_` prefix + 16 hex chars) for distributed tracing — propagates incoming `X-Request-Id` from load balancers/proxies, included in gate audit log metadata, CORS-exposed, available via `getRequestId(req)` helper
+- **Server Info Endpoint** — `GET /info` returns server capabilities, enabled features, auth methods, pricing summary, rate limits, and available endpoints — public, no admin key required, ideal for agent auto-discovery and debugging
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1399,6 +1400,52 @@ curl -v -H "X-Request-Id: my-trace-123" http://localhost:3402/health
 | CORS | Included in `Access-Control-Allow-Headers` and `Access-Control-Expose-Headers` |
 | Audit | Request ID appears in `gate.allow`, `gate.deny`, and `session.created` audit metadata |
 | Exports | `generateRequestId()` and `getRequestId(req)` available in SDK |
+
+### Server Info Endpoint
+
+`GET /info` returns a comprehensive JSON object describing the server's capabilities. Public endpoint — no admin key required.
+
+```bash
+curl http://localhost:3402/info
+```
+
+```json
+{
+  "name": "My API Server",
+  "version": "5.5.0",
+  "transport": "stdio",
+  "port": 3402,
+  "auth": ["api_key", "scoped_token"],
+  "features": {
+    "shadowMode": false,
+    "webhooks": true,
+    "webhookSignatures": true,
+    "refundOnFailure": true,
+    "redis": false,
+    "oauth": false,
+    "plugins": false,
+    "multiServer": false
+  },
+  "pricing": {
+    "defaultCreditsPerCall": 1,
+    "toolPricing": {
+      "expensive-tool": { "creditsPerCall": 10 }
+    }
+  },
+  "rateLimit": { "globalPerMin": 60 },
+  "endpoints": {
+    "mcp": "/mcp",
+    "health": "/health",
+    "info": "/info",
+    "status": "/status (admin)",
+    "keys": "/keys (admin)",
+    "metrics": "/metrics",
+    "pricing": "/pricing",
+    "audit": "/audit (admin)",
+    "analytics": "/analytics (admin)"
+  }
+}
+```
 
 ### IP Allowlisting
 
