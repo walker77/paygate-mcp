@@ -198,6 +198,12 @@ export class PayGateServer {
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
   private draining = false;
+  /** Whether the server is in maintenance mode (rejects /mcp with 503) */
+  private maintenanceMode = false;
+  /** Custom message shown during maintenance mode */
+  private maintenanceMessage = 'Server is under maintenance';
+  /** Timestamp when maintenance mode was enabled */
+  private maintenanceSince: string | null = null;
   /** Number of in-flight /mcp requests */
   private inflight = 0;
   /** Config file path for hot reload (null if not using config file) */
@@ -515,6 +521,11 @@ export class PayGateServer {
           res.end(JSON.stringify({ error: 'Server is shutting down' }));
           return;
         }
+        if (this.maintenanceMode) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: this.maintenanceMessage }));
+          return;
+        }
         return this.handleMcp(req, res);
       case '/health':
         return this.handleHealth(req, res);
@@ -688,6 +699,13 @@ export class PayGateServer {
         return this.handleAssignKeyToGroup(req, res);
       case '/groups/remove':
         return this.handleRemoveKeyFromGroup(req, res);
+      // ─── Maintenance mode ──────────────────────────────────────────
+      case '/maintenance':
+        if (req.method === 'GET') return this.handleGetMaintenance(req, res);
+        if (req.method === 'POST') return this.handleSetMaintenance(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
       // ─── Config endpoints ──────────────────────────────────────────
       case '/config/reload':
         return this.handleConfigReload(req, res);
@@ -1189,6 +1207,7 @@ export class PayGateServer {
         removeKeyFromGroup: 'POST /groups/remove — Remove a key from a group (requires X-Admin-Key)',
         configReload: 'POST /config/reload — Hot reload config from file (requires X-Admin-Key)',
         configExport: 'GET /config — Export running config with sensitive values masked (requires X-Admin-Key)',
+        maintenance: 'GET /maintenance — Check status + POST to enable/disable maintenance mode (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -1229,7 +1248,7 @@ export class PayGateServer {
     }
 
     const uptimeMs = Date.now() - this.startedAt;
-    const status = this.draining ? 'draining' : 'healthy';
+    const status = this.draining ? 'draining' : this.maintenanceMode ? 'maintenance' : 'healthy';
     const httpStatus = this.draining ? 503 : 200;
 
     const health: Record<string, unknown> = {
@@ -4119,6 +4138,80 @@ export class PayGateServer {
       remaining,
       message: `Replayed ${replayed} dead letter entries`,
     }));
+  }
+
+  // ─── /maintenance — Maintenance mode (503 on /mcp while admin stays up) ──
+
+  private handleGetMaintenance(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      enabled: this.maintenanceMode,
+      message: this.maintenanceMode ? this.maintenanceMessage : undefined,
+      since: this.maintenanceSince,
+    }));
+  }
+
+  private handleSetMaintenance(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk; });
+    req.on('end', () => {
+      let params: { enabled?: boolean; message?: string };
+      try {
+        params = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+
+      if (typeof params.enabled !== 'boolean') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: enabled (boolean)' }));
+        return;
+      }
+
+      const wasEnabled = this.maintenanceMode;
+      this.maintenanceMode = params.enabled;
+
+      if (params.enabled) {
+        this.maintenanceMessage = params.message || 'Server is under maintenance';
+        this.maintenanceSince = new Date().toISOString();
+        if (!wasEnabled) {
+          this.audit.log('maintenance.enabled', 'admin', `Maintenance mode enabled: ${this.maintenanceMessage}`, {
+            message: this.maintenanceMessage,
+          });
+        }
+      } else {
+        if (wasEnabled) {
+          this.audit.log('maintenance.disabled', 'admin', 'Maintenance mode disabled', {
+            since: this.maintenanceSince,
+          });
+        }
+        this.maintenanceMessage = 'Server is under maintenance';
+        this.maintenanceSince = null;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        enabled: this.maintenanceMode,
+        message: this.maintenanceMode ? this.maintenanceMessage : undefined,
+        since: this.maintenanceSince,
+      }));
+    });
   }
 
   // ─── /config/reload — Hot reload configuration from file ─────────────────

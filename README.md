@@ -94,6 +94,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Spending Velocity** — `GET /keys/spending-velocity?key=...` returns credit burn rate and depletion forecast — credits/calls per hour/day, estimated depletion date, top tools by spend, configurable analysis window (1h–30d)
 - **Key Comparison** — `GET /keys/compare?keys=pg_a,pg_b` returns side-by-side comparison of 2–10 keys — credits, usage, velocity, rate limits, status, metadata (namespace/group/tags) — with not-found key reporting
 - **Key Health Score** — `GET /keys/health?key=...` returns composite health score (0–100) with weighted component breakdown: balance health (30%), quota utilization (25%), rate limit pressure (20%), error rate (25%) — status levels (healthy/good/caution/warning/critical), key issue detection (revoked/suspended/expired/expiring/zero credits), alias support
+- **Maintenance Mode** — `POST /maintenance` enables/disables maintenance mode with custom message — `/mcp` returns 503 to clients while admin endpoints stay operational, `GET /maintenance` checks status, `GET /health` reflects maintenance state, full audit trail
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1865,6 +1866,37 @@ curl "http://localhost:3402/keys/health?key=pg_abc" -H "X-Admin-Key: YOUR_ADMIN_
 ```
 
 Components: **balance** (30%, hours until credit depletion), **quota** (25%, max utilization across daily/monthly limits), **rateLimit** (20%, current window usage), **errorRate** (25%, denied/total ratio). Status: healthy (≥90), good (≥75), caution (≥50), warning (≥25), critical (<25). Issues detect: revoked, suspended, expired, expiring soon, zero credits, rapid depletion. Supports aliases.
+
+### Maintenance Mode
+
+Put your server into maintenance mode to gracefully reject client traffic while keeping admin endpoints operational:
+
+```bash
+# Enable maintenance mode
+curl -X POST http://localhost:3402/maintenance \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"enabled": true, "message": "Upgrading to v7 — back in 10 minutes"}'
+
+# Check maintenance status
+curl http://localhost:3402/maintenance -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Disable maintenance mode
+curl -X POST http://localhost:3402/maintenance \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"enabled": false}'
+```
+
+**Response (enabled):**
+
+```json
+{
+  "enabled": true,
+  "message": "Upgrading to v7 — back in 10 minutes",
+  "since": "2025-03-15T14:30:00.000Z"
+}
+```
+
+When enabled, all `/mcp` requests return **503** with the custom message. Admin endpoints (`/keys`, `/maintenance`, `/audit`, etc.) remain fully operational. `GET /health` returns `{"status": "maintenance"}`. Both enable and disable actions are recorded in the audit trail (`maintenance.enabled` / `maintenance.disabled`).
 
 ### IP Allowlisting
 
