@@ -52,6 +52,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Tags/Metadata** — Attach arbitrary key-value tags to API keys for external system integration
 - **Usage Analytics** — Time-series analytics API with tool breakdown, top consumers, and trend comparison
 - **Alert Webhooks** — Configurable alerts for spending thresholds, low credits, quota warnings, key expiry, rate limit spikes
+- **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -291,6 +292,13 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/analytics` | GET | `X-Admin-Key` | Usage analytics (time-series, tool breakdown, trends) |
 | `/alerts` | GET | `X-Admin-Key` | Consume pending alerts |
 | `/alerts` | POST | `X-Admin-Key` | Configure alert rules |
+| `/teams` | GET | `X-Admin-Key` | List all teams |
+| `/teams` | POST | `X-Admin-Key` | Create a team (name, budget, quota, tags) |
+| `/teams/update` | POST | `X-Admin-Key` | Update team settings |
+| `/teams/delete` | POST | `X-Admin-Key` | Delete (deactivate) a team |
+| `/teams/assign` | POST | `X-Admin-Key` | Assign an API key to a team |
+| `/teams/remove` | POST | `X-Admin-Key` | Remove an API key from a team |
+| `/teams/usage` | GET | `X-Admin-Key` | Team usage summary with member breakdown |
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
@@ -517,6 +525,11 @@ When webhooks are enabled, admin operations also fire webhook events:
 | `key.rotated` | POST /keys/rotate | oldKeyMasked, newKeyMasked |
 | `key.expired` | Gate evaluation | keyMasked |
 | `alert.fired` | Gate evaluation | alertType, keyPrefix, message, value, threshold |
+| `team.created` | POST /teams | teamId, name, budget |
+| `team.updated` | POST /teams/update | teamId, changes |
+| `team.deleted` | POST /teams/delete | teamId |
+| `team.key_assigned` | POST /teams/assign | teamId, keyMasked |
+| `team.key_removed` | POST /teams/remove | teamId, keyMasked |
 
 Admin events appear in the `adminEvents` array of the webhook payload (separate from usage `events`). Both arrays can be present in the same batch.
 
@@ -656,7 +669,7 @@ curl http://localhost:3402/audit/stats \
   -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
-**Tracked events:** `key.created`, `key.revoked`, `key.topup`, `key.acl_updated`, `key.expiry_updated`, `key.quota_updated`, `key.limit_updated`, `key.tags_updated`, `key.ip_updated`, `gate.allow`, `gate.deny`, `session.created`, `session.destroyed`, `oauth.client_registered`, `oauth.token_issued`, `oauth.token_revoked`, `admin.auth_failed`, `admin.alerts_configured`, `billing.refund`.
+**Tracked events:** `key.created`, `key.revoked`, `key.topup`, `key.acl_updated`, `key.expiry_updated`, `key.quota_updated`, `key.limit_updated`, `key.tags_updated`, `key.ip_updated`, `gate.allow`, `gate.deny`, `session.created`, `session.destroyed`, `oauth.client_registered`, `oauth.token_issued`, `oauth.token_revoked`, `admin.auth_failed`, `admin.alerts_configured`, `billing.refund`, `team.created`, `team.updated`, `team.deleted`, `team.key_assigned`, `team.key_removed`.
 
 **Retention:** Ring buffer (default 10,000 events), age-based cleanup (default 30 days), automatic periodic enforcement.
 
@@ -855,6 +868,48 @@ Each rule has an optional `cooldownSeconds` (default: 300) to prevent alert stor
 
 When webhooks are enabled (`--webhook-url`), alerts fire as `alert.fired` events in the `adminEvents` webhook payload with full context (key, rule type, current value, threshold).
 
+### Team Management
+
+Group API keys into teams with shared budgets, quotas, and usage tracking. Teams enforce budget and quota limits at the gate level — if a key belongs to a team that has exceeded its budget or quota, tool calls are denied even if the individual key has credits remaining.
+
+```bash
+# Create a team
+curl -X POST http://localhost:3402/teams \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "Engineering", "budget": 10000, "tags": {"dept": "eng"}}'
+
+# Assign an API key to a team
+curl -X POST http://localhost:3402/teams/assign \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"teamId": "team_abc123...", "apiKey": "pg_abc123..."}'
+
+# Set team quotas (daily/monthly limits)
+curl -X POST http://localhost:3402/teams/update \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"teamId": "team_abc123...", "quota": {"dailyCalls": 1000, "monthlyCalls": 25000, "dailyCredits": 5000, "monthlyCredits": 100000}}'
+
+# View team usage with member breakdown
+curl "http://localhost:3402/teams/usage?teamId=team_abc123..." \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Team features:**
+
+| Feature | Description |
+|---------|-------------|
+| Shared budget | Pool credits across all team members (0 = unlimited) |
+| Team quotas | Daily/monthly call and credit limits (UTC auto-reset) |
+| Member breakdown | Per-key usage within the team (keys masked) |
+| Tags/metadata | Attach key-value pairs for department, project, etc. |
+| Max 100 keys | Per team limit to prevent abuse |
+| Gate integration | Budget + quota checked on every tool call |
+| Audit trail | team.created, team.updated, team.deleted, team.key_assigned, team.key_removed events |
+
+Each API key can belong to at most one team. Team budget and quota checks happen after individual key checks — both must pass for a tool call to succeed.
+
 ### Rate Limit Response Headers
 
 Every `/mcp` response includes rate limit and credits headers when an API key is provided:
@@ -970,6 +1025,9 @@ const result = await client.callTool('search', { query: 'hello' });
 - Audit log with retention policies (ring buffer, age-based cleanup)
 - API keys masked in audit events (only first 7 + last 4 chars visible)
 - Discovery endpoints (/.well-known/mcp-payment, /pricing) are public but read-only
+- Team budgets enforce integer arithmetic (no float bypass)
+- Keys masked in team usage summaries (first 7 + last 4 chars only)
+- Team quota resets atomic at UTC day/month boundaries
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
@@ -1009,6 +1067,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Key tags/metadata — Attach key-value tags for external system integration
 - [x] Usage analytics — Time-series analytics API with tool breakdown, trends, and top consumers
 - [x] Alert webhooks — Configurable threshold alerts (spending, credits, quota, expiry, rate limits)
+- [x] Team management — Group API keys with shared budgets, quotas, and usage tracking
 - [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements

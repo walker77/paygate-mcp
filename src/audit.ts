@@ -30,6 +30,12 @@ export type AuditEventType =
   | 'oauth.client_registered'
   | 'oauth.token_issued'
   | 'oauth.token_revoked'
+  // Teams
+  | 'team.created'
+  | 'team.updated'
+  | 'team.deleted'
+  | 'team.key_assigned'
+  | 'team.key_removed'
   // Admin
   | 'admin.auth_failed'
   | 'admin.alerts_configured'

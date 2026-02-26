@@ -37,6 +37,7 @@ import { MetricsCollector } from './metrics';
 import { getDashboardHtml } from './dashboard';
 import { AnalyticsEngine } from './analytics';
 import { AlertEngine, Alert } from './alerts';
+import { TeamManager } from './teams';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -78,6 +79,8 @@ export class PayGateServer {
   readonly analytics: AnalyticsEngine;
   /** Alert engine for proactive monitoring */
   readonly alerts: AlertEngine;
+  /** Team/organization manager */
+  readonly teams: TeamManager;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -156,6 +159,22 @@ export class PayGateServer {
     this.metrics.registerGauge('paygate_pending_alerts_total', 'Number of pending alerts', () => {
       return this.alerts.pendingCount;
     });
+
+    // Team manager
+    this.teams = new TeamManager();
+    this.metrics.registerGauge('paygate_active_teams_total', 'Number of active teams', () => {
+      return this.teams.listTeams().length;
+    });
+
+    // Wire team budget/quota checks into the gate
+    this.gate.teamChecker = (apiKey: string, credits: number) => {
+      const budgetCheck = this.teams.checkBudget(apiKey, credits);
+      if (!budgetCheck.allowed) return budgetCheck;
+      return this.teams.checkQuota(apiKey, credits);
+    };
+    this.gate.teamRecorder = (apiKey: string, credits: number) => {
+      this.teams.recordUsage(apiKey, credits);
+    };
   }
 
   async start(): Promise<{ port: number; adminKey: string }> {
@@ -252,6 +271,21 @@ export class PayGateServer {
         if (req.method === 'GET') return this.handleGetAlerts(req, res);
         if (req.method === 'POST') return this.handleConfigureAlerts(req, res);
         break;
+      // ─── Team management endpoints ────────────────────────────────────
+      case '/teams':
+        if (req.method === 'GET') return this.handleListTeams(req, res);
+        if (req.method === 'POST') return this.handleCreateTeam(req, res);
+        break;
+      case '/teams/update':
+        return this.handleUpdateTeam(req, res);
+      case '/teams/delete':
+        return this.handleDeleteTeam(req, res);
+      case '/teams/assign':
+        return this.handleTeamAssignKey(req, res);
+      case '/teams/remove':
+        return this.handleTeamRemoveKey(req, res);
+      case '/teams/usage':
+        return this.handleTeamUsage(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -578,6 +612,12 @@ export class PayGateServer {
         metrics: 'GET /metrics — Prometheus metrics (public)',
         analytics: 'GET /analytics — Usage analytics with time-series data (requires X-Admin-Key)',
         alerts: 'GET /alerts — Get pending alerts + POST /alerts — Configure alert rules (requires X-Admin-Key)',
+        teams: 'GET /teams — List teams + POST /teams — Create team (requires X-Admin-Key)',
+        teamsUpdate: 'POST /teams/update — Update team (requires X-Admin-Key)',
+        teamsDelete: 'POST /teams/delete — Delete team (requires X-Admin-Key)',
+        teamsAssign: 'POST /teams/assign — Assign key to team (requires X-Admin-Key)',
+        teamsRemove: 'POST /teams/remove — Remove key from team (requires X-Admin-Key)',
+        teamsUsage: 'GET /teams/usage?teamId=... — Team usage summary (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -1828,6 +1868,280 @@ export class PayGateServer {
       return false;
     }
     return true;
+  }
+
+  // ─── /teams — Team management ────────────────────────────────────────────
+
+  private handleListTeams(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      return;
+    }
+
+    const teams = this.teams.listTeams().map(t => ({
+      ...t,
+      memberKeys: t.memberKeys.map(k => k.slice(0, 7) + '...' + k.slice(-4)),
+    }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ teams, count: teams.length }));
+  }
+
+  private async handleCreateTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.name || typeof params.name !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      return;
+    }
+
+    const team = this.teams.createTeam({
+      name: params.name as string,
+      description: params.description as string | undefined,
+      budget: params.budget as number | undefined,
+      quota: params.quota as any,
+      tags: params.tags as Record<string, string> | undefined,
+    });
+
+    this.audit.log('team.created', 'admin', `Team created: ${team.name}`, {
+      teamId: team.id,
+      teamName: team.name,
+      budget: team.budget,
+    });
+
+    this.gate.store.save();
+
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Team created', team }));
+  }
+
+  private async handleUpdateTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.teamId || typeof params.teamId !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      return;
+    }
+
+    const success = this.teams.updateTeam(params.teamId as string, {
+      name: params.name as string | undefined,
+      description: params.description as string | undefined,
+      budget: params.budget as number | undefined,
+      quota: params.quota as any,
+      tags: params.tags as Record<string, string | null> | undefined,
+    });
+
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Team not found or inactive' }));
+      return;
+    }
+
+    this.audit.log('team.updated', 'admin', `Team updated: ${params.teamId}`, { teamId: params.teamId });
+    this.gate.store.save();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Team updated', team: this.teams.getTeam(params.teamId as string) }));
+  }
+
+  private async handleDeleteTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.teamId || typeof params.teamId !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      return;
+    }
+
+    const success = this.teams.deleteTeam(params.teamId as string);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Team not found or already deleted' }));
+      return;
+    }
+
+    this.audit.log('team.deleted', 'admin', `Team deleted: ${params.teamId}`, { teamId: params.teamId });
+    this.gate.store.save();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Team deleted' }));
+  }
+
+  private async handleTeamAssignKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.teamId || typeof params.teamId !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      return;
+    }
+    if (!params.key || typeof params.key !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: key' }));
+      return;
+    }
+
+    // Verify the key exists
+    const keyRecord = this.gate.store.getKey(params.key as string);
+    if (!keyRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'API key not found' }));
+      return;
+    }
+
+    const result = this.teams.assignKey(params.teamId as string, params.key as string);
+    if (!result.success) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: result.error }));
+      return;
+    }
+
+    this.audit.log('team.key_assigned', 'admin', `Key assigned to team ${params.teamId}`, {
+      teamId: params.teamId,
+      keyMasked: maskKeyForAudit(params.key as string),
+    });
+    this.gate.store.save();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Key assigned to team' }));
+  }
+
+  private async handleTeamRemoveKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.teamId || typeof params.teamId !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      return;
+    }
+    if (!params.key || typeof params.key !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required field: key' }));
+      return;
+    }
+
+    const success = this.teams.removeKey(params.teamId as string, params.key as string);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found in team' }));
+      return;
+    }
+
+    this.audit.log('team.key_removed', 'admin', `Key removed from team ${params.teamId}`, {
+      teamId: params.teamId,
+      keyMasked: maskKeyForAudit(params.key as string),
+    });
+    this.gate.store.save();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Key removed from team' }));
+  }
+
+  private handleTeamUsage(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      return;
+    }
+
+    const url = new URL(req.url || '/', `http://localhost`);
+    const teamId = url.searchParams.get('teamId');
+
+    if (!teamId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query param: teamId' }));
+      return;
+    }
+
+    const summary = this.teams.getUsageSummary(teamId, (key) => this.gate.store.getKey(key));
+    if (!summary) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Team not found' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(summary));
   }
 
   private readBody(req: IncomingMessage): Promise<string> {

@@ -25,6 +25,10 @@ export class Gate {
   readonly webhook: WebhookEmitter | null;
   readonly quotaTracker: QuotaTracker;
   private readonly config: PayGateConfig;
+  /** Optional team-level budget/quota checker injected by server. */
+  teamChecker?: (apiKey: string, credits: number) => { allowed: boolean; reason?: string };
+  /** Optional team usage recorder injected by server. */
+  teamRecorder?: (apiKey: string, credits: number) => void;
 
   constructor(config: PayGateConfig, statePath?: string) {
     this.config = config;
@@ -154,6 +158,18 @@ export class Gate {
       return { allowed: false, reason: quotaResult.reason!, creditsCharged: 0, remainingCredits: keyRecord.credits };
     }
 
+    // Step 8b: Team budget/quota check (if key belongs to a team)
+    if (this.teamChecker) {
+      const teamResult = this.teamChecker(apiKey, creditsRequired);
+      if (!teamResult.allowed) {
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, teamResult.reason);
+        if (this.config.shadowMode) {
+          return { allowed: true, reason: `shadow:${teamResult.reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+        }
+        return { allowed: false, reason: teamResult.reason!, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+    }
+
     // Step 9: ALLOW — deduct credits, record usage, and update quotas
     this.store.deductCredits(apiKey, creditsRequired);
     this.rateLimiter.record(apiKey);
@@ -163,6 +179,10 @@ export class Gate {
     }
     // Update quota counters
     this.quotaTracker.record(keyRecord, creditsRequired);
+    // Record team usage
+    if (this.teamRecorder) {
+      this.teamRecorder(apiKey, creditsRequired);
+    }
     this.store.save();
 
     const remaining = this.store.getKey(apiKey)?.credits ?? 0;
