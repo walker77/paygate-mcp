@@ -76,6 +76,7 @@ function printUsage(): void {
     --webhook-retries <n>  Max retries for failed webhook deliveries (default: 5)
     --refund-on-failure    Refund credits when downstream tool call fails
     --redis-url <url>      Redis URL for distributed state (e.g. "redis://localhost:6379")
+    --header <k:v>         Custom response header (repeatable, e.g. "X-Frame-Options:DENY")
     --dry-run              Start, discover tools, print pricing table, then exit
 
   ENVIRONMENT VARIABLES (override defaults, overridden by CLI flags):
@@ -98,6 +99,7 @@ function printUsage(): void {
     PAYGATE_REDIS_URL      Redis URL (same as --redis-url)
     PAYGATE_DRY_RUN        Set to "true" for dry run (same as --dry-run)
     PAYGATE_CORS_ORIGIN    CORS allowed origin(s), comma-separated (same as --cors-origin)
+    PAYGATE_CUSTOM_HEADERS Custom response headers, comma-separated k:v (same as --header)
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -184,6 +186,8 @@ interface ConfigFile {
     credentials?: boolean;
     maxAge?: number;
   };
+  /** Custom response headers applied to all HTTP responses */
+  customHeaders?: Record<string, string>;
 }
 
 // ─── Env Var Helpers ─────────────────────────────────────────────────────────
@@ -220,6 +224,7 @@ export const ENV_VAR_MAP: Record<string, string> = {
   PAYGATE_REDIS_URL: '--redis-url (Redis URL)',
   PAYGATE_DRY_RUN: '--dry-run (set to "true")',
   PAYGATE_CORS_ORIGIN: '--cors-origin (CORS allowed origin(s), comma-separated)',
+  PAYGATE_CUSTOM_HEADERS: '--header (custom response headers, comma-separated k:v)',
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -321,6 +326,7 @@ async function main(): Promise<void> {
       const stripeSecretFlag = flags['stripe-secret'] || env('PAYGATE_STRIPE_SECRET');
       const refundFlag = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || env('PAYGATE_REFUND_ON_FAILURE') === 'true';
       const corsOriginFlag = flags['cors-origin'] || env('PAYGATE_CORS_ORIGIN');
+      const headerFlag = flags['header'] || env('PAYGATE_CUSTOM_HEADERS');
 
       const port = parseInt(portFlag || String(fileConfig.port || 3402), 10);
       const price = parseInt(priceFlag || String(fileConfig.defaultCreditsPerCall || 1), 10);
@@ -351,6 +357,16 @@ async function main(): Promise<void> {
           ? { origin: corsOriginFlag.includes(',') ? corsOriginFlag.split(',').map((s: string) => s.trim()) : corsOriginFlag }
           : fileConfig.cors;
 
+      // Parse custom headers from CLI/env or config file
+      const customHeaders: Record<string, string> | undefined = headerFlag
+        ? Object.fromEntries(
+            headerFlag.split(',').map((h: string) => {
+              const idx = h.indexOf(':');
+              return idx > 0 ? [h.slice(0, idx).trim(), h.slice(idx + 1).trim()] : [h.trim(), ''];
+            }).filter(([k]: string[]) => k.length > 0)
+          )
+        : fileConfig.customHeaders;
+
       const server = new PayGateServer({
         serverCommand,
         serverArgs,
@@ -367,6 +383,7 @@ async function main(): Promise<void> {
         globalQuota,
         oauth: fileConfig.oauth,
         cors: corsConfig,
+        customHeaders,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Wire config file path for hot-reload support

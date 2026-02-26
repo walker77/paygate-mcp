@@ -83,6 +83,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Request ID Tracking** — Every HTTP response includes `X-Request-Id` header (auto-generated `req_` prefix + 16 hex chars) for distributed tracing — propagates incoming `X-Request-Id` from load balancers/proxies, included in gate audit log metadata, CORS-exposed, available via `getRequestId(req)` helper
 - **Server Info Endpoint** — `GET /info` returns server capabilities, enabled features, auth methods, pricing summary, rate limits, and available endpoints — public, no admin key required, ideal for agent auto-discovery and debugging
 - **Configurable CORS** — Control which origins can access your server: single origin, multiple origins, or wildcard (`*` default), with credentials support, configurable preflight max-age, and `Vary: Origin` for proper caching — set via config file `cors` object, `--cors-origin` CLI flag, or `PAYGATE_CORS_ORIGIN` env var
+- **Custom Response Headers** — Add security headers (`X-Frame-Options`, `X-Content-Type-Options`, etc.), cache control, or any custom headers to all HTTP responses — set via config file `customHeaders` object, `--header` CLI flag, or `PAYGATE_CUSTOM_HEADERS` env var
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1482,6 +1483,35 @@ Config file:
 | Credentials | `Access-Control-Allow-Credentials: true` when enabled |
 | Max-Age | Preflight cache duration (default: 86400 = 24 hours) |
 | Vary | `Vary: Origin` header added when origin is not `*` |
+
+### Custom Response Headers
+
+Add custom HTTP headers to all responses — perfect for security headers, cache control, or custom tracking.
+
+```bash
+# CLI flag: single header
+npx paygate-mcp wrap --server "..." --header "X-Frame-Options:DENY"
+
+# CLI flag: multiple headers (comma-separated)
+npx paygate-mcp wrap --server "..." --header "X-Frame-Options:DENY,X-Content-Type-Options:nosniff"
+
+# Env var
+PAYGATE_CUSTOM_HEADERS="X-Frame-Options:DENY,X-Content-Type-Options:nosniff" npx paygate-mcp wrap --server "..."
+```
+
+Config file:
+```json
+{
+  "customHeaders": {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "X-Custom-Tag": "my-service"
+  }
+}
+```
+
+Custom headers are applied to every HTTP response (health, info, admin, MCP, preflight) and coexist with CORS headers and request IDs. They do not override built-in headers.
 
 ### IP Allowlisting
 

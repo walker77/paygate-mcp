@@ -405,6 +405,13 @@ export class PayGateServer {
       res.setHeader('Vary', 'Origin');
     }
 
+    // Custom response headers
+    if (this.config.customHeaders) {
+      for (const [key, value] of Object.entries(this.config.customHeaders)) {
+        res.setHeader(key, value);
+      }
+    }
+
     if (req.method === 'OPTIONS') {
       const maxAge = corsConfig?.maxAge ?? 86400;
       res.setHeader('Access-Control-Max-Age', String(maxAge));
@@ -1175,6 +1182,7 @@ export class PayGateServer {
       multiServer: !!this.router,
       quotas: !!this.config.globalQuota,
       corsRestricted: !!(this.config.cors && this.config.cors.origin !== '*'),
+      customHeaders: !!(this.config.customHeaders && Object.keys(this.config.customHeaders).length > 0),
     };
 
     const pricing: Record<string, unknown> = {

@@ -118,6 +118,8 @@ export interface PayGateConfig {
     /** Seconds before expiry to notify. Default: [604800, 86400, 3600] (7d, 24h, 1h). */
     thresholds?: number[];
   };
+  /** Custom response headers applied to all HTTP responses. */
+  customHeaders?: Record<string, string>;
   /** CORS configuration. Default: allow all origins (*). */
   cors?: {
     /** Allowed origin(s). Use '*' for all, or specify exact origins. Default: '*'. */
