@@ -89,6 +89,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Listing Pagination** — Enhanced `GET /keys` with cursor-based pagination (`limit`/`offset`), sorting (`sortBy`/`order`), and filtering by namespace, group, active/suspended/expired status, name prefix, and credit range — backward compatible (returns flat array when no pagination params used)
 - **Key Statistics** — `GET /keys/stats` returns aggregate statistics across all keys — total/active/suspended/expired/revoked counts, credit aggregates (allocated/spent/remaining), total calls, namespace and group breakdowns, optional `?namespace=` filter
 - **Rate Limit Status** — `GET /keys/rate-limit-status?key=...` returns the current rate limit window state for any key — global calls used/remaining/reset time, per-tool rate limits with individual usage, read-only (doesn't consume a call)
+- **Quota Status** — `GET /keys/quota-status?key=...` returns daily/monthly quota usage for any key — calls and credits used/remaining/limits, reset periods, quota source (per-key vs global vs none)
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1677,6 +1678,44 @@ curl "http://localhost:3402/keys/rate-limit-status?key=pg_..." -H "X-Admin-Key: 
 ```
 
 `perTool` is only present when tools have per-tool rate limits configured via `toolPricing`. Tools without custom rate limits are not included.
+
+### Quota Status
+
+`GET /keys/quota-status?key=...` returns daily/monthly quota usage for a key:
+
+```bash
+curl "http://localhost:3402/keys/quota-status?key=pg_..." -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_abc123...",
+  "name": "my-key",
+  "quotaSource": "global",
+  "daily": {
+    "callsUsed": 42,
+    "callsLimit": 100,
+    "callsRemaining": 58,
+    "creditsUsed": 150,
+    "creditsLimit": 500,
+    "creditsRemaining": 350,
+    "resetDay": "2026-02-26"
+  },
+  "monthly": {
+    "callsUsed": 850,
+    "callsLimit": 2000,
+    "callsRemaining": 1150,
+    "creditsUsed": 3200,
+    "creditsLimit": 10000,
+    "creditsRemaining": 6800,
+    "resetMonth": "2026-02"
+  }
+}
+```
+
+`quotaSource` indicates where the quota is configured: `"per-key"` (key-level override), `"global"` (server-wide config), or `"none"` (no quota). When a limit is `0` (unlimited), `remaining` is `null`.
 
 ### IP Allowlisting
 

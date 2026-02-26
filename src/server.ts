@@ -553,6 +553,8 @@ export class PayGateServer {
         return this.handleKeyStats(req, res);
       case '/keys/rate-limit-status':
         return this.handleRateLimitStatus(req, res);
+      case '/keys/quota-status':
+        return this.handleQuotaStatus(req, res);
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1126,6 +1128,7 @@ export class PayGateServer {
         keysExpiring: 'GET /keys/expiring?within=86400 — List keys expiring within N seconds (requires X-Admin-Key)',
         keyStats: 'GET /keys/stats — Aggregate key statistics (requires X-Admin-Key)',
         rateLimitStatus: 'GET /keys/rate-limit-status?key=... — Current rate limit window state (requires X-Admin-Key)',
+        quotaStatus: 'GET /keys/quota-status?key=... — Current daily/monthly quota usage (requires X-Admin-Key)',
         keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
         deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
@@ -2877,6 +2880,77 @@ export class PayGateServer {
         windowMs: 60000,
       },
       perTool: Object.keys(perTool).length > 0 ? perTool : undefined,
+    }));
+  }
+
+  // ─── /keys/quota-status — Current daily/monthly quota usage ──────────────────
+
+  private handleQuotaStatus(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const key = params.get('key');
+
+    if (!key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+
+    const keyRecord = this.gate.store.getKey(key);
+    if (!keyRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    // Ensure counters are reset if day/month rolled over
+    this.gate.quotaTracker.resetIfNeeded(keyRecord);
+
+    // Resolve effective quota: per-key overrides global
+    const effectiveQuota = keyRecord.quota || this.config.globalQuota;
+
+    const daily = {
+      callsUsed: keyRecord.quotaDailyCalls,
+      callsLimit: effectiveQuota?.dailyCallLimit || 0,
+      callsRemaining: effectiveQuota?.dailyCallLimit
+        ? Math.max(0, effectiveQuota.dailyCallLimit - keyRecord.quotaDailyCalls)
+        : null,
+      creditsUsed: keyRecord.quotaDailyCredits,
+      creditsLimit: effectiveQuota?.dailyCreditLimit || 0,
+      creditsRemaining: effectiveQuota?.dailyCreditLimit
+        ? Math.max(0, effectiveQuota.dailyCreditLimit - keyRecord.quotaDailyCredits)
+        : null,
+      resetDay: keyRecord.quotaLastResetDay,
+    };
+
+    const monthly = {
+      callsUsed: keyRecord.quotaMonthlyCalls,
+      callsLimit: effectiveQuota?.monthlyCallLimit || 0,
+      callsRemaining: effectiveQuota?.monthlyCallLimit
+        ? Math.max(0, effectiveQuota.monthlyCallLimit - keyRecord.quotaMonthlyCalls)
+        : null,
+      creditsUsed: keyRecord.quotaMonthlyCredits,
+      creditsLimit: effectiveQuota?.monthlyCreditLimit || 0,
+      creditsRemaining: effectiveQuota?.monthlyCreditLimit
+        ? Math.max(0, effectiveQuota.monthlyCreditLimit - keyRecord.quotaMonthlyCredits)
+        : null,
+      resetMonth: keyRecord.quotaLastResetMonth,
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: key.slice(0, 10) + '...',
+      name: keyRecord.name,
+      quotaSource: keyRecord.quota ? 'per-key' : (this.config.globalQuota ? 'global' : 'none'),
+      daily,
+      monthly,
     }));
   }
 
