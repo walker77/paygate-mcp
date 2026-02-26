@@ -74,7 +74,7 @@ export class McpProxy extends EventEmitter {
    * Handle an incoming JSON-RPC request from the client.
    * Gates tools/call through the PayGate. Passes other methods through.
    */
-  async handleRequest(request: JsonRpcRequest, apiKey: string | null): Promise<JsonRpcResponse> {
+  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse> {
     if (!this.started || !this.process) {
       return this.errorResponse(request.id, -32603, 'Server not started');
     }
@@ -102,7 +102,7 @@ export class McpProxy extends EventEmitter {
         return this.errorResponse(request.id, -32602, 'Invalid tool call: missing tool name');
       }
 
-      const decision = this.gate.evaluate(apiKey, toolCall);
+      const decision = this.gate.evaluate(apiKey, toolCall, clientIp);
 
       if (!decision.allowed) {
         return {

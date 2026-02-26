@@ -44,7 +44,7 @@ type ProxyBackend = McpProxy | HttpMcpProxy;
 
 /** Common interface for request handling (single proxy or multi-server router) */
 interface RequestHandler {
-  handleRequest(request: JsonRpcRequest, apiKey: string | null): Promise<JsonRpcResponse>;
+  handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse>;
   start(): Promise<void>;
   stop(): Promise<void>;
   readonly isRunning: boolean;
@@ -197,6 +197,12 @@ export class PayGateServer {
         return this.handleSetExpiry(req, res);
       case '/keys/quota':
         return this.handleSetQuota(req, res);
+      case '/keys/tags':
+        return this.handleSetTags(req, res);
+      case '/keys/ip':
+        return this.handleSetIpAllowlist(req, res);
+      case '/keys/search':
+        return this.handleSearchKeysByTag(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
       case '/balance':
@@ -288,7 +294,11 @@ export class PayGateServer {
       });
     }
 
-    const response = await this.handler.handleRequest(request, apiKey);
+    // Extract client IP for IP allowlist checking
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+      || req.socket.remoteAddress || '';
+
+    const response = await this.handler.handleRequest(request, apiKey, clientIp);
 
     // Inject pricing metadata into tools/list responses
     if (request.method === 'tools/list' && response.result) {
@@ -508,6 +518,9 @@ export class PayGateServer {
         usage: 'GET /usage — Export usage data (requires X-Admin-Key)',
         limits: 'POST /limits — Set spending limit (requires X-Admin-Key)',
         setQuota: 'POST /keys/quota — Set usage quota (requires X-Admin-Key)',
+        setTags: 'POST /keys/tags — Set key tags/metadata (requires X-Admin-Key)',
+        setIpAllowlist: 'POST /keys/ip — Set IP allowlist (requires X-Admin-Key)',
+        searchKeys: 'POST /keys/search — Search keys by tags (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
         mcpPayment: 'GET /.well-known/mcp-payment — Payment metadata (SEP-2007)',
         audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
@@ -543,7 +556,7 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const body = await this.readBody(req);
-    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number } };
+    let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number }; tags?: Record<string, string>; ipAllowlist?: string[] };
     try {
       params = JSON.parse(body);
     } catch {
@@ -585,6 +598,8 @@ export class PayGateServer {
       deniedTools: params.deniedTools,
       expiresAt,
       quota,
+      tags: params.tags,
+      ipAllowlist: params.ipAllowlist,
     });
 
     this.audit.log('key.created', 'admin', `Key created: ${name}`, {
@@ -607,6 +622,8 @@ export class PayGateServer {
       allowedTools: record.allowedTools,
       deniedTools: record.deniedTools,
       expiresAt: record.expiresAt,
+      tags: record.tags,
+      ipAllowlist: record.ipAllowlist,
       message: 'Save this key — it cannot be retrieved later.',
     }));
   }
@@ -935,6 +952,144 @@ export class PayGateServer {
     res.end(JSON.stringify({ quota, message: 'Quota set' }));
   }
 
+  // ─── /keys/tags — Set key tags ──────────────────────────────────────────────
+
+  private async handleSetTags(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; tags?: Record<string, string | null> };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    if (!params.tags || typeof params.tags !== 'object') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing or invalid tags object' }));
+      return;
+    }
+
+    const success = this.gate.store.setTags(params.key, params.tags);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const record = this.gate.store.getKey(params.key);
+
+    this.audit.log('key.tags_updated', 'admin', `Tags updated`, {
+      keyMasked: maskKeyForAudit(params.key),
+      tags: record?.tags || {},
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tags: record?.tags || {},
+      message: 'Tags updated',
+    }));
+  }
+
+  // ─── /keys/ip — Set IP allowlist ───────────────────────────────────────────
+
+  private async handleSetIpAllowlist(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; ips?: string[] };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    if (!Array.isArray(params.ips)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing or invalid ips array' }));
+      return;
+    }
+
+    const success = this.gate.store.setIpAllowlist(params.key, params.ips);
+    if (!success) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const record = this.gate.store.getKey(params.key);
+
+    this.audit.log('key.ip_updated', 'admin', `IP allowlist updated`, {
+      keyMasked: maskKeyForAudit(params.key),
+      ipAllowlist: record?.ipAllowlist || [],
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ipAllowlist: record?.ipAllowlist || [],
+      message: 'IP allowlist updated',
+    }));
+  }
+
+  // ─── /keys/search — Search keys by tags ────────────────────────────────────
+
+  private async handleSearchKeysByTag(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { tags?: Record<string, string> };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.tags || typeof params.tags !== 'object') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing or invalid tags object' }));
+      return;
+    }
+
+    const results = this.gate.store.listKeysByTag(params.tags);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ keys: results, count: results.length }));
+  }
+
   // ─── /balance — Client self-service ────────────────────────────────────────
 
   private handleBalance(req: IncomingMessage, res: ServerResponse): void {
@@ -978,6 +1133,8 @@ export class PayGateServer {
       allowedTools: record.allowedTools,
       deniedTools: record.deniedTools,
       expiresAt: record.expiresAt,
+      tags: record.tags,
+      ipAllowlist: record.ipAllowlist,
       quota: record.quota || null,
       quotaUsage: {
         dailyCalls: record.quotaDailyCalls,

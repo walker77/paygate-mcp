@@ -17,6 +17,8 @@ export type AuditEventType =
   | 'key.acl_updated'
   | 'key.expiry_updated'
   | 'key.quota_updated'
+  | 'key.tags_updated'
+  | 'key.ip_updated'
   | 'key.limit_updated'
   // Gate decisions
   | 'gate.allow'

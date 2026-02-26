@@ -40,7 +40,7 @@ export class Gate {
   /**
    * Evaluate a tool call request.
    */
-  evaluate(apiKey: string | null, toolCall: ToolCallParams): GateDecision {
+  evaluate(apiKey: string | null, toolCall: ToolCallParams, clientIp?: string): GateDecision {
     const toolName = toolCall.name;
     const creditsRequired = this.getToolPrice(toolName, toolCall.arguments);
 
@@ -64,6 +64,18 @@ export class Gate {
         return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: 0 };
       }
       return { allowed: false, reason, creditsCharged: 0, remainingCredits: 0 };
+    }
+
+    // Step 3a: IP allowlist check
+    if (clientIp && keyRecord.ipAllowlist.length > 0) {
+      if (!this.store.checkIp(apiKey, clientIp)) {
+        const reason = `ip_not_allowed: ${clientIp} not in allowlist`;
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason);
+        if (this.config.shadowMode) {
+          return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+        }
+        return { allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
     }
 
     // Step 3: Tool ACL check

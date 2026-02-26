@@ -48,6 +48,8 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Rate Limit Headers** — `X-RateLimit-*` and `X-Credits-Remaining` on every `/mcp` response
 - **Webhook Signatures** — HMAC-SHA256 signed webhook payloads (`X-PayGate-Signature`) for tamper-proof delivery
 - **Admin Lifecycle Events** — Webhook notifications for key.created, key.revoked, key.rotated, key.topup
+- **IP Allowlisting** — Restrict API keys to specific IPs or CIDR ranges (IPv4)
+- **Key Tags/Metadata** — Attach arbitrary key-value tags to API keys for external system integration
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -267,6 +269,9 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys/acl` | POST | `X-Admin-Key` | Set tool ACL (whitelist/blacklist) on a key |
 | `/keys/expiry` | POST | `X-Admin-Key` | Set or remove key expiry (TTL) |
 | `/keys/quota` | POST | `X-Admin-Key` | Set usage quota (daily/monthly limits) |
+| `/keys/tags` | POST | `X-Admin-Key` | Set key tags/metadata (merge semantics) |
+| `/keys/ip` | POST | `X-Admin-Key` | Set IP allowlist (CIDR + exact match) |
+| `/keys/search` | POST | `X-Admin-Key` | Search keys by tag values |
 | `/limits` | POST | `X-Admin-Key` | Set spending limit on a key |
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
@@ -726,6 +731,64 @@ curl -X POST http://localhost:3402/keys/rotate \
 
 The old key is immediately invalidated. All state (credits, totalSpent, totalCalls, ACL, quota, expiry, spending limit) transfers to the new key. Use this for periodic key rotation policies, compromised key response, or key migration.
 
+### IP Allowlisting
+
+Restrict API keys to specific IP addresses or CIDR ranges:
+
+```bash
+# Set IP allowlist on a key (replaces existing list)
+curl -X POST http://localhost:3402/keys/ip \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "ips": ["192.168.1.0/24", "10.0.0.5"]}'
+
+# Clear allowlist (allow all IPs)
+curl -X POST http://localhost:3402/keys/ip \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "ips": []}'
+```
+
+You can also set the allowlist at key creation time:
+
+```bash
+curl -X POST http://localhost:3402/keys \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "prod-agent", "credits": 1000, "ipAllowlist": ["10.0.0.0/8"]}'
+```
+
+Supports exact IPv4 matching and CIDR notation (`/8`, `/16`, `/24`, `/32`, etc.). When the allowlist is empty, all IPs are allowed. Client IP is extracted from `X-Forwarded-For` header (first value) or socket remote address.
+
+### Key Tags / Metadata
+
+Attach arbitrary key-value tags to API keys for external system integration:
+
+```bash
+# Set tags (merge semantics — existing tags preserved, new ones added/updated)
+curl -X POST http://localhost:3402/keys/tags \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "tags": {"team": "backend", "env": "production", "customer_id": "cus_123"}}'
+
+# Remove a tag (set value to null)
+curl -X POST http://localhost:3402/keys/tags \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "tags": {"env": null}}'
+
+# Search keys by tags
+curl -X POST http://localhost:3402/keys/search \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"tags": {"team": "backend"}}'
+# → { "keys": [...], "count": 3 }
+```
+
+Tags can also be set at key creation:
+
+```bash
+curl -X POST http://localhost:3402/keys \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"name": "backend-prod", "credits": 5000, "tags": {"team": "backend", "env": "production"}}'
+```
+
+Limits: max 50 tags per key, max 100 chars per key/value. Tags appear in `/balance` responses and key listings.
+
 ### Rate Limit Response Headers
 
 Every `/mcp` response includes rate limit and credits headers when an API key is provided:
@@ -876,6 +939,8 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Rate limit headers — X-RateLimit-* and X-Credits-Remaining on /mcp responses
 - [x] Webhook signatures — HMAC-SHA256 signed payloads with timing-safe verification
 - [x] Admin lifecycle events — Webhook notifications for key management operations
+- [x] IP allowlisting — Restrict API keys to specific IPs or CIDR ranges
+- [x] Key tags/metadata — Attach key-value tags for external system integration
 - [ ] Horizontal scaling — Redis-backed state for multi-process deployments
 
 ## Requirements

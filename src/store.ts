@@ -51,6 +51,32 @@ export class KeyStore {
   }
 
   /**
+   * Sanitize tags: max 50 entries, keys and values trimmed, max 100 chars each.
+   */
+  private sanitizeTags(tags?: Record<string, string>): Record<string, string> {
+    if (!tags || typeof tags !== 'object') return {};
+    const result: Record<string, string> = {};
+    const entries = Object.entries(tags).slice(0, 50);
+    for (const [k, v] of entries) {
+      const key = String(k).trim().slice(0, 100);
+      const val = String(v).trim().slice(0, 100);
+      if (key) result[key] = val;
+    }
+    return result;
+  }
+
+  /**
+   * Sanitize IP allowlist: max 100 entries, trimmed, basic format validation.
+   */
+  private sanitizeIpList(ips?: string[]): string[] {
+    if (!ips || !Array.isArray(ips)) return [];
+    return ips
+      .filter(ip => typeof ip === 'string' && ip.trim().length > 0)
+      .map(ip => ip.trim())
+      .slice(0, 100);
+  }
+
+  /**
    * Create a new API key with initial credits.
    */
   createKey(name: string, initialCredits: number, options?: {
@@ -58,6 +84,8 @@ export class KeyStore {
     deniedTools?: string[];
     expiresAt?: string | null;
     quota?: QuotaConfig;
+    tags?: Record<string, string>;
+    ipAllowlist?: string[];
   }): ApiKeyRecord {
     const key = `pg_${randomBytes(24).toString('hex')}`;
     const today = new Date().toISOString().slice(0, 10);
@@ -76,6 +104,8 @@ export class KeyStore {
       deniedTools: this.sanitizeToolList(options?.deniedTools),
       expiresAt: options?.expiresAt || null,
       quota: options?.quota,
+      tags: this.sanitizeTags(options?.tags),
+      ipAllowlist: this.sanitizeIpList(options?.ipAllowlist),
       quotaDailyCalls: 0,
       quotaMonthlyCalls: 0,
       quotaDailyCredits: 0,
@@ -201,6 +231,109 @@ export class KeyStore {
   }
 
   /**
+   * Set tags on a key. Merges with existing tags; pass null value to remove a tag.
+   */
+  setTags(key: string, tags: Record<string, string | null>): boolean {
+    const record = this.getKey(key);
+    if (!record) return false;
+    for (const [k, v] of Object.entries(tags)) {
+      const sanitizedKey = String(k).trim().slice(0, 100);
+      if (!sanitizedKey) continue;
+      if (v === null) {
+        delete record.tags[sanitizedKey];
+      } else {
+        if (Object.keys(record.tags).length >= 50 && !(sanitizedKey in record.tags)) continue;
+        record.tags[sanitizedKey] = String(v).trim().slice(0, 100);
+      }
+    }
+    this.save();
+    return true;
+  }
+
+  /**
+   * Set IP allowlist for a key. Empty array = all IPs allowed.
+   */
+  setIpAllowlist(key: string, ips: string[]): boolean {
+    const record = this.getKey(key);
+    if (!record) return false;
+    record.ipAllowlist = this.sanitizeIpList(ips);
+    this.save();
+    return true;
+  }
+
+  /**
+   * Check if an IP is allowed for a key. Returns true if allowlist is empty or IP is in list.
+   * Supports CIDR notation for IPv4 (e.g., "10.0.0.0/8").
+   */
+  checkIp(key: string, ip: string): boolean {
+    const record = this.getKey(key);
+    if (!record) return false;
+    if (record.ipAllowlist.length === 0) return true;
+
+    const clientIp = ip.trim();
+    for (const allowed of record.ipAllowlist) {
+      if (allowed.includes('/')) {
+        // CIDR match
+        if (this.matchCidr(clientIp, allowed)) return true;
+      } else if (allowed === clientIp) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Match an IPv4 address against a CIDR range (e.g., "192.168.1.0/24").
+   */
+  private matchCidr(ip: string, cidr: string): boolean {
+    const [range, bitsStr] = cidr.split('/');
+    const bits = parseInt(bitsStr, 10);
+    if (isNaN(bits) || bits < 0 || bits > 32) return false;
+
+    const ipNum = this.ipToNumber(ip);
+    const rangeNum = this.ipToNumber(range);
+    if (ipNum === null || rangeNum === null) return false;
+
+    const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+    return (ipNum & mask) === (rangeNum & mask);
+  }
+
+  private ipToNumber(ip: string): number | null {
+    const parts = ip.split('.');
+    if (parts.length !== 4) return null;
+    let num = 0;
+    for (const part of parts) {
+      const n = parseInt(part, 10);
+      if (isNaN(n) || n < 0 || n > 255) return null;
+      num = (num << 8) + n;
+    }
+    return num >>> 0;
+  }
+
+  /**
+   * List keys filtered by tag. Returns keys where ALL specified tag key-value pairs match.
+   */
+  listKeysByTag(tags: Record<string, string>): Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> {
+    const result: Array<Omit<ApiKeyRecord, 'key'> & { keyPrefix: string; expired: boolean }> = [];
+    for (const record of this.keys.values()) {
+      // Check all tag filters match
+      let match = true;
+      for (const [k, v] of Object.entries(tags)) {
+        if (record.tags[k] !== v) { match = false; break; }
+      }
+      if (!match) continue;
+
+      const { key, ...rest } = record;
+      result.push({
+        ...rest,
+        keyPrefix: key.slice(0, 10) + '...',
+        expired: this.isExpired(key),
+      });
+    }
+    return result;
+  }
+
+  /**
    * Revoke an API key.
    */
   revokeKey(key: string): boolean {
@@ -275,6 +408,8 @@ export class KeyStore {
     deniedTools?: string[];
     expiresAt?: string | null;
     quota?: QuotaConfig;
+    tags?: Record<string, string>;
+    ipAllowlist?: string[];
   }): ApiKeyRecord {
     const today = new Date().toISOString().slice(0, 10);
     const month = new Date().toISOString().slice(0, 7);
@@ -292,6 +427,8 @@ export class KeyStore {
       deniedTools: this.sanitizeToolList(options?.deniedTools),
       expiresAt: options?.expiresAt || null,
       quota: options?.quota,
+      tags: this.sanitizeTags(options?.tags),
+      ipAllowlist: this.sanitizeIpList(options?.ipAllowlist),
       quotaDailyCalls: 0,
       quotaMonthlyCalls: 0,
       quotaDailyCredits: 0,
@@ -356,6 +493,9 @@ export class KeyStore {
           if (record.quotaMonthlyCredits === undefined) record.quotaMonthlyCredits = 0;
           if (!record.quotaLastResetDay) record.quotaLastResetDay = new Date().toISOString().slice(0, 10);
           if (!record.quotaLastResetMonth) record.quotaLastResetMonth = new Date().toISOString().slice(0, 7);
+          // Backfill v1.7.0 fields
+          if (!record.tags || typeof record.tags !== 'object') record.tags = {};
+          if (!Array.isArray(record.ipAllowlist)) record.ipAllowlist = [];
           this.keys.set(key, record);
         }
       }

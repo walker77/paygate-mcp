@@ -77,7 +77,7 @@ export class MultiServerRouter extends EventEmitter {
   /**
    * Handle an incoming JSON-RPC request, routing to the appropriate backend.
    */
-  async handleRequest(request: JsonRpcRequest, apiKey: string | null): Promise<JsonRpcResponse> {
+  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse> {
     if (!this.started) {
       return this.errorResponse(request.id, -32603, 'Router not started');
     }
@@ -89,7 +89,7 @@ export class MultiServerRouter extends EventEmitter {
 
     // tools/call — route by prefix
     if (request.method === 'tools/call') {
-      return this.handleToolsCall(request, apiKey);
+      return this.handleToolsCall(request, apiKey, clientIp);
     }
 
     // Free methods (initialize, ping, etc.) — forward to first backend
@@ -98,7 +98,7 @@ export class MultiServerRouter extends EventEmitter {
       if (!firstBackend) {
         return this.errorResponse(request.id, -32603, 'No backends configured');
       }
-      return firstBackend.handleRequest(request, apiKey);
+      return firstBackend.handleRequest(request, apiKey, clientIp);
     }
 
     // Unknown method — forward to first backend
@@ -106,7 +106,7 @@ export class MultiServerRouter extends EventEmitter {
     if (!firstBackend) {
       return this.errorResponse(request.id, -32603, 'No backends configured');
     }
-    return firstBackend.handleRequest(request, apiKey);
+    return firstBackend.handleRequest(request, apiKey, clientIp);
   }
 
   /**
@@ -154,7 +154,7 @@ export class MultiServerRouter extends EventEmitter {
   /**
    * Route a tools/call request by extracting the prefix from the tool name.
    */
-  private async handleToolsCall(request: JsonRpcRequest, apiKey: string | null): Promise<JsonRpcResponse> {
+  private async handleToolsCall(request: JsonRpcRequest, apiKey: string | null, clientIp?: string): Promise<JsonRpcResponse> {
     const params = request.params as unknown as ToolCallParams;
     if (!params || !params.name) {
       return this.errorResponse(request.id, -32602, 'Invalid tool call: missing tool name');
@@ -189,7 +189,7 @@ export class MultiServerRouter extends EventEmitter {
     };
 
     // First, run gate evaluation on the prefixed name for billing/ACL
-    const decision = this.gate.evaluate(apiKey, { name: params.name, arguments: params.arguments });
+    const decision = this.gate.evaluate(apiKey, { name: params.name, arguments: params.arguments }, clientIp);
 
     if (!decision.allowed) {
       return {

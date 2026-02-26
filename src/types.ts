@@ -151,6 +151,10 @@ export interface ApiKeyRecord {
   expiresAt: string | null;
   /** Per-key quota overrides. Null = use global defaults / unlimited. */
   quota?: QuotaConfig;
+  /** Arbitrary key-value metadata tags for external system integration. */
+  tags: Record<string, string>;
+  /** IP allowlist: restrict which IPs can use this key. Empty = all IPs allowed. */
+  ipAllowlist: string[];
   /** Quota tracking: calls today (UTC). Reset daily. */
   quotaDailyCalls: number;
   /** Quota tracking: calls this month (UTC). Reset monthly. */
