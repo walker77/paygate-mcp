@@ -446,6 +446,10 @@ export class PayGateServer {
         return this.handleWebhookStats(req, res);
       case '/webhooks/log':
         return this.handleWebhookLog(req, res);
+      case '/webhooks/pause':
+        return this.handleWebhookPause(req, res);
+      case '/webhooks/resume':
+        return this.handleWebhookResume(req, res);
       case '/webhooks/test':
         return this.handleWebhookTest(req, res);
       case '/webhooks/filters':
@@ -958,6 +962,8 @@ export class PayGateServer {
         webhookTest: 'POST /webhooks/test — Send test event to webhook URL and return result (requires X-Admin-Key)',
         webhookStats: 'GET /webhooks/stats — Webhook delivery statistics (requires X-Admin-Key)',
         webhookLog: 'GET /webhooks/log — Webhook delivery log with status, timing, and filters (requires X-Admin-Key)',
+        webhookPause: 'POST /webhooks/pause — Pause webhook delivery (events buffered) (requires X-Admin-Key)',
+        webhookResume: 'POST /webhooks/resume — Resume webhook delivery and flush buffered events (requires X-Admin-Key)',
         webhookFilters: 'GET|POST /webhooks/filters — List or create webhook filter rules (requires X-Admin-Key)',
         updateWebhookFilter: 'POST /webhooks/filters/update — Update a webhook filter rule (requires X-Admin-Key)',
         deleteWebhookFilter: 'POST /webhooks/filters/delete — Delete a webhook filter rule (requires X-Admin-Key)',
@@ -3253,6 +3259,71 @@ export class PayGateServer {
       configured: true,
       total: entries.length,
       entries,
+    }));
+  }
+
+  // ─── /webhooks/pause — Pause webhook delivery ─────────────────────────────
+
+  private handleWebhookPause(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No webhook configured' }));
+      return;
+    }
+
+    const paused = this.gate.webhook.pause();
+    if (!paused) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ paused: true, message: 'Already paused' }));
+      return;
+    }
+
+    this.audit.log('webhook.pause', 'admin', 'Webhook delivery paused');
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      paused: true,
+      message: 'Webhook delivery paused. Events will be buffered until resumed.',
+    }));
+  }
+
+  // ─── /webhooks/resume — Resume webhook delivery ───────────────────────────
+
+  private handleWebhookResume(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    if (!this.gate.webhook) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No webhook configured' }));
+      return;
+    }
+
+    const result = this.gate.webhook.resume();
+    if (!result.resumed) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ paused: false, message: 'Not paused' }));
+      return;
+    }
+
+    this.audit.log('webhook.resume', 'admin', `Webhook delivery resumed, ${result.flushedEvents} buffered events flushed`);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      paused: false,
+      message: 'Webhook delivery resumed.',
+      flushedEvents: result.flushedEvents,
     }));
   }
 

@@ -46,6 +46,8 @@ export type AuditEventType =
   | 'webhook.dead_letter_cleared'
   | 'webhook.replayed'
   | 'webhook.test'
+  | 'webhook.pause'
+  | 'webhook.resume'
   // Scoped tokens
   | 'token.created'
   | 'token.revoked'

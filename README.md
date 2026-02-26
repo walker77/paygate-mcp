@@ -75,6 +75,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Per-Key Usage** — `GET /keys/usage?key=...` returns detailed usage breakdown for a specific key: per-tool stats, hourly time-series, deny reasons, recent events, and key metadata
 - **Webhook Test** — `POST /webhooks/test` sends a test event to your configured webhook URL with synchronous response including status code, response time, and delivery success/failure — verifies webhook connectivity without generating real events
 - **Webhook Delivery Log** — `GET /webhooks/log` returns a queryable log of all webhook delivery attempts with timestamps, HTTP status codes, response times, success/failure, retry attempts, event counts, and event types — filter by success status, time range, and limit
+- **Webhook Pause/Resume** — `POST /webhooks/pause` and `POST /webhooks/resume` temporarily halt webhook delivery during maintenance — events are buffered (not lost) and flushed on resume, with pause state visible in `/webhooks/stats`
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -354,6 +355,8 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/webhooks/replay` | POST | `X-Admin-Key` | Replay dead letter webhook events (all or by index) |
 | `/webhooks/test` | POST | `X-Admin-Key` | Send test event to configured webhook URL (synchronous) |
 | `/webhooks/log` | GET | `X-Admin-Key` | Webhook delivery log with status, timing, and filters |
+| `/webhooks/pause` | POST | `X-Admin-Key` | Pause webhook delivery (events buffered until resumed) |
+| `/webhooks/resume` | POST | `X-Admin-Key` | Resume webhook delivery and flush buffered events |
 | `/config/reload` | POST | `X-Admin-Key` | Hot-reload config file (pricing, rate limits, webhooks, quotas) |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
@@ -1170,6 +1173,28 @@ Each entry includes:
 | `eventTypes` | Distinct event types (e.g. `["usage"]`, `["key.created"]`) |
 
 Query parameters: `limit` (default 50, max 200), `since` (ISO 8601), `success` (`true` or `false`). Entries are capped at 500 in memory. Use alongside `/webhooks/stats` for aggregate counters.
+
+### Webhook Pause/Resume
+
+Temporarily halt webhook delivery during maintenance windows. Events are buffered (not lost) and flushed on resume:
+
+```bash
+# Pause delivery
+curl -X POST http://localhost:3402/webhooks/pause \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Check pause status (visible in /webhooks/stats)
+curl http://localhost:3402/webhooks/stats \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+# → { "paused": true, "pausedAt": "2025-...", "bufferedEvents": 12, ... }
+
+# Resume delivery (flushes buffered events)
+curl -X POST http://localhost:3402/webhooks/resume \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+# → { "paused": false, "flushedEvents": 12 }
+```
+
+While paused, events continue to accumulate in the buffer. On resume, all buffered events are flushed immediately. The pause state and buffered event count are visible in `/webhooks/stats`. Creates audit trail entries (`webhook.pause`, `webhook.resume`).
 
 ### IP Allowlisting
 

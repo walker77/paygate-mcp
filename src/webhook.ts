@@ -116,6 +116,13 @@ export class WebhookEmitter {
   private readonly maxDeliveryLog: number;
   private _deliveryLogSeq = 0;
 
+  /** Whether webhook delivery is paused */
+  private _paused = false;
+  /** When the webhook was paused (ISO 8601) */
+  private _pausedAt: string | null = null;
+  /** Number of events buffered while paused */
+  private _pauseBufferCount = 0;
+
   constructor(url: string, options?: {
     secret?: string | null;
     batchSize?: number;
@@ -171,6 +178,7 @@ export class WebhookEmitter {
 
   flush(): void {
     if (this.buffer.length === 0) return;
+    if (this._paused) return; // Don't flush while paused — events stay buffered
     const batch = this.buffer.splice(0, this.batchSize);
     this.send(batch, 0, new Date().toISOString());
   }
@@ -325,6 +333,9 @@ export class WebhookEmitter {
     totalDelivered: number;
     totalFailed: number;
     totalRetries: number;
+    paused: boolean;
+    pausedAt: string | null;
+    bufferedEvents: number;
   } {
     return {
       pendingRetries: this.retryQueue.length,
@@ -332,7 +343,48 @@ export class WebhookEmitter {
       totalDelivered: this._totalDelivered,
       totalFailed: this._totalFailed,
       totalRetries: this._totalRetries,
+      paused: this._paused,
+      pausedAt: this._pausedAt,
+      bufferedEvents: this.buffer.length,
     };
+  }
+
+  // ─── Pause / Resume ──────────────────────────────────────────────────────
+
+  /**
+   * Pause webhook delivery. Events continue to be buffered but not sent.
+   * Returns true if paused, false if already paused.
+   */
+  pause(): boolean {
+    if (this._paused) return false;
+    this._paused = true;
+    this._pausedAt = new Date().toISOString();
+    this._pauseBufferCount = this.buffer.length;
+    return true;
+  }
+
+  /**
+   * Resume webhook delivery. Buffered events are flushed immediately.
+   * Returns the number of buffered events that will be flushed.
+   */
+  resume(): { resumed: boolean; flushedEvents: number } {
+    if (!this._paused) return { resumed: false, flushedEvents: 0 };
+    this._paused = false;
+    const buffered = this.buffer.length;
+    this._pausedAt = null;
+    this._pauseBufferCount = 0;
+    // Flush all buffered events
+    while (this.buffer.length > 0) {
+      this.flush();
+    }
+    return { resumed: true, flushedEvents: buffered };
+  }
+
+  /**
+   * Whether delivery is currently paused.
+   */
+  get isPaused(): boolean {
+    return this._paused;
   }
 
   // ─── Delivery Log ──────────────────────────────────────────────────────────
