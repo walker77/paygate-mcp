@@ -258,10 +258,13 @@ async function main(): Promise<void> {
         }
       }
 
-      // Handle graceful shutdown
+      // Handle graceful shutdown (drain in-flight requests, then teardown)
+      let shuttingDown = false;
       const shutdown = async () => {
-        console.log('\nShutting down...');
-        await server.stop();
+        if (shuttingDown) return; // prevent double-signal
+        shuttingDown = true;
+        console.log('\nGraceful shutdown initiated…');
+        await server.gracefulStop(30_000);
         process.exit(0);
       };
       process.on('SIGINT', shutdown);

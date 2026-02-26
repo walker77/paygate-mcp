@@ -260,6 +260,11 @@ export class RedisSync {
     }
   }
 
+  /** Whether the main Redis client is connected */
+  get isConnected(): boolean {
+    return this.redis.isConnected;
+  }
+
   /** Whether pub/sub is actively listening */
   get isPubSubActive(): boolean {
     return this.pubsubActive;

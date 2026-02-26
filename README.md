@@ -55,6 +55,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
 - **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, persistent usage audit trail, real-time pub/sub notifications, and admin API sync
 - **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring and clearing
+- **Health Check + Graceful Shutdown** — `GET /health` public endpoint with status, uptime, version, in-flight requests, Redis & webhook stats; `gracefulStop()` drains in-flight requests before teardown
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -304,7 +305,8 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/audit` | GET | `X-Admin-Key` | Query audit log (filter by type, actor, time) |
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
-| `/` | GET | None | Health check |
+| `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
+| `/` | GET | None | Root endpoint (endpoint list) |
 
 ### Free Methods
 
@@ -946,6 +948,43 @@ X-Credits-Remaining: 4500     # Credits remaining on the key
 ```
 
 When a tool has a per-tool rate limit, the headers reflect that tool's limit (not the global limit). These headers are CORS-exposed so browser-based agents can read them.
+
+### Health Check + Graceful Shutdown
+
+The `GET /health` endpoint provides a public (no auth required) health check for load balancers and orchestrators:
+
+```bash
+curl http://localhost:3402/health
+```
+
+```json
+{
+  "status": "healthy",
+  "uptime": 3600,
+  "version": "2.6.0",
+  "inflight": 3,
+  "redis": { "connected": true, "pubsub": true },
+  "webhooks": { "pendingRetries": 0, "deadLetterCount": 2 }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `status` | `"healthy"` or `"draining"` (during graceful shutdown) |
+| `uptime` | Seconds since server started |
+| `version` | Package version |
+| `inflight` | Number of in-flight `/mcp` requests |
+| `redis` | Redis connectivity (only present when `--redis-url` is set) |
+| `webhooks` | Webhook retry stats (only present when `--webhook-url` is set) |
+
+During graceful shutdown, `/health` returns HTTP 503 with `"status": "draining"`, and new `/mcp` requests are rejected with 503. Existing in-flight requests are allowed to complete before the server tears down. The CLI uses `gracefulStop()` on SIGTERM/SIGINT with a 30-second drain timeout.
+
+**Programmatic API:**
+
+```typescript
+// Graceful shutdown with custom timeout (default 30s)
+await server.gracefulStop(15_000);
+```
 
 ### Horizontal Scaling (Redis)
 

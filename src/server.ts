@@ -85,6 +85,12 @@ export class PayGateServer {
   readonly teams: TeamManager;
   /** Redis sync adapter for distributed state (null if not using Redis) */
   readonly redisSync: RedisSync | null = null;
+  /** Server start time (ms since epoch) */
+  private readonly startedAt: number = Date.now();
+  /** Whether the server is draining (shutting down gracefully) */
+  private draining = false;
+  /** Number of in-flight /mcp requests */
+  private inflight = 0;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -247,7 +253,14 @@ export class PayGateServer {
 
     switch (url) {
       case '/mcp':
+        if (this.draining) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Server is shutting down' }));
+          return;
+        }
         return this.handleMcp(req, res);
+      case '/health':
+        return this.handleHealth(req, res);
       case '/status':
         return this.handleStatus(req, res);
       case '/keys':
@@ -349,6 +362,9 @@ export class PayGateServer {
   // ─── /mcp — JSON-RPC endpoint (MCP Streamable HTTP transport) ──────────────
 
   private async handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    this.inflight++;
+    res.on('close', () => { this.inflight--; });
+
     // Resolve API key from X-API-Key or Bearer token
     const apiKey = this.resolveApiKey(req);
 
@@ -679,6 +695,47 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(this.gate.getStatus(), null, 2));
+  }
+
+  // ─── /health — Public health check ─────────────────────────────────────────
+
+  private handleHealth(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const uptimeMs = Date.now() - this.startedAt;
+    const status = this.draining ? 'draining' : 'healthy';
+    const httpStatus = this.draining ? 503 : 200;
+
+    const health: Record<string, unknown> = {
+      status,
+      uptime: Math.floor(uptimeMs / 1000),
+      version: PKG_VERSION,
+      inflight: this.inflight,
+    };
+
+    // Redis connectivity
+    if (this.redisSync) {
+      health.redis = {
+        connected: this.redisSync.isConnected,
+        pubsub: this.redisSync.isPubSubActive,
+      };
+    }
+
+    // Webhook status
+    if (this.gate.webhook) {
+      const stats = this.gate.webhook.getRetryStats();
+      health.webhooks = {
+        pendingRetries: stats.pendingRetries,
+        deadLetterCount: stats.deadLetterCount,
+      };
+    }
+
+    res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(health));
   }
 
   // ─── /keys — Create ─────────────────────────────────────────────────────────
@@ -2294,7 +2351,8 @@ export class PayGateServer {
     if (!this.redisSync) return;
     const record = this.gate.store.getKey(apiKey);
     if (record) {
-      // Save the full record to Redis and notify other instances
+      // Save the full record to Redis and broadcast key_updated to other instances.
+      // saveKey() internally calls publishEvent({ type: 'key_updated' }).
       this.redisSync.saveKey(record).catch(() => {});
     }
   }
@@ -2330,6 +2388,54 @@ export class PayGateServer {
       return new Promise((resolve) => {
         this.server!.close(() => resolve());
       });
+    }
+  }
+
+  /**
+   * Graceful shutdown: stop accepting new /mcp requests, wait for in-flight
+   * requests to drain (with a timeout), then tear down all resources.
+   *
+   * @param timeoutMs  Max time (ms) to wait for in-flight requests before
+   *                   force-stopping. Defaults to 30 000 ms (30 s).
+   * @returns          Resolves when fully stopped.
+   */
+  async gracefulStop(timeoutMs = 30_000): Promise<void> {
+    if (this.draining) return; // already draining
+    this.draining = true;
+    console.log(`[paygate] Draining — waiting for ${this.inflight} in-flight request(s)…`);
+
+    // Stop accepting new TCP connections immediately
+    if (this.server) {
+      this.server.close(() => {}); // close listener (existing connections stay alive)
+    }
+
+    // Wait for in-flight requests to finish, with a hard timeout
+    const drainStart = Date.now();
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (this.inflight <= 0) {
+          resolve();
+          return;
+        }
+        if (Date.now() - drainStart >= timeoutMs) {
+          console.warn(`[paygate] Drain timeout (${timeoutMs}ms) — ${this.inflight} request(s) still in-flight, force-stopping`);
+          resolve();
+          return;
+        }
+        setTimeout(check, 100);
+      };
+      check();
+    });
+
+    console.log('[paygate] Drained — tearing down resources');
+    // Tear down resources (but skip server.close, already closed above)
+    await this.handler.stop();
+    this.gate.destroy();
+    this.oauth?.destroy();
+    this.sessions.destroy();
+    this.audit.destroy();
+    if (this.redisSync) {
+      await this.redisSync.destroy();
     }
   }
 }
