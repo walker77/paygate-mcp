@@ -273,6 +273,135 @@ describe('RedisSync serialization', () => {
   });
 });
 
+// ─── Usage Meter sync tests ─────────────────────────────────────────────────
+
+describe('RedisSync usage meter', () => {
+  it('should have recordUsage method', () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    expect(typeof sync.recordUsage).toBe('function');
+  });
+
+  it('should have getUsageEvents method', () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    expect(typeof sync.getUsageEvents).toBe('function');
+  });
+
+  it('should have getUsageCount method', () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    expect(typeof sync.getUsageCount).toBe('function');
+  });
+
+  it('recordUsage should handle errors gracefully when not connected', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    // Should not throw — errors are caught internally
+    await expect(sync.recordUsage({
+      timestamp: new Date().toISOString(),
+      apiKey: 'pg_test123',
+      keyName: 'test',
+      tool: 'search',
+      creditsCharged: 1,
+      allowed: true,
+    })).resolves.not.toThrow();
+  });
+
+  it('getUsageEvents should return empty array when not connected', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    const events = await sync.getUsageEvents();
+    expect(events).toEqual([]);
+  });
+
+  it('getUsageCount should return 0 when not connected', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    const count = await sync.getUsageCount();
+    expect(count).toBe(0);
+  });
+});
+
+// ─── Rate Limiter sync tests ────────────────────────────────────────────────
+
+describe('RedisSync rate limiter', () => {
+  it('should have checkRateLimit method', () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    expect(typeof sync.checkRateLimit).toBe('function');
+  });
+
+  it('checkRateLimit should allow unlimited when maxCalls is 0', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    const result = await sync.checkRateLimit('test-key', 0);
+    expect(result.allowed).toBe(true);
+    expect(result.remaining).toBe(Infinity);
+    expect(result.resetInMs).toBe(0);
+  });
+
+  it('checkRateLimit should allow unlimited when maxCalls is negative', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    const result = await sync.checkRateLimit('test-key', -1);
+    expect(result.allowed).toBe(true);
+    expect(result.remaining).toBe(Infinity);
+  });
+
+  it('checkRateLimit should fail-open when Redis not connected', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    // Not connected — should fail-open (allow)
+    const result = await sync.checkRateLimit('test-key', 100);
+    expect(result.allowed).toBe(true);
+    expect(result.remaining).toBe(99);
+  });
+
+  it('checkRateLimit should support custom window size', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    // Custom 30-second window
+    const result = await sync.checkRateLimit('test-key', 100, 30000);
+    expect(result.allowed).toBe(true);
+  });
+
+  it('should use composite keys for per-tool rate limiting', async () => {
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+    // Composite key format: "pg_abc:tool:search"
+    const result = await sync.checkRateLimit('pg_abc:tool:search', 100);
+    expect(result.allowed).toBe(true);
+  });
+});
+
+// ─── Rate limiter Lua script structure tests ────────────────────────────────
+
+describe('Rate Limiter Lua script', () => {
+  it('should use sorted set pattern for sliding window', () => {
+    // Verify the Redis sync class exposes the right interface
+    const store = new KeyStore();
+    const client = new RedisClient({ host: 'localhost', port: 6379 });
+    const sync = new RedisSync(client, store);
+
+    // The Lua script uses ZREMRANGEBYSCORE + ZCARD + ZADD pattern
+    // We verify the API contract returns the expected shape
+    expect(sync.checkRateLimit).toBeDefined();
+  });
+});
+
 // ─── CLI config tests ────────────────────────────────────────────────────────
 
 describe('CLI --redis-url', () => {

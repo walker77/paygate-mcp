@@ -17,11 +17,13 @@
 
 import { RedisClient } from './redis-client';
 import { KeyStore } from './store';
-import { ApiKeyRecord, QuotaConfig } from './types';
+import { ApiKeyRecord, QuotaConfig, UsageEvent } from './types';
 
 const KEY_PREFIX = 'pg:key:';
 const KEY_SET = 'pg:keys';
 const META_KEY = 'pg:meta';
+const USAGE_LIST = 'pg:usage';
+const RATE_PREFIX = 'pg:rate:';
 
 /** Lua: atomic credit deduction — check + deduct + increment in one round trip */
 const DEDUCT_LUA = `
@@ -49,6 +51,32 @@ local active = redis.call('HGET', key, 'active')
 if active == '0' then return 0 end
 redis.call('HINCRBY', key, 'credits', amount)
 return 1
+`;
+
+/** Lua: atomic rate limit check + record (sliding window via sorted set) */
+const RATE_CHECK_LUA = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local maxCalls = tonumber(ARGV[3])
+local cutoff = now - window
+
+-- Remove expired entries
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+
+-- Count current entries
+local count = redis.call('ZCARD', key)
+if count >= maxCalls then
+  -- Rate limited: return [0, count, oldest_timestamp]
+  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+  local oldestTs = oldest[2] or now
+  return {0, count, oldestTs}
+end
+
+-- Allowed: add this call and set expiry
+redis.call('ZADD', key, now, now .. ':' .. math.random(100000))
+redis.call('PEXPIRE', key, window)
+return {1, count + 1, 0}
 `;
 
 export class RedisSync {
@@ -196,6 +224,109 @@ export class RedisSync {
       console.error(`[paygate:redis] Revoke error: ${(err as Error).message}`);
     }
     return localResult;
+  }
+
+  // ─── Usage Meter sync ──────────────────────────────────────────────────────
+
+  /**
+   * Record a usage event to Redis (append to list). Fire-and-forget.
+   * Events are stored as JSON strings in a Redis list with max 100k entries.
+   */
+  async recordUsage(event: UsageEvent): Promise<void> {
+    try {
+      await this.redis.command('RPUSH', USAGE_LIST, JSON.stringify(event));
+      // Trim to max 100k events (same as local UsageMeter)
+      await this.redis.command('LTRIM', USAGE_LIST, '-100000', '-1');
+    } catch (err) {
+      console.error(`[paygate:redis] Usage record error: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Get usage events from Redis. Returns events after `since` timestamp if provided.
+   */
+  async getUsageEvents(since?: string): Promise<UsageEvent[]> {
+    try {
+      const raw = await this.redis.command('LRANGE', USAGE_LIST, '0', '-1') as string[];
+      if (!raw || !Array.isArray(raw)) return [];
+      const events: UsageEvent[] = raw.map(s => JSON.parse(s));
+      if (since) return events.filter(e => e.timestamp >= since);
+      return events;
+    } catch (err) {
+      console.error(`[paygate:redis] Usage get error: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get the count of usage events in Redis.
+   */
+  async getUsageCount(): Promise<number> {
+    try {
+      const len = await this.redis.command('LLEN', USAGE_LIST) as number;
+      return len || 0;
+    } catch (err) {
+      return 0;
+    }
+  }
+
+  // ─── Rate Limiter sync ────────────────────────────────────────────────────
+
+  /**
+   * Atomic rate limit check + record via Redis. Returns a result compatible with
+   * the local RateLimiter interface. Uses a sorted set per rate-limit key with
+   * timestamps as scores for O(log N) sliding window.
+   *
+   * @param key Composite key (e.g. "pg_abc" or "pg_abc:tool:search")
+   * @param maxCalls Maximum calls per window
+   * @param windowMs Window size in milliseconds (default: 60000)
+   */
+  async checkRateLimit(key: string, maxCalls: number, windowMs = 60_000): Promise<{
+    allowed: boolean;
+    remaining: number;
+    resetInMs: number;
+  }> {
+    if (maxCalls <= 0) {
+      return { allowed: true, remaining: Infinity, resetInMs: 0 };
+    }
+
+    try {
+      const now = Date.now();
+      const result = await this.redis.evalLua(
+        RATE_CHECK_LUA,
+        1,
+        RATE_PREFIX + key,
+        String(now),
+        String(windowMs),
+        String(maxCalls)
+      ) as number[];
+
+      if (!result || !Array.isArray(result)) {
+        // Fallback: allow on Redis error
+        return { allowed: true, remaining: maxCalls - 1, resetInMs: windowMs };
+      }
+
+      const [allowed, count, oldestTs] = result;
+      if (allowed === 1) {
+        return {
+          allowed: true,
+          remaining: maxCalls - count,
+          resetInMs: windowMs,
+        };
+      }
+
+      // Rate limited
+      const resetInMs = oldestTs ? (Number(oldestTs) + windowMs - now) : windowMs;
+      return {
+        allowed: false,
+        remaining: 0,
+        resetInMs: Math.max(0, resetInMs),
+      };
+    } catch (err) {
+      console.error(`[paygate:redis] Rate check error: ${(err as Error).message}`);
+      // Fallback: allow on Redis error (fail-open for rate limiting)
+      return { allowed: true, remaining: maxCalls - 1, resetInMs: windowMs };
+    }
   }
 
   // ─── Load from Redis ───────────────────────────────────────────────────────

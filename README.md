@@ -53,7 +53,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Usage Analytics** — Time-series analytics API with tool breakdown, top consumers, and trend comparison
 - **Alert Webhooks** — Configurable alerts for spending thresholds, low credits, quota warnings, key expiry, rate limit spikes
 - **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
-- **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction
+- **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, and persistent usage audit trail
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -965,6 +965,8 @@ This means Gate.evaluate() stays synchronous and fast, while credit operations r
 | Key registry | `pg:keys` (Set) | Write-through |
 | Credit deduction | `pg:key:<keyId>` | Atomic Lua script |
 | Credit top-up | `pg:key:<keyId>` | Atomic Lua script |
+| Rate limiting | `pg:rate:<key>` (Sorted Set) | Atomic Lua (sliding window) |
+| Usage events | `pg:usage` (List) | Fire-and-forget RPUSH |
 
 **Deployment Pattern**
 
@@ -983,6 +985,10 @@ This means Gate.evaluate() stays synchronous and fast, while credit operations r
         │          Load Balancer               │
         └──────────────────────────────────────┘
 ```
+
+**Distributed Rate Limiting** — Rate limits are enforced atomically across all instances using Redis sorted sets with Lua scripts. Each rate check does ZREMRANGEBYSCORE + ZCARD + ZADD in a single round-trip, preventing burst bypass across processes. Falls open (allows) if Redis is temporarily unavailable.
+
+**Persistent Usage Audit Trail** — Usage events are appended to a Redis list (RPUSH), creating a shared audit trail visible from any instance. Events survive process restarts and are queryable from the dashboard. Max 100k events with automatic trimming.
 
 **Graceful Fallback** — If Redis is temporarily unavailable, PayGate falls back to local in-memory operations. On reconnect, state syncs automatically.
 
@@ -1102,14 +1108,17 @@ const result = await client.callTool('search', { query: 'hello' });
 - Keys masked in team usage summaries (first 7 + last 4 chars only)
 - Team quota resets atomic at UTC day/month boundaries
 - Redis credit deduction uses Lua scripts for atomic check-and-deduct (no double-spend)
+- Redis rate limiting uses Lua scripts for atomic check-and-record (no burst bypass)
 - Redis auth supported via password in URL (redis://:password@host:port)
 - Graceful Redis fallback — local operations continue if Redis disconnects
+- Rate limiter fails open on Redis error (allows request, never blocks on network issues)
 - Red-teamed with 101 adversarial security tests across 14 passes
 
 ## Current Limitations
 
 - **No response size limits for HTTP transport** — Large responses from remote servers are forwarded as-is.
-- **Redis sync is eventual** — Cross-process state refreshes every 5 seconds (credit deduction is always atomic).
+- **Redis sync is eventual for key metadata** — Cross-process key state refreshes every 5 seconds (credits, rate limits, and usage are always atomic).
+- **SSE sessions are per-instance** — Each PayGate instance manages its own SSE connections (HTTP streams can't be serialized to Redis).
 
 ## Roadmap
 
