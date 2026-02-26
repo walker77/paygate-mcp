@@ -551,6 +551,8 @@ export class PayGateServer {
         return this.handleKeysExpiring(req, res);
       case '/keys/stats':
         return this.handleKeyStats(req, res);
+      case '/keys/rate-limit-status':
+        return this.handleRateLimitStatus(req, res);
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1123,6 +1125,7 @@ export class PayGateServer {
         keyUsage: 'GET /keys/usage?key=... — Per-key usage breakdown (requires X-Admin-Key)',
         keysExpiring: 'GET /keys/expiring?within=86400 — List keys expiring within N seconds (requires X-Admin-Key)',
         keyStats: 'GET /keys/stats — Aggregate key statistics (requires X-Admin-Key)',
+        rateLimitStatus: 'GET /keys/rate-limit-status?key=... — Current rate limit window state (requires X-Admin-Key)',
         keyTemplates: 'GET /keys/templates — List key templates + POST to create/update (requires X-Admin-Key)',
         deleteTemplate: 'POST /keys/templates/delete — Delete a key template (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
@@ -2820,6 +2823,60 @@ export class PayGateServer {
       byNamespace,
       byGroup,
       ...(namespace ? { filteredByNamespace: namespace } : {}),
+    }));
+  }
+
+  // ─── /keys/rate-limit-status — Current rate limit window state ────────────────
+
+  private handleRateLimitStatus(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const key = params.get('key');
+
+    if (!key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+
+    const keyRecord = this.gate.store.getKey(key);
+    if (!keyRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    // Global rate limit status
+    const globalStatus = this.gate.rateLimiter.getStatus(key);
+
+    // Per-tool rate limit status
+    const perTool: Record<string, { limit: number; used: number; remaining: number; resetInMs: number }> = {};
+    for (const [toolName, pricing] of Object.entries(this.config.toolPricing)) {
+      if (pricing.rateLimitPerMin && pricing.rateLimitPerMin > 0) {
+        const compositeKey = `${key}:tool:${toolName}`;
+        perTool[toolName] = this.gate.rateLimiter.getStatus(compositeKey, pricing.rateLimitPerMin);
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: key.slice(0, 10) + '...',
+      name: keyRecord.name,
+      global: {
+        limit: globalStatus.limit,
+        used: globalStatus.used,
+        remaining: globalStatus.remaining,
+        resetInMs: globalStatus.resetInMs,
+        windowMs: 60000,
+      },
+      perTool: Object.keys(perTool).length > 0 ? perTool : undefined,
     }));
   }
 

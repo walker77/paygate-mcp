@@ -88,6 +88,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Trusted Proxies** — Configure trusted proxy IPs/CIDRs for accurate `X-Forwarded-For` extraction — walks the header right-to-left, skipping trusted proxies to find the real client IP, supports exact IPs and CIDR ranges (IPv4), backward compatible (first IP) when not configured
 - **Key Listing Pagination** — Enhanced `GET /keys` with cursor-based pagination (`limit`/`offset`), sorting (`sortBy`/`order`), and filtering by namespace, group, active/suspended/expired status, name prefix, and credit range — backward compatible (returns flat array when no pagination params used)
 - **Key Statistics** — `GET /keys/stats` returns aggregate statistics across all keys — total/active/suspended/expired/revoked counts, credit aggregates (allocated/spent/remaining), total calls, namespace and group breakdowns, optional `?namespace=` filter
+- **Rate Limit Status** — `GET /keys/rate-limit-status?key=...` returns the current rate limit window state for any key — global calls used/remaining/reset time, per-tool rate limits with individual usage, read-only (doesn't consume a call)
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1646,6 +1647,36 @@ curl "http://localhost:3402/keys/stats?namespace=prod" -H "X-Admin-Key: YOUR_ADM
 ```
 
 When `?namespace=` is provided, all counts/aggregates are scoped to that namespace, and a `filteredByNamespace` field is included in the response.
+
+### Rate Limit Status
+
+`GET /keys/rate-limit-status?key=...` returns the current rate limit window state for a key without consuming a call:
+
+```bash
+curl "http://localhost:3402/keys/rate-limit-status?key=pg_..." -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_abc123...",
+  "name": "my-key",
+  "global": {
+    "limit": 100,
+    "used": 23,
+    "remaining": 77,
+    "resetInMs": 45000,
+    "windowMs": 60000
+  },
+  "perTool": {
+    "search": { "limit": 10, "used": 5, "remaining": 5, "resetInMs": 30000 },
+    "translate": { "limit": 20, "used": 0, "remaining": 20, "resetInMs": 60000 }
+  }
+}
+```
+
+`perTool` is only present when tools have per-tool rate limits configured via `toolPricing`. Tools without custom rate limits are not included.
 
 ### IP Allowlisting
 

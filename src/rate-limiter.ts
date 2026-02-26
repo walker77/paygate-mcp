@@ -150,6 +150,32 @@ export class RateLimiter {
     entry.timestamps.push(Date.now());
   }
 
+  /**
+   * Get the current rate limit status for a key without recording a call.
+   * Used by the rate limit status endpoint.
+   */
+  getStatus(key: string, maxCalls?: number): { used: number; limit: number; remaining: number; resetInMs: number } {
+    const limit = maxCalls ?? this.maxCalls;
+    if (limit <= 0) {
+      return { used: 0, limit: 0, remaining: Infinity, resetInMs: 0 };
+    }
+
+    const now = Date.now();
+    const cutoff = now - this.windowMs;
+    const entry = this.windows.get(key);
+    if (!entry) {
+      return { used: 0, limit, remaining: limit, resetInMs: this.windowMs };
+    }
+
+    // Clean expired timestamps
+    entry.timestamps = entry.timestamps.filter(t => t > cutoff);
+    const used = entry.timestamps.length;
+    const remaining = Math.max(0, limit - used);
+    const resetInMs = used > 0 ? entry.timestamps[0] + this.windowMs - now : this.windowMs;
+
+    return { used, limit, remaining, resetInMs: Math.max(0, resetInMs) };
+  }
+
   destroy(): void {
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);

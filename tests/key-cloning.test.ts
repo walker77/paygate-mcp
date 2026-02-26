@@ -223,6 +223,7 @@ describe('POST /keys/clone', () => {
       ...DEFAULT_CONFIG,
       serverCommand: ECHO_CMD,
       serverArgs: ECHO_ARGS,
+      port: 0,
     });
     const info = await server.start();
     port = info.port;
