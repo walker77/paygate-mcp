@@ -724,6 +724,12 @@ export class PayGateServer {
       ipAllowlist: params.ipAllowlist,
     });
 
+    // Sync new key to Redis (if configured)
+    if (this.redisSync) {
+      this.redisSync.saveKey(record).catch(() => {});
+      this.redisSync.publishEvent({ type: 'key_created', key: record.key }).catch(() => {});
+    }
+
     this.audit.log('key.created', 'admin', `Key created: ${name}`, {
       keyMasked: maskKeyForAudit(record.key),
       name,
@@ -792,7 +798,13 @@ export class PayGateServer {
       return;
     }
 
-    const success = this.gate.store.addCredits(params.key, credits);
+    // Use Redis atomic topup when available, fall back to local store
+    let success: boolean;
+    if (this.redisSync) {
+      success = await this.redisSync.atomicTopup(params.key, credits);
+    } else {
+      success = this.gate.store.addCredits(params.key, credits);
+    }
     if (!success) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found or inactive' }));
@@ -840,7 +852,13 @@ export class PayGateServer {
       return;
     }
 
-    const success = this.gate.store.revokeKey(params.key);
+    // Use Redis-backed revoke when available (broadcasts to other instances)
+    let success: boolean;
+    if (this.redisSync) {
+      success = await this.redisSync.revokeKey(params.key);
+    } else {
+      success = this.gate.store.revokeKey(params.key);
+    }
     if (!success) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found' }));
@@ -889,6 +907,13 @@ export class PayGateServer {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found or inactive' }));
       return;
+    }
+
+    // Sync rotated key to Redis (save new key + revoke old)
+    if (this.redisSync) {
+      this.redisSync.saveKey(rotated).catch(() => {});
+      this.redisSync.publishEvent({ type: 'key_created', key: rotated.key }).catch(() => {});
+      this.redisSync.publishEvent({ type: 'key_revoked', key: params.key }).catch(() => {});
     }
 
     this.audit.log('key.rotated', 'admin', `Key rotated`, {
@@ -941,6 +966,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Key not found or inactive' }));
       return;
     }
+    this.syncKeyMutation(params.key);
 
     const record = this.gate.store.getKey(params.key);
 
@@ -998,6 +1024,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Key not found' }));
       return;
     }
+    this.syncKeyMutation(params.key);
 
     const record = this.gate.store.getKeyRaw(params.key);
 
@@ -1046,6 +1073,7 @@ export class PayGateServer {
         res.end(JSON.stringify({ error: 'Key not found' }));
         return;
       }
+      this.syncKeyMutation(params.key);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ message: 'Quota removed (using global defaults)' }));
       return;
@@ -1064,6 +1092,7 @@ export class PayGateServer {
       res.end(JSON.stringify({ error: 'Key not found' }));
       return;
     }
+    this.syncKeyMutation(params.key);
 
     this.audit.log('key.quota_updated', 'admin', `Quota set`, {
       keyMasked: maskKeyForAudit(params.key),
@@ -1113,6 +1142,7 @@ export class PayGateServer {
       return;
     }
 
+    this.syncKeyMutation(params.key);
     const record = this.gate.store.getKey(params.key);
 
     this.audit.log('key.tags_updated', 'admin', `Tags updated`, {
@@ -1166,6 +1196,7 @@ export class PayGateServer {
       return;
     }
 
+    this.syncKeyMutation(params.key);
     const record = this.gate.store.getKey(params.key);
 
     this.audit.log('key.ip_updated', 'admin', `IP allowlist updated`, {
@@ -1303,6 +1334,7 @@ export class PayGateServer {
     const limit = Math.max(0, Math.floor(Number(params.spendingLimit) || 0));
     record.spendingLimit = limit;
     this.gate.store.save();
+    this.syncKeyMutation(params.key);
 
     this.audit.log('key.limit_updated', 'admin', limit > 0 ? `Spending limit set to ${limit}` : 'Spending limit removed', {
       keyMasked: maskKeyForAudit(params.key),
@@ -2173,6 +2205,20 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(summary));
+  }
+
+  /**
+   * Sync a key mutation to Redis. Call after any local KeyStore mutation
+   * (setAcl, setExpiry, setQuota, setTags, setIpAllowlist, setSpendingLimit).
+   * Fire-and-forget: errors logged, never thrown.
+   */
+  private syncKeyMutation(apiKey: string): void {
+    if (!this.redisSync) return;
+    const record = this.gate.store.getKey(apiKey);
+    if (record) {
+      // Save the full record to Redis and notify other instances
+      this.redisSync.saveKey(record).catch(() => {});
+    }
   }
 
   private readBody(req: IncomingMessage): Promise<string> {
