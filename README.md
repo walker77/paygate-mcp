@@ -79,6 +79,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Aliases** — `POST /keys/alias` assigns human-readable aliases (e.g. `my-service`, `prod-backend`) to API keys — use aliases in any admin endpoint (topup, revoke, suspend, resume, clone, transfer, usage) instead of opaque key IDs, with uniqueness enforcement, format validation, state file persistence, and audit trail
 - **Key Expiry Scanner** — Proactive background scanner that detects expiring API keys before they expire — configurable scan interval and notification thresholds (default: 7d, 24h, 1h), de-duplicated `key.expiry_warning` webhook events, audit trail, `GET /keys/expiring?within=86400` query endpoint, and graceful shutdown
 - **Key Templates** — Named templates for API key creation — define reusable presets (credits, ACL, quotas, IP, tags, namespace, expiry TTL, spending limit, auto-topup) and create keys with `template: "free-tier"` — explicit params override template defaults, CRUD admin API, Prometheus gauge, file persistence, max 100 templates
+- **Environment Variables Config** — Configure everything via `PAYGATE_*` env vars for Docker/K8s deployments — 18 env vars covering all CLI flags, with priority: CLI flags > env vars > config file > defaults, `PAYGATE_CONFIG` loads config file path, help text with Docker examples
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1330,6 +1331,51 @@ curl -X POST http://localhost:3402/keys/templates/delete \
 | Persistence | `-templates.json` alongside state file, survives restarts |
 | Audit | `template.created`, `template.updated`, `template.deleted` events |
 | Prometheus | `paygate_templates_total` gauge tracks template count |
+
+### Environment Variables Config
+
+Configure everything via `PAYGATE_*` environment variables — ideal for Docker, Kubernetes, and CI/CD deployments:
+
+```bash
+# Docker example
+docker run -e PAYGATE_SERVER="node /app/server.js" \
+  -e PAYGATE_PORT=8080 \
+  -e PAYGATE_PRICE=5 \
+  -e PAYGATE_ADMIN_KEY=sk-admin-secret \
+  -e PAYGATE_REDIS_URL=redis://redis:6379 \
+  -e PAYGATE_WEBHOOK_URL=https://hooks.example.com/billing \
+  -p 8080:8080 node:20 npx paygate-mcp wrap
+
+# Or use a config file via env var
+docker run -e PAYGATE_CONFIG=/etc/paygate/config.json \
+  -v ./config.json:/etc/paygate/config.json \
+  -p 3402:3402 node:20 npx paygate-mcp wrap
+```
+
+All 18 supported environment variables:
+
+| Env Var | CLI Flag | Description |
+|---------|----------|-------------|
+| `PAYGATE_SERVER` | `--server` | MCP server command to wrap (stdio) |
+| `PAYGATE_REMOTE_URL` | `--remote-url` | Remote MCP server URL (HTTP) |
+| `PAYGATE_CONFIG` | `--config` | Path to JSON config file |
+| `PAYGATE_PORT` | `--port` | Server port (default: 3402) |
+| `PAYGATE_PRICE` | `--price` | Credits per tool call (default: 1) |
+| `PAYGATE_RATE_LIMIT` | `--rate-limit` | Max calls per minute per key (default: 60) |
+| `PAYGATE_NAME` | `--name` | Server name for display |
+| `PAYGATE_SHADOW` | `--shadow` | Enable shadow mode (true/false) |
+| `PAYGATE_ADMIN_KEY` | `--admin-key` | Admin API key |
+| `PAYGATE_STATE_FILE` | `--state-file` | Persistent state file path |
+| `PAYGATE_WEBHOOK_URL` | `--webhook-url` | Webhook delivery URL |
+| `PAYGATE_WEBHOOK_SECRET` | `--webhook-secret` | HMAC-SHA256 webhook secret |
+| `PAYGATE_WEBHOOK_RETRIES` | `--webhook-retries` | Max webhook retry attempts |
+| `PAYGATE_REFUND_ON_FAILURE` | `--refund-on-failure` | Refund credits on tool failure (true/false) |
+| `PAYGATE_REDIS_URL` | `--redis-url` | Redis URL for horizontal scaling |
+| `PAYGATE_DRY_RUN` | `--dry-run` | Discover tools and exit (true/false) |
+| `PAYGATE_TOOL_PRICE` | `--tool-price` | Per-tool pricing (tool=price,...) |
+| `PAYGATE_STRIPE_SECRET` | `--stripe-secret` | Stripe secret key for payments |
+
+**Priority:** CLI flags > env vars > config file > defaults. This means you can set defaults via env vars in Docker and override specific values on the command line.
 
 ### IP Allowlisting
 

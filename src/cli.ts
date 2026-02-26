@@ -78,6 +78,26 @@ function printUsage(): void {
     --redis-url <url>      Redis URL for distributed state (e.g. "redis://localhost:6379")
     --dry-run              Start, discover tools, print pricing table, then exit
 
+  ENVIRONMENT VARIABLES (override defaults, overridden by CLI flags):
+    PAYGATE_SERVER         MCP server command (same as --server)
+    PAYGATE_REMOTE_URL     Remote MCP server URL (same as --remote-url)
+    PAYGATE_CONFIG         Config file path (same as --config)
+    PAYGATE_PORT           HTTP port (same as --port)
+    PAYGATE_PRICE          Credits per call (same as --price)
+    PAYGATE_RATE_LIMIT     Max calls/min (same as --rate-limit)
+    PAYGATE_NAME           Server display name (same as --name)
+    PAYGATE_SHADOW         Set to "true" for shadow mode (same as --shadow)
+    PAYGATE_ADMIN_KEY      Admin key (same as --admin-key)
+    PAYGATE_TOOL_PRICE     Per-tool pricing (same as --tool-price)
+    PAYGATE_STATE_FILE     State file path (same as --state-file)
+    PAYGATE_STRIPE_SECRET  Stripe webhook secret (same as --stripe-secret)
+    PAYGATE_WEBHOOK_URL    Webhook URL (same as --webhook-url)
+    PAYGATE_WEBHOOK_SECRET Webhook HMAC secret (same as --webhook-secret)
+    PAYGATE_WEBHOOK_RETRIES Max retries (same as --webhook-retries)
+    PAYGATE_REFUND_ON_FAILURE Set to "true" (same as --refund-on-failure)
+    PAYGATE_REDIS_URL      Redis URL (same as --redis-url)
+    PAYGATE_DRY_RUN        Set to "true" for dry run (same as --dry-run)
+
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
     paygate-mcp wrap --server "npx @modelcontextprotocol/server-filesystem /tmp"
@@ -104,6 +124,9 @@ function printUsage(): void {
 
     # Dry run — discover tools and print pricing, then exit
     paygate-mcp wrap --server "node server.js" --dry-run
+
+    # Docker / K8s: configure entirely via environment variables
+    PAYGATE_SERVER="node server.js" PAYGATE_PORT=8080 PAYGATE_ADMIN_KEY=secret paygate-mcp wrap
   `);
 }
 
@@ -156,6 +179,41 @@ interface ConfigFile {
   redisUrl?: string;
 }
 
+// ─── Env Var Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Read a PAYGATE_* environment variable. Returns undefined if not set.
+ * Priority: CLI flags > env vars > config file > defaults.
+ */
+function env(name: string): string | undefined {
+  return process.env[name] || undefined;
+}
+
+/**
+ * Map of PAYGATE_* env vars to their config equivalents.
+ * Listed here for documentation / --help output.
+ */
+export const ENV_VAR_MAP: Record<string, string> = {
+  PAYGATE_SERVER: '--server (MCP server command)',
+  PAYGATE_REMOTE_URL: '--remote-url (remote MCP server URL)',
+  PAYGATE_CONFIG: '--config (config file path)',
+  PAYGATE_PORT: '--port (HTTP port)',
+  PAYGATE_PRICE: '--price (default credits per call)',
+  PAYGATE_RATE_LIMIT: '--rate-limit (max calls/min)',
+  PAYGATE_NAME: '--name (server display name)',
+  PAYGATE_SHADOW: '--shadow (shadow mode, set to "true")',
+  PAYGATE_ADMIN_KEY: '--admin-key (admin key)',
+  PAYGATE_TOOL_PRICE: '--tool-price (per-tool pricing)',
+  PAYGATE_STATE_FILE: '--state-file (persistence path)',
+  PAYGATE_STRIPE_SECRET: '--stripe-secret (Stripe webhook secret)',
+  PAYGATE_WEBHOOK_URL: '--webhook-url (webhook endpoint)',
+  PAYGATE_WEBHOOK_SECRET: '--webhook-secret (HMAC signing secret)',
+  PAYGATE_WEBHOOK_RETRIES: '--webhook-retries (max retry attempts)',
+  PAYGATE_REFUND_ON_FAILURE: '--refund-on-failure (set to "true")',
+  PAYGATE_REDIS_URL: '--redis-url (Redis URL)',
+  PAYGATE_DRY_RUN: '--dry-run (set to "true")',
+};
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -163,11 +221,12 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'wrap': {
-      // Load config file if specified
+      // Load config file if specified (CLI --config or PAYGATE_CONFIG env var)
       let fileConfig: ConfigFile = {};
-      if (flags['config']) {
+      const configPath = flags['config'] || env('PAYGATE_CONFIG');
+      if (configPath) {
         try {
-          const raw = readFileSync(flags['config'], 'utf-8');
+          const raw = readFileSync(configPath, 'utf-8');
           fileConfig = JSON.parse(raw);
         } catch (err) {
           console.error(`Error loading config file: ${(err as Error).message}`);
@@ -176,19 +235,31 @@ async function main(): Promise<void> {
       }
 
       // ─── Config validation ─────────────────────────────────────────────────
-      // Build a merged config object for validation (config file + CLI flags)
+      // Build a merged config object for validation (config file + env vars + CLI flags)
+      // Priority: CLI flags > env vars > config file
+      const serverFlag = flags['server'] || env('PAYGATE_SERVER');
+      const remoteUrlFlag = flags['remote-url'] || env('PAYGATE_REMOTE_URL');
+      const portFlag = flags['port'] || env('PAYGATE_PORT');
+      const priceFlag = flags['price'] || env('PAYGATE_PRICE');
+      const rateLimitFlag = flags['rate-limit'] || env('PAYGATE_RATE_LIMIT');
+      const webhookUrlFlag = flags['webhook-url'] || env('PAYGATE_WEBHOOK_URL');
+      const webhookSecretFlag = flags['webhook-secret'] || env('PAYGATE_WEBHOOK_SECRET');
+      const webhookRetriesFlag = flags['webhook-retries'] || env('PAYGATE_WEBHOOK_RETRIES');
+      const redisUrlFlag = flags['redis-url'] || env('PAYGATE_REDIS_URL');
+      const shadowFlag = ('shadow' in flags) || env('PAYGATE_SHADOW') === 'true';
+
       const mergedForValidation: ValidatableConfig = {
         ...fileConfig,
-        ...(flags['server'] ? { serverCommand: flags['server'].split(/\s+/)[0] } : {}),
-        ...(flags['remote-url'] ? { remoteUrl: flags['remote-url'] } : {}),
-        ...(flags['port'] ? { port: parseInt(flags['port'], 10) } : {}),
-        ...(flags['price'] ? { defaultCreditsPerCall: parseInt(flags['price'], 10) } : {}),
-        ...(flags['rate-limit'] ? { globalRateLimitPerMin: parseInt(flags['rate-limit'], 10) } : {}),
-        ...(flags['webhook-url'] ? { webhookUrl: flags['webhook-url'] } : {}),
-        ...(flags['webhook-secret'] ? { webhookSecret: flags['webhook-secret'] } : {}),
-        ...(flags['webhook-retries'] ? { webhookMaxRetries: parseInt(flags['webhook-retries'], 10) } : {}),
-        ...(flags['redis-url'] ? { redisUrl: flags['redis-url'] } : {}),
-        ...(flags['shadow'] ? { shadowMode: true } : {}),
+        ...(serverFlag ? { serverCommand: serverFlag.split(/\s+/)[0] } : {}),
+        ...(remoteUrlFlag ? { remoteUrl: remoteUrlFlag } : {}),
+        ...(portFlag ? { port: parseInt(portFlag, 10) } : {}),
+        ...(priceFlag ? { defaultCreditsPerCall: parseInt(priceFlag, 10) } : {}),
+        ...(rateLimitFlag ? { globalRateLimitPerMin: parseInt(rateLimitFlag, 10) } : {}),
+        ...(webhookUrlFlag ? { webhookUrl: webhookUrlFlag } : {}),
+        ...(webhookSecretFlag ? { webhookSecret: webhookSecretFlag } : {}),
+        ...(webhookRetriesFlag ? { webhookMaxRetries: parseInt(webhookRetriesFlag, 10) } : {}),
+        ...(redisUrlFlag ? { redisUrl: redisUrlFlag } : {}),
+        ...(shadowFlag ? { shadowMode: true } : {}),
       };
       const configDiags = validateConfig(mergedForValidation);
       const configErrors = configDiags.filter(d => d.level === 'error');
@@ -206,11 +277,12 @@ async function main(): Promise<void> {
       const multiServers: ServerBackendConfig[] | undefined = fileConfig.servers;
       const isMultiServer = multiServers && multiServers.length > 0;
 
-      const serverCmd = flags['server'] || (fileConfig.serverCommand ? [fileConfig.serverCommand, ...(fileConfig.serverArgs || [])].join(' ') : '');
-      const remoteUrl = flags['remote-url'] || fileConfig.remoteUrl;
+      // Resolve with priority: CLI flags > env vars > config file > defaults
+      const serverCmd = serverFlag || (fileConfig.serverCommand ? [fileConfig.serverCommand, ...(fileConfig.serverArgs || [])].join(' ') : '');
+      const remoteUrl = remoteUrlFlag || fileConfig.remoteUrl;
 
       if (!serverCmd && !remoteUrl && !isMultiServer) {
-        console.error('Error: --server, --remote-url, or --config (with servers[]) is required.\n');
+        console.error('Error: --server, --remote-url, PAYGATE_SERVER, PAYGATE_REMOTE_URL, or --config (with servers[]) is required.\n');
         printUsage();
         process.exit(1);
       }
@@ -228,26 +300,33 @@ async function main(): Promise<void> {
       // Parse server command into command + args (stdio mode)
       let serverCommand = fileConfig.serverCommand || '';
       let serverArgs: string[] = fileConfig.serverArgs || [];
-      if (flags['server']) {
-        const parts = flags['server'].split(/\s+/);
+      if (serverFlag) {
+        const parts = serverFlag.split(/\s+/);
         serverCommand = parts[0];
         serverArgs = parts.slice(1);
       }
 
-      const port = parseInt(flags['port'] || String(fileConfig.port || 3402), 10);
-      const price = parseInt(flags['price'] || String(fileConfig.defaultCreditsPerCall || 1), 10);
-      const rateLimit = parseInt(flags['rate-limit'] || String(fileConfig.globalRateLimitPerMin || 60), 10);
-      const name = flags['name'] || fileConfig.serverCommand && 'PayGate MCP Server' || 'PayGate MCP Server';
-      const shadowMode = flags['shadow'] === 'true' || ('shadow' in flags && flags['shadow'] === undefined) || fileConfig.shadowMode || false;
-      const adminKey = flags['admin-key'] || fileConfig.adminKey;
-      const toolPricing = flags['tool-price'] ? parseToolPricing(flags['tool-price']) : (fileConfig.toolPricing || {});
-      const stateFile = flags['state-file'] || fileConfig.stateFile;
-      const stripeSecret = flags['stripe-secret'] || fileConfig.stripeWebhookSecret;
-      const webhookUrl = flags['webhook-url'] || fileConfig.webhookUrl || null;
-      const webhookSecret = flags['webhook-secret'] || fileConfig.webhookSecret || null;
-      const webhookMaxRetries = Math.max(0, Math.floor(Number(flags['webhook-retries'] || fileConfig.webhookMaxRetries) || 5));
-      const refundOnFailure = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || fileConfig.refundOnFailure || false;
-      const redisUrl = flags['redis-url'] || fileConfig.redisUrl || undefined;
+      const nameFlag = flags['name'] || env('PAYGATE_NAME');
+      const adminKeyFlag = flags['admin-key'] || env('PAYGATE_ADMIN_KEY');
+      const toolPriceFlag = flags['tool-price'] || env('PAYGATE_TOOL_PRICE');
+      const stateFileFlag = flags['state-file'] || env('PAYGATE_STATE_FILE');
+      const stripeSecretFlag = flags['stripe-secret'] || env('PAYGATE_STRIPE_SECRET');
+      const refundFlag = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || env('PAYGATE_REFUND_ON_FAILURE') === 'true';
+
+      const port = parseInt(portFlag || String(fileConfig.port || 3402), 10);
+      const price = parseInt(priceFlag || String(fileConfig.defaultCreditsPerCall || 1), 10);
+      const rateLimit = parseInt(rateLimitFlag || String(fileConfig.globalRateLimitPerMin || 60), 10);
+      const name = nameFlag || fileConfig.serverCommand && 'PayGate MCP Server' || 'PayGate MCP Server';
+      const shadowMode = shadowFlag || fileConfig.shadowMode || false;
+      const adminKey = adminKeyFlag || fileConfig.adminKey;
+      const toolPricing = toolPriceFlag ? parseToolPricing(toolPriceFlag) : (fileConfig.toolPricing || {});
+      const stateFile = stateFileFlag || fileConfig.stateFile;
+      const stripeSecret = stripeSecretFlag || fileConfig.stripeWebhookSecret;
+      const webhookUrl = webhookUrlFlag || fileConfig.webhookUrl || null;
+      const webhookSecret = webhookSecretFlag || fileConfig.webhookSecret || null;
+      const webhookMaxRetries = Math.max(0, Math.floor(Number(webhookRetriesFlag || fileConfig.webhookMaxRetries) || 5));
+      const refundOnFailure = refundFlag || fileConfig.refundOnFailure || false;
+      const redisUrl = redisUrlFlag || fileConfig.redisUrl || undefined;
 
       // Parse global quota from config file
       const globalQuota = fileConfig.globalQuota ? {
@@ -275,8 +354,8 @@ async function main(): Promise<void> {
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Wire config file path for hot-reload support
-      if (flags['config']) {
-        server.setConfigPath(flags['config']);
+      if (configPath) {
+        server.setConfigPath(configPath);
       }
 
       // Import keys from CLI flags
@@ -365,7 +444,7 @@ async function main(): Promise<void> {
         console.log(`  Admin key (save this): ${result.adminKey}\n`);
 
         // ─── Dry run mode ─────────────────────────────────────────────────
-        const isDryRun = flags['dry-run'] === 'true' || 'dry-run' in flags;
+        const isDryRun = flags['dry-run'] === 'true' || 'dry-run' in flags || env('PAYGATE_DRY_RUN') === 'true';
         if (isDryRun) {
           console.log('  ── DRY RUN ──────────────────────────────────────');
           console.log('  Discovering tools from backend…\n');
@@ -461,7 +540,10 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+// Only run main() when executed directly (not when imported by tests)
+if (require.main === module) {
+  main().catch((error) => {
+    console.error('Fatal error:', error);
+    process.exit(1);
+  });
+}
