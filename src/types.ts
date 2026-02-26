@@ -118,6 +118,8 @@ export interface PayGateConfig {
     /** Seconds before expiry to notify. Default: [604800, 86400, 3600] (7d, 24h, 1h). */
     thresholds?: number[];
   };
+  /** Trusted proxy IPs/CIDRs for accurate X-Forwarded-For extraction. */
+  trustedProxies?: string[];
   /** Custom response headers applied to all HTTP responses. */
   customHeaders?: Record<string, string>;
   /** CORS configuration. Default: allow all origins (*). */

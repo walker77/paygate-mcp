@@ -85,6 +85,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Configurable CORS** — Control which origins can access your server: single origin, multiple origins, or wildcard (`*` default), with credentials support, configurable preflight max-age, and `Vary: Origin` for proper caching — set via config file `cors` object, `--cors-origin` CLI flag, or `PAYGATE_CORS_ORIGIN` env var
 - **Custom Response Headers** — Add security headers (`X-Frame-Options`, `X-Content-Type-Options`, etc.), cache control, or any custom headers to all HTTP responses — set via config file `customHeaders` object, `--header` CLI flag, or `PAYGATE_CUSTOM_HEADERS` env var
 - **Config Export** — `GET /config` returns the running server configuration with sensitive values masked (webhook secrets → `***`, server commands → `***`, webhook URLs → scheme+host only) — admin auth required, includes audit trail
+- **Trusted Proxies** — Configure trusted proxy IPs/CIDRs for accurate `X-Forwarded-For` extraction — walks the header right-to-left, skipping trusted proxies to find the real client IP, supports exact IPs and CIDR ranges (IPv4), backward compatible (first IP) when not configured
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -1535,6 +1536,31 @@ Returns the full config with sensitive values masked:
 
 Non-sensitive values (pricing, rate limits, CORS, custom headers, quotas, etc.) are returned as-is. Each export is recorded in the audit trail as `config.export`.
 
+### Trusted Proxies
+
+When running behind load balancers or reverse proxies, configure trusted proxy IPs/CIDRs so PayGate extracts the real client IP from the `X-Forwarded-For` header correctly:
+
+```bash
+# CLI flag (comma-separated IPs and/or CIDRs)
+paygate-mcp wrap --server "node server.js" --trusted-proxies "10.0.0.0/8,172.16.0.0/12"
+
+# Environment variable
+PAYGATE_TRUSTED_PROXIES="10.0.0.0/8,172.16.0.0/12" paygate-mcp wrap --server "node server.js"
+```
+
+Config file:
+```json
+{
+  "serverCommand": "node",
+  "serverArgs": ["server.js"],
+  "trustedProxies": ["10.0.0.0/8", "172.16.0.0/12", "192.168.1.1"]
+}
+```
+
+**How it works:** Without trusted proxies, the first `X-Forwarded-For` value is used (backward compatible). With trusted proxies configured, the header is walked right-to-left, skipping IPs that match the trusted list, and the first non-trusted IP is returned as the real client IP. This is critical for accurate IP allowlisting when behind proxies.
+
+Supports exact IPv4 addresses and CIDR notation (`/8`, `/16`, `/24`, `/32`, etc.). The `resolveClientIp` function is also exported from the SDK for custom use.
+
 ### IP Allowlisting
 
 Restrict API keys to specific IP addresses or CIDR ranges:
@@ -1559,7 +1585,7 @@ curl -X POST http://localhost:3402/keys \
   -d '{"name": "prod-agent", "credits": 1000, "ipAllowlist": ["10.0.0.0/8"]}'
 ```
 
-Supports exact IPv4 matching and CIDR notation (`/8`, `/16`, `/24`, `/32`, etc.). When the allowlist is empty, all IPs are allowed. Client IP is extracted from `X-Forwarded-For` header (first value) or socket remote address.
+Supports exact IPv4 matching and CIDR notation (`/8`, `/16`, `/24`, `/32`, etc.). When the allowlist is empty, all IPs are allowed. Client IP is extracted from `X-Forwarded-For` header or socket remote address. Configure `trustedProxies` for accurate IP extraction behind load balancers (see [Trusted Proxies](#trusted-proxies)).
 
 ### Key Tags / Metadata
 

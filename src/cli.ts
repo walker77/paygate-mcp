@@ -77,6 +77,7 @@ function printUsage(): void {
     --refund-on-failure    Refund credits when downstream tool call fails
     --redis-url <url>      Redis URL for distributed state (e.g. "redis://localhost:6379")
     --header <k:v>         Custom response header (repeatable, e.g. "X-Frame-Options:DENY")
+    --trusted-proxies <s>  Trusted proxy IPs/CIDRs, comma-separated (e.g. "10.0.0.0/8,172.16.0.0/12")
     --dry-run              Start, discover tools, print pricing table, then exit
 
   ENVIRONMENT VARIABLES (override defaults, overridden by CLI flags):
@@ -100,6 +101,7 @@ function printUsage(): void {
     PAYGATE_DRY_RUN        Set to "true" for dry run (same as --dry-run)
     PAYGATE_CORS_ORIGIN    CORS allowed origin(s), comma-separated (same as --cors-origin)
     PAYGATE_CUSTOM_HEADERS Custom response headers, comma-separated k:v (same as --header)
+    PAYGATE_TRUSTED_PROXIES Trusted proxy IPs/CIDRs, comma-separated (same as --trusted-proxies)
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -188,6 +190,8 @@ interface ConfigFile {
   };
   /** Custom response headers applied to all HTTP responses */
   customHeaders?: Record<string, string>;
+  /** Trusted proxy IPs/CIDRs for accurate X-Forwarded-For extraction */
+  trustedProxies?: string[];
 }
 
 // ─── Env Var Helpers ─────────────────────────────────────────────────────────
@@ -225,6 +229,7 @@ export const ENV_VAR_MAP: Record<string, string> = {
   PAYGATE_DRY_RUN: '--dry-run (set to "true")',
   PAYGATE_CORS_ORIGIN: '--cors-origin (CORS allowed origin(s), comma-separated)',
   PAYGATE_CUSTOM_HEADERS: '--header (custom response headers, comma-separated k:v)',
+  PAYGATE_TRUSTED_PROXIES: '--trusted-proxies (trusted proxy IPs/CIDRs, comma-separated)',
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -327,6 +332,7 @@ async function main(): Promise<void> {
       const refundFlag = flags['refund-on-failure'] === 'true' || 'refund-on-failure' in flags || env('PAYGATE_REFUND_ON_FAILURE') === 'true';
       const corsOriginFlag = flags['cors-origin'] || env('PAYGATE_CORS_ORIGIN');
       const headerFlag = flags['header'] || env('PAYGATE_CUSTOM_HEADERS');
+      const trustedProxiesFlag = flags['trusted-proxies'] || env('PAYGATE_TRUSTED_PROXIES');
 
       const port = parseInt(portFlag || String(fileConfig.port || 3402), 10);
       const price = parseInt(priceFlag || String(fileConfig.defaultCreditsPerCall || 1), 10);
@@ -367,6 +373,11 @@ async function main(): Promise<void> {
           )
         : fileConfig.customHeaders;
 
+      // Parse trusted proxies from CLI/env or config file
+      const trustedProxies: string[] | undefined = trustedProxiesFlag
+        ? trustedProxiesFlag.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0)
+        : fileConfig.trustedProxies;
+
       const server = new PayGateServer({
         serverCommand,
         serverArgs,
@@ -384,6 +395,7 @@ async function main(): Promise<void> {
         oauth: fileConfig.oauth,
         cors: corsConfig,
         customHeaders,
+        trustedProxies,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Wire config file path for hot-reload support

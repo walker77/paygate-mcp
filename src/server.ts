@@ -64,6 +64,79 @@ export function getRequestId(req: IncomingMessage): string | undefined {
   return (req as any)._requestId;
 }
 
+/**
+ * Resolve the real client IP from a request, accounting for trusted proxies.
+ *
+ * When trustedProxies is empty/undefined: returns the first X-Forwarded-For value
+ * or the socket remote address (current behavior).
+ *
+ * When trustedProxies is set: walks X-Forwarded-For from right to left, skipping
+ * any IPs that match the trusted proxy list (exact match or CIDR), and returns
+ * the first non-trusted IP. Falls back to socket remote address.
+ */
+export function resolveClientIp(req: IncomingMessage, trustedProxies?: string[]): string {
+  const socketIp = req.socket.remoteAddress || '';
+  const forwardedFor = req.headers['x-forwarded-for'] as string | undefined;
+
+  if (!forwardedFor) return socketIp;
+
+  const ips = forwardedFor.split(',').map(ip => ip.trim()).filter(ip => ip.length > 0);
+
+  if (!trustedProxies || trustedProxies.length === 0) {
+    // Default behavior: first IP in chain
+    return ips[0] || socketIp;
+  }
+
+  // Walk from right to left, skip trusted proxies, return first non-trusted
+  for (let i = ips.length - 1; i >= 0; i--) {
+    if (!ipMatchesList(ips[i], trustedProxies)) {
+      return ips[i];
+    }
+  }
+
+  // All IPs were trusted proxies; fall back to socket IP
+  return socketIp;
+}
+
+/** Check if an IP matches any entry in a list (exact or CIDR match). */
+function ipMatchesList(ip: string, list: string[]): boolean {
+  for (const entry of list) {
+    if (entry.includes('/')) {
+      if (matchCidrEntry(ip, entry)) return true;
+    } else if (entry === ip) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Match an IPv4 address against a CIDR range. */
+function matchCidrEntry(ip: string, cidr: string): boolean {
+  const [range, bitsStr] = cidr.split('/');
+  const bits = parseInt(bitsStr, 10);
+  if (isNaN(bits) || bits < 0 || bits > 32) return false;
+
+  const ipNum = ipToNum(ip);
+  const rangeNum = ipToNum(range);
+  if (ipNum === null || rangeNum === null) return false;
+
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return (ipNum & mask) === (rangeNum & mask);
+}
+
+/** Convert an IPv4 address string to a 32-bit number. */
+function ipToNum(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let num = 0;
+  for (const p of parts) {
+    const n = parseInt(p, 10);
+    if (isNaN(n) || n < 0 || n > 255) return null;
+    num = (num << 8) | n;
+  }
+  return num >>> 0;
+}
+
 /** Union type for both proxy backends */
 type ProxyBackend = McpProxy | HttpMcpProxy;
 
@@ -672,9 +745,8 @@ export class PayGateServer {
       });
     }
 
-    // Extract client IP for IP allowlist checking
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-      || req.socket.remoteAddress || '';
+    // Extract client IP for IP allowlist checking (trusted proxy-aware)
+    const clientIp = resolveClientIp(req, this.config.trustedProxies);
 
     // Extract scoped token tool restrictions (set by resolveApiKey)
     const scopedTokenTools: string[] | undefined = (req as any)._scopedTokenTools;
@@ -1186,6 +1258,7 @@ export class PayGateServer {
       quotas: !!this.config.globalQuota,
       corsRestricted: !!(this.config.cors && this.config.cors.origin !== '*'),
       customHeaders: !!(this.config.customHeaders && Object.keys(this.config.customHeaders).length > 0),
+      trustedProxies: !!(this.config.trustedProxies && this.config.trustedProxies.length > 0),
     };
 
     const pricing: Record<string, unknown> = {
@@ -1281,6 +1354,7 @@ export class PayGateServer {
       customHeaders: this.config.customHeaders || {},
       serverCommand: this.config.serverCommand ? '***' : '',
       serverArgs: this.config.serverArgs?.length ? ['***'] : [],
+      trustedProxies: this.config.trustedProxies || [],
     };
 
     this.audit.log('config.export', 'admin', 'Config exported', { requestId });
