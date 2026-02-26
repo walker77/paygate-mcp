@@ -192,6 +192,21 @@ export class PayGateServer {
       this.teams.recordUsage(apiKey, credits);
     };
 
+    // Wire auto-topup hook: audit log + webhook + Redis sync
+    this.gate.onAutoTopup = (apiKey: string, amount: number, newBalance: number) => {
+      const keyMasked = maskKeyForAudit(apiKey);
+      this.audit.log('key.auto_topped_up', 'system', `Auto-topup: added ${amount} credits`, {
+        keyMasked, creditsAdded: amount, newBalance,
+      });
+      this.gate.webhook?.emitAdmin('key.auto_topped_up', 'system', {
+        keyMasked, creditsAdded: amount, newBalance,
+      });
+      // Sync to Redis (if configured)
+      if (this.redisSync) {
+        this.redisSync.atomicTopup(apiKey, amount).catch(() => {});
+      }
+    };
+
     // Scoped token manager (uses admin key as signing secret, padded to min length)
     const tokenSecret = this.adminKey.length >= 8
       ? this.adminKey
@@ -298,6 +313,8 @@ export class PayGateServer {
         return this.handleSetIpAllowlist(req, res);
       case '/keys/search':
         return this.handleSearchKeysByTag(req, res);
+      case '/keys/auto-topup':
+        return this.handleSetAutoTopup(req, res);
       case '/topup':
         return this.handleTopUp(req, res);
       case '/balance':
@@ -774,6 +791,7 @@ export class PayGateServer {
         setTags: 'POST /keys/tags — Set key tags/metadata (requires X-Admin-Key)',
         setIpAllowlist: 'POST /keys/ip — Set IP allowlist (requires X-Admin-Key)',
         searchKeys: 'POST /keys/search — Search keys by tags (requires X-Admin-Key)',
+        autoTopup: 'POST /keys/auto-topup — Configure auto-topup for a key (requires X-Admin-Key)',
         pricing: 'GET /pricing — Tool pricing breakdown (public)',
         mcpPayment: 'GET /.well-known/mcp-payment — Payment metadata (SEP-2007)',
         audit: 'GET /audit — Query audit log (requires X-Admin-Key)',
@@ -1439,6 +1457,90 @@ export class PayGateServer {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ keys: results, count: results.length }));
+  }
+
+  // ─── /keys/auto-topup — Configure auto-topup ────────────────────────────────
+
+  private async handleSetAutoTopup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; threshold?: number; amount?: number; maxDaily?: number; disable?: boolean };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key' }));
+      return;
+    }
+
+    const record = this.gate.store.getKey(params.key);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      return;
+    }
+
+    // Disable auto-topup
+    if (params.disable) {
+      record.autoTopup = undefined;
+      this.gate.store.save();
+      this.syncKeyMutation(params.key);
+
+      this.audit.log('key.auto_topup_configured', 'admin', 'Auto-topup disabled', {
+        keyMasked: maskKeyForAudit(params.key),
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ autoTopup: null, message: 'Auto-topup disabled' }));
+      return;
+    }
+
+    // Validate params
+    const threshold = Math.max(0, Math.floor(Number(params.threshold) || 0));
+    const amount = Math.max(0, Math.floor(Number(params.amount) || 0));
+    const maxDaily = Math.max(0, Math.floor(Number(params.maxDaily) || 0));
+
+    if (threshold <= 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'threshold must be a positive integer' }));
+      return;
+    }
+    if (amount <= 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'amount must be a positive integer' }));
+      return;
+    }
+
+    record.autoTopup = { threshold, amount, maxDaily };
+    this.gate.store.save();
+    this.syncKeyMutation(params.key);
+
+    this.audit.log('key.auto_topup_configured', 'admin', `Auto-topup configured: threshold=${threshold}, amount=${amount}, maxDaily=${maxDaily}`, {
+      keyMasked: maskKeyForAudit(params.key),
+      threshold, amount, maxDaily,
+    });
+    this.gate.webhook?.emitAdmin('key.auto_topup_configured', 'admin', {
+      keyMasked: maskKeyForAudit(params.key), threshold, amount, maxDaily,
+    });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      autoTopup: record.autoTopup,
+      message: `Auto-topup enabled: add ${amount} credits when balance drops below ${threshold}` +
+        (maxDaily > 0 ? ` (max ${maxDaily}/day)` : ' (unlimited daily)'),
+    }));
   }
 
   // ─── /balance — Client self-service ────────────────────────────────────────

@@ -272,6 +272,8 @@ describe('AlertEngine', () => {
       tags: {},
       ipAllowlist: [],
       namespace: 'default',
+      autoTopupTodayCount: 0,
+      autoTopupLastResetDay: new Date().toISOString().split('T')[0],
       ...overrides,
     };
   }

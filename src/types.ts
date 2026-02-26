@@ -166,6 +166,19 @@ export interface ApiKeyRecord {
   ipAllowlist: string[];
   /** Tenant namespace for multi-tenant isolation. Default = 'default'. */
   namespace: string;
+  /** Auto-topup configuration. Undefined = disabled. */
+  autoTopup?: {
+    /** Trigger auto-topup when credits drop below this threshold. */
+    threshold: number;
+    /** Number of credits to add on each auto-topup. */
+    amount: number;
+    /** Max auto-topups per day (UTC). 0 = unlimited. */
+    maxDaily: number;
+  };
+  /** Number of auto-topups triggered today (UTC). Reset daily. */
+  autoTopupTodayCount: number;
+  /** Last auto-topup daily reset date (ISO date YYYY-MM-DD). */
+  autoTopupLastResetDay: string;
   /** Quota tracking: calls today (UTC). Reset daily. */
   quotaDailyCalls: number;
   /** Quota tracking: calls this month (UTC). Reset monthly. */

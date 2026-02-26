@@ -298,6 +298,8 @@ describe('TeamManager', () => {
         quotaLastResetDay: '',
         quotaLastResetMonth: '',
         namespace: 'default',
+        autoTopupTodayCount: 0,
+        autoTopupLastResetDay: '',
       };
 
       const summary = mgr.getUsageSummary(team.id, (key) => key === 'pg_abc' ? mockKey : null);

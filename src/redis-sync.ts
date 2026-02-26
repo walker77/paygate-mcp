@@ -596,6 +596,9 @@ export class RedisSync {
     fields.push('quotaLastResetDay', record.quotaLastResetDay);
     fields.push('quotaLastResetMonth', record.quotaLastResetMonth);
     fields.push('namespace', record.namespace || 'default');
+    fields.push('autoTopup', record.autoTopup ? JSON.stringify(record.autoTopup) : '');
+    fields.push('autoTopupTodayCount', String(record.autoTopupTodayCount));
+    fields.push('autoTopupLastResetDay', record.autoTopupLastResetDay);
     return fields;
   }
 
@@ -624,6 +627,9 @@ export class RedisSync {
       quotaLastResetDay: hash.quotaLastResetDay || new Date().toISOString().slice(0, 10),
       quotaLastResetMonth: hash.quotaLastResetMonth || new Date().toISOString().slice(0, 7),
       namespace: hash.namespace || 'default',
+      autoTopup: hash.autoTopup ? JSON.parse(hash.autoTopup) : undefined,
+      autoTopupTodayCount: parseInt(hash.autoTopupTodayCount, 10) || 0,
+      autoTopupLastResetDay: hash.autoTopupLastResetDay || new Date().toISOString().slice(0, 10),
     };
   }
 }

@@ -124,6 +124,8 @@ export class KeyStore {
       quotaMonthlyCredits: 0,
       quotaLastResetDay: today,
       quotaLastResetMonth: month,
+      autoTopupTodayCount: 0,
+      autoTopupLastResetDay: today,
     };
     this.keys.set(key, record);
     this.save();
@@ -474,6 +476,8 @@ export class KeyStore {
       quotaMonthlyCredits: 0,
       quotaLastResetDay: today,
       quotaLastResetMonth: month,
+      autoTopupTodayCount: 0,
+      autoTopupLastResetDay: today,
     };
     this.keys.set(key, record);
     this.save();
@@ -537,6 +541,9 @@ export class KeyStore {
           if (!Array.isArray(record.ipAllowlist)) record.ipAllowlist = [];
           // Backfill v2.9.0 namespace
           if (!record.namespace) record.namespace = 'default';
+          // Backfill v3.2.0 auto-topup tracking
+          if (record.autoTopupTodayCount === undefined) record.autoTopupTodayCount = 0;
+          if (!record.autoTopupLastResetDay) record.autoTopupLastResetDay = new Date().toISOString().slice(0, 10);
           this.keys.set(key, record);
         }
       }

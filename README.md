@@ -61,6 +61,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Multi-Tenant Namespaces** — Isolate API keys and usage data by tenant with namespace-filtered admin endpoints, analytics, and usage export
 - **Scoped Tokens** — Issue short-lived `pgt_` tokens scoped to specific tools with auto-expiry (max 24h), HMAC-SHA256 signed, zero server-side state
 - **Token Revocation List** — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis cross-instance sync, and admin API
+- **Usage-Based Auto-Topup** — Automatically add credits when balance drops below a threshold with configurable daily limits, audit trail, webhook events, and Redis sync
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -283,6 +284,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/keys/tags` | POST | `X-Admin-Key` | Set key tags/metadata (merge semantics) |
 | `/keys/ip` | POST | `X-Admin-Key` | Set IP allowlist (CIDR + exact match) |
 | `/keys/search` | POST | `X-Admin-Key` | Search keys by tag values |
+| `/keys/auto-topup` | POST | `X-Admin-Key` | Configure or disable auto-topup for a key |
 | `/limits` | POST | `X-Admin-Key` | Set spending limit on a key |
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
@@ -1321,6 +1323,66 @@ tokens.revocationList.size; // 1
 tokens.destroy();
 ```
 
+### Usage-Based Auto-Topup
+
+Automatically refill credits when a key's balance drops below a threshold. Prevents service interruptions for high-value API consumers.
+
+**Configure auto-topup (admin):**
+
+```bash
+curl -X POST http://localhost:3402/keys/auto-topup \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "pg_abc123...", "threshold": 100, "amount": 500, "maxDaily": 10}'
+```
+
+Returns:
+
+```json
+{
+  "autoTopup": { "threshold": 100, "amount": 500, "maxDaily": 10 },
+  "message": "Auto-topup enabled: add 500 credits when balance drops below 100 (max 10/day)"
+}
+```
+
+**Disable auto-topup:**
+
+```bash
+curl -X POST http://localhost:3402/keys/auto-topup \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "pg_abc123...", "disable": true}'
+```
+
+Auto-topup behavior:
+- **Post-deduction trigger** — After each tool call (or batch) deducts credits, the gate checks if credits fell below the threshold and automatically adds credits.
+- **Daily limits** — `maxDaily` caps how many auto-topups can occur per UTC day. Set to `0` for unlimited.
+- **Audit trail** — Every auto-topup is logged as a `key.auto_topped_up` audit event. Configuration changes are logged as `key.auto_topup_configured`.
+- **Webhook events** — Both `key.auto_topup_configured` and `key.auto_topped_up` events are sent via webhooks.
+- **Redis sync** — In multi-instance deployments, auto-topup credits are synced atomically via Redis.
+- **State persistence** — Auto-topup config and daily counters are persisted in the state file and Redis.
+
+**Programmatic usage:**
+
+```typescript
+import { Gate } from 'paygate-mcp';
+
+const gate = new Gate(config, 'state.json');
+const record = gate.store.createKey('premium-client', 1000);
+
+// Configure auto-topup
+record.autoTopup = { threshold: 100, amount: 500, maxDaily: 5 };
+gate.store.save();
+
+// Hook for notifications
+gate.onAutoTopup = (apiKey, amount, newBalance) => {
+  console.log(`Auto-topped up ${amount} credits → balance: ${newBalance}`);
+};
+
+// Gate.evaluate() automatically triggers auto-topup after credit deduction
+const result = gate.evaluate(record.key, { name: 'expensive-tool' });
+```
+
 ### Horizontal Scaling (Redis)
 
 Enable Redis-backed state for multi-process deployments. Multiple PayGate instances share API keys, credits, and usage data through Redis:
@@ -1566,6 +1628,7 @@ const result = await client.callTool('search', { query: 'hello' });
 - [x] Multi-tenant namespaces — Isolate API keys and usage data by tenant with namespace-filtered endpoints
 - [x] Scoped tokens — Short-lived `pgt_` tokens with tool ACL narrowing, HMAC-SHA256 signed, zero server-side state
 - [x] Token revocation list — Revoke scoped tokens before expiry with O(1) lookup, auto-cleanup, Redis sync
+- [x] Usage-based auto-topup — Automatically refill credits when balance drops below threshold with daily limits
 
 ## Requirements
 

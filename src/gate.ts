@@ -33,6 +33,8 @@ export class Gate {
   onUsageEvent?: (event: UsageEvent) => void;
   /** Optional hook called after credits are deducted (for Redis sync). */
   onCreditsDeducted?: (apiKey: string, amount: number) => void;
+  /** Optional hook called when auto-topup is triggered (for audit/webhook). */
+  onAutoTopup?: (apiKey: string, amount: number, newBalance: number) => void;
 
   constructor(config: PayGateConfig, statePath?: string) {
     this.config = config;
@@ -200,6 +202,9 @@ export class Gate {
       this.teamRecorder(apiKey, creditsRequired);
     }
     this.store.save();
+
+    // Auto-topup: if credits dropped below threshold, add credits
+    this.checkAutoTopup(apiKey);
 
     const remaining = this.store.getKey(apiKey)?.credits ?? 0;
     this.recordEvent(apiKey, keyRecord.name, toolName, creditsRequired, true, undefined, keyRecord.namespace);
@@ -476,6 +481,9 @@ export class Gate {
     }
     this.store.save();
 
+    // Auto-topup: if credits dropped below threshold, add credits
+    this.checkAutoTopup(apiKey);
+
     const remaining = this.store.getKey(apiKey)?.credits ?? 0;
 
     // Record usage events for each call
@@ -625,6 +633,39 @@ export class Gate {
   /** Whether refund-on-failure is enabled */
   get refundOnFailure(): boolean {
     return this.config.refundOnFailure;
+  }
+
+  /**
+   * Check if auto-topup should be triggered for a key.
+   * Called after credit deduction. If credits are below the threshold
+   * and daily limits allow, credits are added automatically.
+   */
+  checkAutoTopup(apiKey: string): boolean {
+    const record = this.store.getKey(apiKey);
+    if (!record || !record.autoTopup) return false;
+
+    const { threshold, amount, maxDaily } = record.autoTopup;
+    if (record.credits >= threshold) return false;
+
+    // Reset daily counter if needed (UTC date boundary)
+    const today = new Date().toISOString().slice(0, 10);
+    if (record.autoTopupLastResetDay !== today) {
+      record.autoTopupTodayCount = 0;
+      record.autoTopupLastResetDay = today;
+    }
+
+    // Check daily limit (0 = unlimited)
+    if (maxDaily > 0 && record.autoTopupTodayCount >= maxDaily) return false;
+
+    // Perform auto-topup
+    record.credits += amount;
+    record.autoTopupTodayCount++;
+    this.store.save();
+
+    // Notify listeners
+    this.onAutoTopup?.(apiKey, amount, record.credits);
+
+    return true;
   }
 
   destroy(): void {
