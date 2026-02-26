@@ -373,32 +373,34 @@ describe('Rate Limit Response Headers', () => {
   });
 
   it('POST /mcp tools/call returns X-Credits-Remaining header', async () => {
-    // Warm up: first call may 500 as echo backend starts/crashes
-    await httpRequest({
-      port, method: 'POST', path: '/mcp',
-      headers: { 'X-API-Key': apiKey },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 0,
-        method: 'tools/call',
-        params: { name: 'warmup', arguments: {} },
-      }),
-    });
+    // The echo backend may crash immediately, so calls may return errors.
+    // We retry a few times to handle transient EPIPE/process exit timing.
+    let res: Awaited<ReturnType<typeof httpRequest>> | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await httpRequest({
+          port, method: 'POST', path: '/mcp',
+          headers: { 'X-API-Key': apiKey },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: attempt,
+            method: 'tools/call',
+            params: { name: 'any_tool', arguments: {} },
+          }),
+        });
+        // If we got a response with credits header, we're done
+        if (res.headers['x-credits-remaining']) break;
+      } catch {
+        // EPIPE or connection error — retry
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
 
-    const res = await httpRequest({
-      port, method: 'POST', path: '/mcp',
-      headers: { 'X-API-Key': apiKey },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: { name: 'any_tool', arguments: {} },
-      }),
-    });
-
-    // After the backend has been initialized, headers should be present
-    expect(res.headers['x-credits-remaining']).toBeDefined();
-    const remaining = parseInt(res.headers['x-credits-remaining'] as string);
+    // The gate always deducts credits before forwarding, so header should be present
+    // even if the backend returned an error
+    expect(res).not.toBeNull();
+    expect(res!.headers['x-credits-remaining']).toBeDefined();
+    const remaining = parseInt(res!.headers['x-credits-remaining'] as string);
     expect(remaining).toBeGreaterThanOrEqual(0);
   });
 

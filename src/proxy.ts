@@ -67,6 +67,11 @@ export class McpProxy extends EventEmitter {
       this.emit('server-error', error);
     });
 
+    // Prevent unhandled EPIPE when child process exits before stdin write completes
+    this.process.stdin!.on('error', (err) => {
+      this.emit('server-stderr', `stdin error: ${err.message}`);
+    });
+
     this.started = true;
   }
 
@@ -250,7 +255,9 @@ export class McpProxy extends EventEmitter {
       // Notifications (no id) — fire and forget
       if (id === undefined || id === null) {
         const msg = JSON.stringify(request) + '\n';
-        this.process.stdin.write(msg);
+        this.process.stdin.write(msg, (err) => {
+          if (err) this.emit('server-stderr', `stdin write error: ${err.message}`);
+        });
         resolve({ jsonrpc: '2.0', result: {} });
         return;
       }
@@ -274,7 +281,15 @@ export class McpProxy extends EventEmitter {
       });
 
       const msg = JSON.stringify(request) + '\n';
-      this.process.stdin.write(msg);
+      this.process.stdin.write(msg, (err) => {
+        if (err) {
+          const pending = this.pendingRequests.get(id);
+          if (pending) {
+            this.pendingRequests.delete(id);
+            pending.reject(new Error(`stdin write failed: ${err.message}`));
+          }
+        }
+      });
     });
   }
 
