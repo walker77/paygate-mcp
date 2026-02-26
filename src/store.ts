@@ -297,6 +297,22 @@ export class KeyStore {
   }
 
   /**
+   * Check if an IP is in an arbitrary allowlist (CIDR + exact match).
+   * Public method for use by group policy resolution.
+   */
+  checkIpInList(ip: string, allowlist: string[]): boolean {
+    const clientIp = ip.trim();
+    for (const allowed of allowlist) {
+      if (allowed.includes('/')) {
+        if (this.matchCidr(clientIp, allowed)) return true;
+      } else if (allowed === clientIp) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Match an IPv4 address against a CIDR range (e.g., "192.168.1.0/24").
    */
   private matchCidr(ip: string, cidr: string): boolean {

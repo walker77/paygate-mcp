@@ -44,6 +44,7 @@ import { RedisSync } from './redis-sync';
 import { ScopedTokenManager } from './tokens';
 import { AdminKeyManager, AdminRole, ROLE_HIERARCHY } from './admin-keys';
 import { PluginManager, PayGatePlugin, PluginToolContext } from './plugin';
+import { KeyGroupManager } from './groups';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -97,6 +98,7 @@ export class PayGateServer {
   readonly tokens: ScopedTokenManager;
   /** Plugin manager for extensible middleware hooks */
   readonly plugins: PluginManager;
+  readonly groups: KeyGroupManager;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -226,8 +228,13 @@ export class PayGateServer {
     // Plugin manager for extensible middleware hooks
     this.plugins = new PluginManager();
     this.gate.pluginManager = this.plugins;
+    this.groups = new KeyGroupManager();
+    this.gate.groupManager = this.groups;
     this.metrics.registerGauge('paygate_plugins_total', 'Number of registered plugins', () => {
       return this.plugins.count;
+    });
+    this.metrics.registerGauge('paygate_groups_total', 'Number of active key groups', () => {
+      return this.groups.count;
     });
 
     // Scoped token manager (uses bootstrap admin key as signing secret, padded to min length)
@@ -440,6 +447,18 @@ export class PayGateServer {
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
+      case '/groups':
+        if (req.method === 'GET') return this.handleListGroups(req, res);
+        if (req.method === 'POST') return this.handleCreateGroup(req, res);
+        break;
+      case '/groups/update':
+        return this.handleUpdateGroup(req, res);
+      case '/groups/delete':
+        return this.handleDeleteGroup(req, res);
+      case '/groups/assign':
+        return this.handleAssignKeyToGroup(req, res);
+      case '/groups/remove':
+        return this.handleRemoveKeyFromGroup(req, res);
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
@@ -893,6 +912,12 @@ export class PayGateServer {
         createAdminKey: 'POST /admin/keys — Create admin key with role (requires X-Admin-Key, super_admin)',
         revokeAdminKey: 'POST /admin/keys/revoke — Revoke an admin key (requires X-Admin-Key, super_admin)',
         plugins: 'GET /plugins — List registered plugins (requires X-Admin-Key)',
+        listGroups: 'GET /groups — List key groups (requires X-Admin-Key)',
+        createGroup: 'POST /groups — Create a key group (requires X-Admin-Key)',
+        updateGroup: 'POST /groups/update — Update group settings (requires X-Admin-Key)',
+        deleteGroup: 'POST /groups/delete — Delete a key group (requires X-Admin-Key)',
+        assignKeyToGroup: 'POST /groups/assign — Assign a key to a group (requires X-Admin-Key)',
+        removeKeyFromGroup: 'POST /groups/remove — Remove a key from a group (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -2853,6 +2878,236 @@ export class PayGateServer {
     const plugins = this.plugins.list();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ count: plugins.length, plugins }));
+  }
+
+  // ─── Key Group Endpoints ─────────────────────────────────────────────────
+
+  private handleListGroups(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+    const groups = this.groups.listGroups();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ count: groups.length, groups }));
+  }
+
+  private async handleCreateGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    try {
+      const group = this.groups.createGroup({
+        name: String(params.name || ''),
+        description: params.description as string | undefined,
+        allowedTools: params.allowedTools as string[] | undefined,
+        deniedTools: params.deniedTools as string[] | undefined,
+        rateLimitPerMin: params.rateLimitPerMin as number | undefined,
+        toolPricing: params.toolPricing as Record<string, { creditsPerCall: number; creditsPerKbInput?: number }> | undefined,
+        quota: params.quota ? {
+          dailyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCallLimit) || 0)),
+          monthlyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCallLimit) || 0)),
+          dailyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCreditLimit) || 0)),
+          monthlyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCreditLimit) || 0)),
+        } : undefined,
+        ipAllowlist: params.ipAllowlist as string[] | undefined,
+        defaultCredits: params.defaultCredits as number | undefined,
+        maxSpendingLimit: params.maxSpendingLimit as number | undefined,
+        tags: params.tags as Record<string, string> | undefined,
+      });
+
+      this.audit.log('group.created', 'admin', `Group created: ${group.name}`, { groupId: group.id, name: group.name });
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(group));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private async handleUpdateGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const groupId = String(params.id || '');
+    if (!groupId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing id field' }));
+      return;
+    }
+
+    try {
+      const group = this.groups.updateGroup(groupId, {
+        name: params.name as string | undefined,
+        description: params.description as string | undefined,
+        allowedTools: params.allowedTools as string[] | undefined,
+        deniedTools: params.deniedTools as string[] | undefined,
+        rateLimitPerMin: params.rateLimitPerMin as number | undefined,
+        toolPricing: params.toolPricing as Record<string, { creditsPerCall: number }> | undefined,
+        quota: params.quota === null ? null : params.quota ? {
+          dailyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCallLimit) || 0)),
+          monthlyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCallLimit) || 0)),
+          dailyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCreditLimit) || 0)),
+          monthlyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCreditLimit) || 0)),
+        } : undefined,
+        ipAllowlist: params.ipAllowlist as string[] | undefined,
+        defaultCredits: params.defaultCredits as number | undefined,
+        maxSpendingLimit: params.maxSpendingLimit as number | undefined,
+        tags: params.tags as Record<string, string> | undefined,
+      });
+
+      this.audit.log('group.updated', 'admin', `Group updated: ${group.name}`, { groupId: group.id });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(group));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private async handleDeleteGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { id?: string };
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const groupId = String(params.id || '');
+    if (!groupId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing id field' }));
+      return;
+    }
+
+    const deleted = this.groups.deleteGroup(groupId);
+    if (!deleted) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Group not found' }));
+      return;
+    }
+
+    this.audit.log('group.deleted', 'admin', `Group deleted: ${groupId}`, { groupId });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, message: `Group ${groupId} deleted` }));
+  }
+
+  private async handleAssignKeyToGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string; groupId?: string };
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const apiKey = String(params.key || '');
+    const groupId = String(params.groupId || '');
+    if (!apiKey || !groupId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key or groupId field' }));
+      return;
+    }
+
+    // Verify key exists
+    const keyRecord = this.gate.store.getKey(apiKey);
+    if (!keyRecord) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'API key not found' }));
+      return;
+    }
+
+    try {
+      this.groups.assignKey(apiKey, groupId);
+      // Update key record's group field
+      keyRecord.group = groupId;
+
+      this.audit.log('group.key_assigned', 'admin', `Key assigned to group ${groupId}`, {
+        keyMasked: maskKeyForAudit(apiKey), groupId,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: `Key assigned to group ${groupId}` }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private async handleRemoveKeyFromGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { key?: string };
+    try { params = JSON.parse(body); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      return;
+    }
+
+    const apiKey = String(params.key || '');
+    if (!apiKey) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing key field' }));
+      return;
+    }
+
+    const removed = this.groups.removeKey(apiKey);
+    if (!removed) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not in any group' }));
+      return;
+    }
+
+    // Clear group field on key record
+    const keyRecord = this.gate.store.getKey(apiKey);
+    if (keyRecord) {
+      delete keyRecord.group;
+    }
+
+    this.audit.log('group.key_removed', 'admin', `Key removed from group`, { keyMasked: maskKeyForAudit(apiKey) });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, message: 'Key removed from group' }));
   }
 
   // ─── Admin Key Management ────────────────────────────────────────────────

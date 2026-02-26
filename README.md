@@ -64,6 +64,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Usage-Based Auto-Topup** — Automatically add credits when balance drops below a threshold with configurable daily limits, audit trail, webhook events, and Redis sync
 - **Admin API Key Management** — Multiple admin keys with role-based permissions (super_admin, admin, viewer), file persistence, audit trail, and safety guards
 - **Plugin System** — Extensible middleware hooks for custom billing logic, request/response transformation, custom endpoints, and lifecycle management
+- **Key Groups** — Policy templates that apply shared ACL, rate limits, pricing overrides, IP allowlists, and quotas to groups of API keys with automatic inheritance and key-level override support
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -322,6 +323,12 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/audit/export` | GET | `X-Admin-Key` | Export full audit log (JSON or CSV) |
 | `/audit/stats` | GET | `X-Admin-Key` | Audit log statistics |
 | `/plugins` | GET | `X-Admin-Key` | List registered plugins with hook info |
+| `/groups` | GET | `X-Admin-Key` | List all key groups (policy templates) |
+| `/groups` | POST | `X-Admin-Key` | Create a key group with shared policies |
+| `/groups/update` | POST | `X-Admin-Key` | Update group policies |
+| `/groups/delete` | POST | `X-Admin-Key` | Delete (deactivate) a group |
+| `/groups/assign` | POST | `X-Admin-Key` | Assign an API key to a group |
+| `/groups/remove` | POST | `X-Admin-Key` | Remove an API key from a group |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
 
@@ -1533,6 +1540,90 @@ await server.start();
 ```bash
 curl http://localhost:3402/plugins -H "X-Admin-Key: $ADMIN_KEY"
 # { "count": 2, "plugins": [{ "name": "...", "version": "...", "hooks": ["beforeGate", ...] }] }
+```
+
+### Key Groups (Policy Templates)
+
+Key groups let you define reusable policy templates and apply them to multiple API keys at once. Unlike teams (which share budgets), groups share **policies**: ACL, rate limits, pricing overrides, IP allowlists, and quotas.
+
+**Create a group:**
+
+```bash
+curl -X POST http://localhost:3402/groups \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{
+    "name": "free-tier",
+    "allowedTools": ["search", "read_file"],
+    "rateLimitPerMin": 30,
+    "ipAllowlist": ["10.0.0.0/8"],
+    "quota": { "dailyCallLimit": 100, "monthlyCallLimit": 1000, "dailyCreditLimit": 50, "monthlyCreditLimit": 200 },
+    "toolPricing": { "search": { "creditsPerCall": 2 } },
+    "tags": { "tier": "free" }
+  }'
+# { "id": "grp_a1b2c3...", "name": "free-tier", ... }
+```
+
+**Assign keys to a group:**
+
+```bash
+curl -X POST http://localhost:3402/groups/assign \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{ "groupId": "grp_a1b2c3...", "key": "pgk_..." }'
+```
+
+**Policy resolution rules:**
+
+| Policy | Resolution |
+|--------|-----------|
+| `allowedTools` | Key wins if non-empty, otherwise group |
+| `deniedTools` | Union of both (most restrictive) |
+| `ipAllowlist` | Union of both (additive) |
+| `rateLimitPerMin` | Key wins if set, otherwise group |
+| `quota` | Key wins if set, otherwise group |
+| `toolPricing` | Group overrides global config |
+| `maxSpendingLimit` | Group default (key can override via `/limits`) |
+
+**List groups:**
+
+```bash
+curl http://localhost:3402/groups -H "X-Admin-Key: $ADMIN_KEY"
+# [{ "id": "grp_...", "name": "free-tier", "memberCount": 5, ... }]
+```
+
+**Update / delete / remove:**
+
+```bash
+# Update group policies
+curl -X POST http://localhost:3402/groups/update \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{ "id": "grp_...", "rateLimitPerMin": 60 }'
+
+# Remove a key from its group
+curl -X POST http://localhost:3402/groups/remove \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{ "key": "pgk_..." }'
+
+# Delete a group (removes all assignments)
+curl -X POST http://localhost:3402/groups/delete \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -d '{ "id": "grp_..." }'
+```
+
+**Programmatic usage:**
+
+```typescript
+import { PayGateServer, KeyGroupManager } from 'paygate-mcp';
+
+const server = new PayGateServer({ ... });
+const { port, adminKey } = await server.start();
+
+// Access groups directly
+const group = server.groups.createGroup({ name: 'enterprise', rateLimitPerMin: 1000 });
+server.groups.assignKey(apiKey, group.id);
+
+// Resolve effective policy for a key
+const policy = server.groups.resolvePolicy(apiKey, keyRecord);
+// { allowedTools, deniedTools, rateLimitPerMin, quota, ipAllowlist, toolPricing, maxSpendingLimit }
 ```
 
 ### Horizontal Scaling (Redis)

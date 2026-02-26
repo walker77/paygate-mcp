@@ -51,7 +51,13 @@ export type AuditEventType =
   | 'key.auto_topped_up'
   // Admin key management
   | 'admin_key.created'
-  | 'admin_key.revoked';
+  | 'admin_key.revoked'
+  // Key groups
+  | 'group.created'
+  | 'group.updated'
+  | 'group.deleted'
+  | 'group.key_assigned'
+  | 'group.key_removed';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

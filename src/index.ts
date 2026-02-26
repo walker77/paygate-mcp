@@ -58,6 +58,8 @@ export { AdminKeyManager, ROLE_HIERARCHY, VALID_ROLES } from './admin-keys';
 export type { AdminRole, AdminKeyRecord } from './admin-keys';
 export { PluginManager } from './plugin';
 export type { PayGatePlugin, PluginGateContext, PluginToolContext, PluginGateOverride, PluginInfo } from './plugin';
+export { KeyGroupManager } from './groups';
+export type { KeyGroupRecord, KeyGroupInfo, ResolvedPolicy } from './groups';
 
 export type {
   PayGateConfig,

@@ -166,6 +166,8 @@ export interface ApiKeyRecord {
   ipAllowlist: string[];
   /** Tenant namespace for multi-tenant isolation. Default = 'default'. */
   namespace: string;
+  /** Key group ID. Keys in a group inherit group policies. Undefined = no group. */
+  group?: string;
   /** Auto-topup configuration. Undefined = disabled. */
   autoTopup?: {
     /** Trigger auto-topup when credits drop below this threshold. */

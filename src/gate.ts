@@ -18,6 +18,7 @@ import { UsageMeter } from './meter';
 import { WebhookEmitter } from './webhook';
 import { QuotaTracker } from './quota';
 import { PluginManager, PluginGateContext } from './plugin';
+import { KeyGroupManager } from './groups';
 
 export class Gate {
   readonly store: KeyStore;
@@ -28,6 +29,8 @@ export class Gate {
   private readonly config: PayGateConfig;
   /** Optional plugin manager for extensible hooks. */
   pluginManager?: PluginManager;
+  /** Optional group manager for key group policy resolution. */
+  groupManager?: KeyGroupManager;
   /** Optional team-level budget/quota checker injected by server. */
   teamChecker?: (apiKey: string, credits: number) => { allowed: boolean; reason?: string };
   /** Optional team usage recorder injected by server. */
@@ -56,7 +59,7 @@ export class Gate {
    */
   evaluate(apiKey: string | null, toolCall: ToolCallParams, clientIp?: string, scopedTokenTools?: string[]): GateDecision {
     const toolName = toolCall.name;
-    const creditsRequired = this.getToolPrice(toolName, toolCall.arguments);
+    const creditsRequired = this.getToolPrice(toolName, toolCall.arguments, apiKey || undefined);
 
     // Plugin: beforeGate — short-circuit if any plugin returns a decision
     if (this.pluginManager && this.pluginManager.count > 0) {
@@ -100,9 +103,14 @@ export class Gate {
       return { allowed: false, reason, creditsCharged: 0, remainingCredits: 0 };
     }
 
-    // Step 3a: IP allowlist check
-    if (clientIp && keyRecord.ipAllowlist.length > 0) {
-      if (!this.store.checkIp(apiKey, clientIp)) {
+    // Resolve group policy (if key belongs to a group)
+    const groupPolicy = this.groupManager ? this.groupManager.resolvePolicy(apiKey, keyRecord) : null;
+
+    // Step 3a: IP allowlist check (merge group + key allowlists)
+    const effectiveIpAllowlist = groupPolicy ? groupPolicy.ipAllowlist : keyRecord.ipAllowlist;
+    if (clientIp && effectiveIpAllowlist.length > 0) {
+      const ipAllowed = this.checkIpAllowlist(clientIp, effectiveIpAllowlist);
+      if (!ipAllowed) {
         const reason = `ip_not_allowed: ${clientIp} not in allowlist`;
         this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason, keyRecord.namespace);
         if (this.config.shadowMode) {
@@ -112,8 +120,13 @@ export class Gate {
       }
     }
 
-    // Step 3: Tool ACL check
-    const aclResult = this.checkToolAcl(keyRecord, toolName);
+    // Step 3: Tool ACL check (with group policy applied)
+    const effectiveRecord = groupPolicy ? {
+      ...keyRecord,
+      allowedTools: groupPolicy.allowedTools,
+      deniedTools: groupPolicy.deniedTools,
+    } : keyRecord;
+    const aclResult = this.checkToolAcl(effectiveRecord, toolName);
     if (!aclResult.allowed) {
       this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, aclResult.reason, keyRecord.namespace);
       if (this.config.shadowMode) {
@@ -566,6 +579,24 @@ export class Gate {
   }
 
   /**
+   * Check if a client IP is in an allowlist (supports CIDR and exact match).
+   * Used for group-resolved allowlists that may merge multiple sources.
+   */
+  private checkIpAllowlist(clientIp: string, allowlist: string[]): boolean {
+    if (allowlist.length === 0) return true;
+    const ip = clientIp.trim();
+    for (const allowed of allowlist) {
+      if (allowed.includes('/')) {
+        // Delegate CIDR to store's matchCidr
+        if (this.store.checkIpInList(ip, [allowed])) return true;
+      } else if (allowed === ip) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Filter a tools list based on a key's ACL. Used by proxies for tools/list filtering.
    * Returns null if no filtering needed (no API key or no ACL configured).
    */
@@ -574,17 +605,22 @@ export class Gate {
     const keyRecord = this.store.getKey(apiKey);
     if (!keyRecord) return null;
 
-    const hasKeyAcl = keyRecord.allowedTools.length > 0 || keyRecord.deniedTools.length > 0;
+    // Resolve group policy for effective ACL
+    const groupPolicy = this.groupManager ? this.groupManager.resolvePolicy(apiKey, keyRecord) : null;
+    const effectiveAllowed = groupPolicy ? groupPolicy.allowedTools : keyRecord.allowedTools;
+    const effectiveDenied = groupPolicy ? groupPolicy.deniedTools : keyRecord.deniedTools;
+
+    const hasKeyAcl = effectiveAllowed.length > 0 || effectiveDenied.length > 0;
     const hasTokenAcl = scopedTokenTools && scopedTokenTools.length > 0;
     if (!hasKeyAcl && !hasTokenAcl) return null;
 
     return tools.filter(tool => {
       // Whitelist: if set, tool must be in it
-      if (keyRecord.allowedTools.length > 0 && !keyRecord.allowedTools.includes(tool.name)) {
+      if (effectiveAllowed.length > 0 && !effectiveAllowed.includes(tool.name)) {
         return false;
       }
       // Blacklist: if set, tool must not be in it
-      if (keyRecord.deniedTools.length > 0 && keyRecord.deniedTools.includes(tool.name)) {
+      if (effectiveDenied.length > 0 && effectiveDenied.includes(tool.name)) {
         return false;
       }
       // Scoped token narrowing: if token restricts tools, tool must be in token's list
@@ -606,8 +642,16 @@ export class Gate {
    * Get price for a tool in credits.
    * With dynamic pricing: base price + per-KB surcharge for large inputs.
    */
-  getToolPrice(toolName: string, args?: Record<string, unknown>): number {
-    const override = this.config.toolPricing[toolName];
+  getToolPrice(toolName: string, args?: Record<string, unknown>, apiKey?: string): number {
+    // Check group pricing first (group overrides take priority over global config)
+    let override = this.config.toolPricing[toolName];
+    if (apiKey && this.groupManager) {
+      const group = this.groupManager.getKeyGroup(apiKey);
+      if (group && group.toolPricing[toolName]) {
+        override = group.toolPricing[toolName];
+      }
+    }
+
     let price = override ? override.creditsPerCall : this.config.defaultCreditsPerCall;
 
     // Dynamic pricing: add per-KB surcharge for input size
