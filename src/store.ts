@@ -15,6 +15,8 @@ import { ApiKeyRecord, QuotaConfig } from './types';
 
 export class KeyStore {
   private keys = new Map<string, ApiKeyRecord>();
+  /** Reverse index: alias → key */
+  private aliases = new Map<string, string>();
   private readonly statePath: string | null;
 
   constructor(statePath?: string) {
@@ -208,6 +210,88 @@ export class KeyStore {
     const record = this.keys.get(key);
     if (!record) return null;
     return record;
+  }
+
+  /**
+   * Resolve a key or alias to an active key record (with expiry check).
+   * Tries direct key lookup first, then alias lookup.
+   * Use this in admin endpoints where aliases should be accepted.
+   */
+  resolveKey(keyOrAlias: string): ApiKeyRecord | null {
+    // Try direct key lookup first
+    const direct = this.getKey(keyOrAlias);
+    if (direct) return direct;
+    // Try alias lookup
+    const resolvedKey = this.aliases.get(keyOrAlias);
+    if (resolvedKey) return this.getKey(resolvedKey);
+    return null;
+  }
+
+  /**
+   * Resolve a key or alias to a raw key record (no expiry check).
+   * Use this in admin endpoints where aliases should be accepted.
+   */
+  resolveKeyRaw(keyOrAlias: string): ApiKeyRecord | null {
+    // Try direct key lookup first
+    const direct = this.getKeyRaw(keyOrAlias);
+    if (direct) return direct;
+    // Try alias lookup
+    const resolvedKey = this.aliases.get(keyOrAlias);
+    if (resolvedKey) return this.getKeyRaw(resolvedKey);
+    return null;
+  }
+
+  /**
+   * Set or clear an alias for a key. Returns true on success.
+   * Alias must be unique across all keys.
+   */
+  setAlias(key: string, alias: string | null): { success: boolean; error?: string } {
+    const record = this.getKeyRaw(key);
+    if (!record) return { success: false, error: 'Key not found' };
+
+    // Clear existing alias
+    if (record.alias) {
+      this.aliases.delete(record.alias);
+    }
+
+    if (alias === null || alias === '') {
+      // Remove alias
+      record.alias = undefined;
+      this.save();
+      return { success: true };
+    }
+
+    // Validate alias format: alphanumeric, hyphens, underscores, 1-100 chars
+    const sanitized = alias.trim().slice(0, 100);
+    if (!/^[a-zA-Z0-9_-]+$/.test(sanitized)) {
+      return { success: false, error: 'Alias must contain only letters, numbers, hyphens, and underscores' };
+    }
+
+    // Check uniqueness (not collide with another alias or key)
+    if (this.aliases.has(sanitized) && this.aliases.get(sanitized) !== key) {
+      return { success: false, error: 'Alias already in use by another key' };
+    }
+    // Also reject aliases that look like existing key IDs
+    if (this.keys.has(sanitized)) {
+      return { success: false, error: 'Alias conflicts with an existing key ID' };
+    }
+
+    record.alias = sanitized;
+    this.aliases.set(sanitized, key);
+    this.save();
+    return { success: true };
+  }
+
+  /**
+   * Rebuild alias index from keys map (used after load/import).
+   */
+  private rebuildAliasIndex(): void {
+    this.aliases.clear();
+    for (const [key, record] of this.keys) {
+      if (record.alias) {
+        this.aliases.set(record.alias, key);
+      }
+    }
   }
 
   /**
@@ -560,6 +644,7 @@ export class KeyStore {
         namespace: String(record.namespace || 'default'),
         group: record.group,
         suspended: record.suspended || false,
+        alias: record.alias,
         autoTopup: record.autoTopup,
         autoTopupTodayCount: Number(record.autoTopupTodayCount) || 0,
         autoTopupLastResetDay: record.autoTopupLastResetDay || new Date().toISOString().slice(0, 10),
@@ -574,6 +659,7 @@ export class KeyStore {
       const status = existing ? 'overwritten' : 'imported';
       results.push({ key: sanitized.key.slice(0, 10) + '...', name: sanitized.name, status });
     }
+    this.rebuildAliasIndex();
     this.save();
     return results;
   }
@@ -719,6 +805,9 @@ export class KeyStore {
           this.keys.set(key, record);
         }
       }
+
+      // Rebuild alias index from loaded keys
+      this.rebuildAliasIndex();
 
       console.log(`[paygate] Loaded ${this.keys.size} key(s) from ${this.statePath}`);
     } catch (err) {

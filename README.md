@@ -76,6 +76,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Webhook Test** — `POST /webhooks/test` sends a test event to your configured webhook URL with synchronous response including status code, response time, and delivery success/failure — verifies webhook connectivity without generating real events
 - **Webhook Delivery Log** — `GET /webhooks/log` returns a queryable log of all webhook delivery attempts with timestamps, HTTP status codes, response times, success/failure, retry attempts, event counts, and event types — filter by success status, time range, and limit
 - **Webhook Pause/Resume** — `POST /webhooks/pause` and `POST /webhooks/resume` temporarily halt webhook delivery during maintenance — events are buffered (not lost) and flushed on resume, with pause state visible in `/webhooks/stats`
+- **Key Aliases** — `POST /keys/alias` assigns human-readable aliases (e.g. `my-service`, `prod-backend`) to API keys — use aliases in any admin endpoint (topup, revoke, suspend, resume, clone, transfer, usage) instead of opaque key IDs, with uniqueness enforcement, format validation, state file persistence, and audit trail
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -357,6 +358,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/webhooks/log` | GET | `X-Admin-Key` | Webhook delivery log with status, timing, and filters |
 | `/webhooks/pause` | POST | `X-Admin-Key` | Pause webhook delivery (events buffered until resumed) |
 | `/webhooks/resume` | POST | `X-Admin-Key` | Resume webhook delivery and flush buffered events |
+| `/keys/alias` | POST | `X-Admin-Key` | Set or clear a human-readable alias for an API key |
 | `/config/reload` | POST | `X-Admin-Key` | Hot-reload config file (pricing, rate limits, webhooks, quotas) |
 | `/health` | GET | None | Health check (status, uptime, version, in-flight, Redis/webhook status) |
 | `/` | GET | None | Root endpoint (endpoint list) |
@@ -1195,6 +1197,45 @@ curl -X POST http://localhost:3402/webhooks/resume \
 ```
 
 While paused, events continue to accumulate in the buffer. On resume, all buffered events are flushed immediately. The pause state and buffered event count are visible in `/webhooks/stats`. Creates audit trail entries (`webhook.pause`, `webhook.resume`).
+
+### Key Aliases
+
+Assign human-readable aliases to API keys so you can reference them by name instead of opaque key IDs in admin endpoints:
+
+```bash
+# Set an alias
+curl -X POST http://localhost:3402/keys/alias \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_abc123...", "alias": "prod-backend"}'
+# → { "key": "pg_abc12...", "alias": "prod-backend", "message": "Alias set to \"prod-backend\"" }
+
+# Use the alias in any admin endpoint
+curl -X POST http://localhost:3402/topup \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "prod-backend", "credits": 500}'
+
+curl -X POST http://localhost:3402/keys/suspend \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "prod-backend", "reason": "maintenance"}'
+
+curl -X POST http://localhost:3402/keys/transfer \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"from": "prod-backend", "to": "staging-api", "credits": 100}'
+
+# Clear an alias
+curl -X POST http://localhost:3402/keys/alias \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "prod-backend", "alias": null}'
+```
+
+| Field | Description |
+|-------|-------------|
+| `alias` | 1-100 chars, alphanumeric + hyphens + underscores only |
+| Uniqueness | Aliases must be unique across all keys and cannot collide with existing key IDs |
+| Scope | Aliases work in all admin endpoints (topup, revoke, suspend, resume, clone, transfer, usage) — they do **not** work for API key authentication on `/mcp` |
+| Persistence | Aliases are saved to the state file and survive server restarts |
+| Clone | Cloned keys do **not** inherit the source key's alias |
+| Audit | `key.alias_set` event logged for every set/clear operation |
 
 ### IP Allowlisting
 

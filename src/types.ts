@@ -192,6 +192,8 @@ export interface ApiKeyRecord {
   group?: string;
   /** Whether the key is temporarily suspended. Suspended keys are denied but can be resumed (unlike revocation which is permanent). */
   suspended?: boolean;
+  /** Human-readable alias for admin convenience. Must be unique across all keys. */
+  alias?: string;
   /** Auto-topup configuration. Undefined = disabled. */
   autoTopup?: {
     /** Trigger auto-topup when credits drop below this threshold. */

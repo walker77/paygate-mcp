@@ -378,6 +378,8 @@ export class PayGateServer {
         return this.handleResumeKey(req, res);
       case '/keys/clone':
         return this.handleCloneKey(req, res);
+      case '/keys/alias':
+        return this.handleSetAlias(req, res);
       case '/keys/rotate':
         return this.handleRotateKey(req, res);
       case '/keys/acl':
@@ -933,6 +935,7 @@ export class PayGateServer {
         suspendKey: 'POST /keys/suspend — Temporarily suspend a key (requires X-Admin-Key)',
         resumeKey: 'POST /keys/resume — Resume a suspended key (requires X-Admin-Key)',
         cloneKey: 'POST /keys/clone — Clone a key with same config (requires X-Admin-Key)',
+        keyAlias: 'POST /keys/alias — Set or clear a human-readable alias for a key (requires X-Admin-Key)',
         rotateKey: 'POST /keys/rotate — Rotate a key (requires X-Admin-Key)',
         setAcl: 'POST /keys/acl — Set tool ACL (requires X-Admin-Key)',
         setExpiry: 'POST /keys/expiry — Set key expiry (requires X-Admin-Key)',
@@ -1190,12 +1193,16 @@ export class PayGateServer {
       return;
     }
 
+    // Resolve alias to actual key
+    const resolved = this.gate.store.resolveKey(params.key);
+    const actualKey = resolved ? resolved.key : params.key;
+
     // Use Redis atomic topup when available, fall back to local store
     let success: boolean;
     if (this.redisSync) {
-      success = await this.redisSync.atomicTopup(params.key, credits);
+      success = await this.redisSync.atomicTopup(actualKey, credits);
     } else {
-      success = this.gate.store.addCredits(params.key, credits);
+      success = this.gate.store.addCredits(actualKey, credits);
     }
     if (!success) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1203,7 +1210,7 @@ export class PayGateServer {
       return;
     }
 
-    const record = this.gate.store.getKey(params.key);
+    const record = this.gate.store.getKey(actualKey);
 
     this.audit.log('key.topup', 'admin', `Added ${credits} credits`, {
       keyMasked: maskKeyForAudit(params.key),
@@ -1258,7 +1265,7 @@ export class PayGateServer {
     }
 
     // Validate source key exists and has enough credits
-    const sourceRecord = this.gate.store.getKey(params.from);
+    const sourceRecord = this.gate.store.resolveKey(params.from);
     if (!sourceRecord) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Source key not found' }));
@@ -1273,7 +1280,7 @@ export class PayGateServer {
     }
 
     // Validate destination key exists (getKey returns null for revoked/expired keys)
-    const destRecord = this.gate.store.getKey(params.to);
+    const destRecord = this.gate.store.resolveKey(params.to);
     if (!destRecord) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Destination key not found' }));
@@ -1283,13 +1290,13 @@ export class PayGateServer {
     // Perform transfer atomically (deduct from source, add to destination)
     if (this.redisSync) {
       // Redis atomic transfer: deduct first, then add
-      const deducted = await this.redisSync.atomicDeduct(params.from, credits);
+      const deducted = await this.redisSync.atomicDeduct(sourceRecord.key, credits);
       if (!deducted) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Redis deduction failed (insufficient credits or key not found)' }));
         return;
       }
-      await this.redisSync.atomicTopup(params.to, credits);
+      await this.redisSync.atomicTopup(destRecord.key, credits);
     } else {
       // Local store: deduct and add
       sourceRecord.credits -= credits;
@@ -1297,21 +1304,21 @@ export class PayGateServer {
       this.gate.store.save();
     }
 
-    const fromBalance = this.gate.store.getKey(params.from)?.credits ?? 0;
-    const toBalance = this.gate.store.getKey(params.to)?.credits ?? 0;
+    const fromBalance = sourceRecord.credits;
+    const toBalance = destRecord.credits;
     const memo = params.memo || '';
 
     this.audit.log('key.credits_transferred', 'admin', `Transferred ${credits} credits`, {
-      fromKeyMasked: maskKeyForAudit(params.from),
-      toKeyMasked: maskKeyForAudit(params.to),
+      fromKeyMasked: maskKeyForAudit(sourceRecord.key),
+      toKeyMasked: maskKeyForAudit(destRecord.key),
       credits,
       fromBalance,
       toBalance,
       memo,
     });
     this.emitWebhookAdmin('key.credits_transferred', 'admin', {
-      fromKeyMasked: maskKeyForAudit(params.from),
-      toKeyMasked: maskKeyForAudit(params.to),
+      fromKeyMasked: maskKeyForAudit(sourceRecord.key),
+      toKeyMasked: maskKeyForAudit(destRecord.key),
       credits,
       fromBalance,
       toBalance,
@@ -1321,8 +1328,8 @@ export class PayGateServer {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       transferred: credits,
-      from: { keyMasked: maskKeyForAudit(params.from), balance: fromBalance },
-      to: { keyMasked: maskKeyForAudit(params.to), balance: toBalance },
+      from: { keyMasked: maskKeyForAudit(sourceRecord.key), balance: fromBalance, credits: fromBalance },
+      to: { keyMasked: maskKeyForAudit(destRecord.key), balance: toBalance, credits: toBalance },
       memo: memo || undefined,
       message: `Transferred ${credits} credits`,
     }));
@@ -1616,12 +1623,16 @@ export class PayGateServer {
       return;
     }
 
+    // Resolve alias to actual key
+    const resolved = this.gate.store.resolveKeyRaw(params.key);
+    const actualKey = resolved ? resolved.key : params.key;
+
     // Use Redis-backed revoke when available (broadcasts to other instances)
     let success: boolean;
     if (this.redisSync) {
-      success = await this.redisSync.revokeKey(params.key);
+      success = await this.redisSync.revokeKey(actualKey);
     } else {
-      success = this.gate.store.revokeKey(params.key);
+      success = this.gate.store.revokeKey(actualKey);
     }
     if (!success) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1630,14 +1641,14 @@ export class PayGateServer {
     }
 
     this.audit.log('key.revoked', 'admin', `Key revoked`, {
-      keyMasked: maskKeyForAudit(params.key),
+      keyMasked: maskKeyForAudit(actualKey),
     });
     this.emitWebhookAdmin('key.revoked', 'admin', {
-      keyMasked: maskKeyForAudit(params.key),
+      keyMasked: maskKeyForAudit(actualKey),
     });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Key revoked' }));
+    res.end(JSON.stringify({ message: 'Key revoked', revoked: true }));
   }
 
   // ─── /keys/suspend — Temporarily suspend a key ─────────────────────────────
@@ -1666,7 +1677,7 @@ export class PayGateServer {
       return;
     }
 
-    const record = this.gate.store.getKeyRaw(params.key);
+    const record = this.gate.store.resolveKeyRaw(params.key);
     if (!record) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found' }));
@@ -1685,20 +1696,20 @@ export class PayGateServer {
       return;
     }
 
-    const success = this.gate.store.suspendKey(params.key);
+    const success = this.gate.store.suspendKey(record.key);
     if (!success) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to suspend key' }));
       return;
     }
-    this.syncKeyMutation(params.key);
+    this.syncKeyMutation(record.key);
 
     this.audit.log('key.suspended', 'admin', `Key suspended${params.reason ? ': ' + params.reason : ''}`, {
-      keyMasked: maskKeyForAudit(params.key),
+      keyMasked: maskKeyForAudit(record.key),
       reason: params.reason || null,
     });
     this.emitWebhookAdmin('key.suspended', 'admin', {
-      keyMasked: maskKeyForAudit(params.key),
+      keyMasked: maskKeyForAudit(record.key),
       reason: params.reason || null,
     });
 
@@ -1732,7 +1743,7 @@ export class PayGateServer {
       return;
     }
 
-    const record = this.gate.store.getKeyRaw(params.key);
+    const record = this.gate.store.resolveKeyRaw(params.key);
     if (!record) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found' }));
@@ -1751,19 +1762,19 @@ export class PayGateServer {
       return;
     }
 
-    const success = this.gate.store.resumeKey(params.key);
+    const success = this.gate.store.resumeKey(record.key);
     if (!success) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to resume key' }));
       return;
     }
-    this.syncKeyMutation(params.key);
+    this.syncKeyMutation(record.key);
 
     this.audit.log('key.resumed', 'admin', 'Key resumed', {
-      keyMasked: maskKeyForAudit(params.key),
+      keyMasked: maskKeyForAudit(record.key),
     });
     this.emitWebhookAdmin('key.resumed', 'admin', {
-      keyMasked: maskKeyForAudit(params.key),
+      keyMasked: maskKeyForAudit(record.key),
     });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1797,7 +1808,7 @@ export class PayGateServer {
     }
 
     // Use getKeyRaw to allow cloning suspended/expired keys (but not revoked)
-    const source = this.gate.store.getKeyRaw(params.key);
+    const source = this.gate.store.resolveKeyRaw(params.key);
     if (!source) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Source key not found' }));
@@ -1809,7 +1820,7 @@ export class PayGateServer {
       return;
     }
 
-    const cloned = this.gate.store.cloneKey(params.key, {
+    const cloned = this.gate.store.cloneKey(source.key, {
       name: params.name,
       credits: params.credits,
       tags: params.tags,
@@ -1824,14 +1835,14 @@ export class PayGateServer {
     // Sync new key to Redis
     this.syncKeyMutation(cloned.key);
 
-    this.audit.log('key.cloned', 'admin', `Key cloned from ${maskKeyForAudit(params.key)}`, {
-      sourceKeyMasked: maskKeyForAudit(params.key),
+    this.audit.log('key.cloned', 'admin', `Key cloned from ${maskKeyForAudit(source.key)}`, {
+      sourceKeyMasked: maskKeyForAudit(source.key),
       newKeyMasked: maskKeyForAudit(cloned.key),
       name: cloned.name,
       credits: cloned.credits,
     });
     this.emitWebhookAdmin('key.cloned', 'admin', {
-      sourceKeyMasked: maskKeyForAudit(params.key),
+      sourceKeyMasked: maskKeyForAudit(source.key),
       newKeyMasked: maskKeyForAudit(cloned.key),
       name: cloned.name,
       credits: cloned.credits,
@@ -1843,6 +1854,7 @@ export class PayGateServer {
       key: cloned.key,
       name: cloned.name,
       credits: cloned.credits,
+      clonedFrom: source.key.slice(0, 10) + '...',
       sourceName: source.name,
       allowedTools: cloned.allowedTools,
       deniedTools: cloned.deniedTools,
@@ -1853,6 +1865,74 @@ export class PayGateServer {
       namespace: cloned.namespace,
       group: cloned.group,
       spendingLimit: cloned.spendingLimit,
+    }));
+  }
+
+  // ─── /keys/alias — Set or clear key alias ──────────────────────────────────
+
+  private async handleSetAlias(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+    if (!this.checkAdmin(req, res)) return;
+
+    const raw = await this.readBody(req);
+    const params = JSON.parse(raw);
+    if (!params.key) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing "key" parameter' }));
+      return;
+    }
+
+    // Resolve the key (support existing aliases for the source key)
+    const record = this.gate.store.resolveKeyRaw(params.key);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const alias = params.alias !== undefined ? (params.alias === null || params.alias === '' ? null : String(params.alias)) : undefined;
+    if (alias === undefined) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing "alias" parameter (string to set, null to clear)' }));
+      return;
+    }
+
+    const result = this.gate.store.setAlias(record.key, alias);
+    if (!result.success) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: result.error }));
+      return;
+    }
+
+    const action = alias ? `set to "${alias}"` : 'cleared';
+    this.audit.log('key.alias_set', 'admin', `Key alias ${action} for ${record.key.slice(0, 10)}...`, {
+      key: record.key.slice(0, 10),
+      alias: alias || null,
+    });
+
+    // Sync to Redis if configured
+    if (typeof (this as any).syncKeyMutation === 'function') {
+      (this as any).syncKeyMutation(record.key);
+    }
+
+    // Webhook event
+    if (this.gate.webhook) {
+      this.gate.webhook.emitAdmin('key.created', 'admin', {
+        key: record.key.slice(0, 10),
+        alias: alias || null,
+        event: 'alias_set',
+      });
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: record.key.slice(0, 10) + '...',
+      alias: record.alias || null,
+      message: `Alias ${action}`,
     }));
   }
 
@@ -1948,7 +2028,7 @@ export class PayGateServer {
     }
     this.syncKeyMutation(params.key);
 
-    const record = this.gate.store.getKey(params.key);
+    const record = this.gate.store.resolveKey(params.key);
 
     this.audit.log('key.acl_updated', 'admin', `ACL updated`, {
       keyMasked: maskKeyForAudit(params.key),
@@ -2006,7 +2086,7 @@ export class PayGateServer {
     }
     this.syncKeyMutation(params.key);
 
-    const record = this.gate.store.getKeyRaw(params.key);
+    const record = this.gate.store.resolveKeyRaw(params.key);
 
     this.audit.log('key.expiry_updated', 'admin', expiresAt ? `Key expiry set to ${expiresAt}` : 'Key expiry removed', {
       keyMasked: maskKeyForAudit(params.key),
@@ -2123,7 +2203,7 @@ export class PayGateServer {
     }
 
     this.syncKeyMutation(params.key);
-    const record = this.gate.store.getKey(params.key);
+    const record = this.gate.store.resolveKey(params.key);
 
     this.audit.log('key.tags_updated', 'admin', `Tags updated`, {
       keyMasked: maskKeyForAudit(params.key),
@@ -2177,7 +2257,7 @@ export class PayGateServer {
     }
 
     this.syncKeyMutation(params.key);
-    const record = this.gate.store.getKey(params.key);
+    const record = this.gate.store.resolveKey(params.key);
 
     this.audit.log('key.ip_updated', 'admin', `IP allowlist updated`, {
       keyMasked: maskKeyForAudit(params.key),
@@ -2244,15 +2324,15 @@ export class PayGateServer {
       return;
     }
 
-    // Verify key exists (use getKeyRaw to allow querying expired/suspended keys)
-    const record = this.gate.store.getKeyRaw(key);
+    // Verify key exists (use resolveKeyRaw to allow querying by alias and expired/suspended keys)
+    const record = this.gate.store.resolveKeyRaw(key);
     if (!record) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found' }));
       return;
     }
 
-    const usage = this.gate.meter.getKeyUsage(key, since);
+    const usage = this.gate.meter.getKeyUsage(record.key, since);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -2292,7 +2372,7 @@ export class PayGateServer {
       return;
     }
 
-    const record = this.gate.store.getKey(params.key);
+    const record = this.gate.store.resolveKey(params.key);
     if (!record) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found or inactive' }));
@@ -2431,7 +2511,7 @@ export class PayGateServer {
       return;
     }
 
-    const record = this.gate.store.getKey(params.key);
+    const record = this.gate.store.resolveKey(params.key);
     if (!record) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Key not found or inactive' }));
@@ -3878,7 +3958,7 @@ export class PayGateServer {
     }
 
     // Verify the key exists
-    const keyRecord = this.gate.store.getKey(params.key as string);
+    const keyRecord = this.gate.store.resolveKey(params.key as string);
     if (!keyRecord) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'API key not found' }));
@@ -4014,7 +4094,7 @@ export class PayGateServer {
     }
 
     // Verify the parent key exists and is active
-    const keyRecord = this.gate.store.getKey(params.key);
+    const keyRecord = this.gate.store.resolveKey(params.key);
     if (!keyRecord || !keyRecord.active) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'API key not found or inactive' }));

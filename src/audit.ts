@@ -48,6 +48,8 @@ export type AuditEventType =
   | 'webhook.test'
   | 'webhook.pause'
   | 'webhook.resume'
+  // Key aliases
+  | 'key.alias_set'
   // Scoped tokens
   | 'token.created'
   | 'token.revoked'
