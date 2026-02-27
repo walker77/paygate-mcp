@@ -1087,6 +1087,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/credit-burn-rate':
+        if (req.method === 'GET') return this.handleCreditBurnRate(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1716,6 +1721,7 @@ export class PayGateServer {
         toolErrorRate: 'GET /admin/tool-error-rate — Per-tool error rates with denied/allowed counts, error percentage, and overall reliability metrics (requires X-Admin-Key)',
         consumerSpendVelocity: 'GET /admin/consumer-spend-velocity — Per-consumer spend rate with credits/hour, depletion forecast, and velocity ranking (requires X-Admin-Key)',
         namespaceActivity: 'GET /admin/namespace-activity — Per-namespace activity metrics with key counts, spend, calls, credits remaining for multi-tenant visibility (requires X-Admin-Key)',
+        creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8730,6 +8736,76 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/credit-burn-rate — System-wide credit burn rate ──────────────
+
+  private handleCreditBurnRate(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        burnRate: {
+          creditsPerHour: 0,
+          hoursUntilDepleted: null,
+          utilizationPercent: 0,
+        },
+        summary: {
+          totalAllocated: 0,
+          totalSpent: 0,
+          totalRemaining: 0,
+          activeKeys: 0,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const now = Date.now();
+    let totalAllocated = 0;
+    let totalSpent = 0;
+    let totalRemaining = 0;
+    let weightedBurnRate = 0;
+
+    for (const rec of activeRecords) {
+      const spent = rec.totalSpent || 0;
+      const allocated = rec.credits + spent;
+      totalAllocated += allocated;
+      totalSpent += spent;
+      totalRemaining += rec.credits;
+
+      const createdAt = rec.createdAt ? new Date(rec.createdAt).getTime() : now;
+      const hoursActive = Math.max((now - createdAt) / (1000 * 60 * 60), 0.001);
+      weightedBurnRate += spent / hoursActive;
+    }
+
+    const creditsPerHour = totalSpent > 0 ? Math.round(weightedBurnRate * 100) / 100 : 0;
+    const hoursUntilDepleted = creditsPerHour > 0
+      ? Math.round((totalRemaining / creditsPerHour) * 100) / 100
+      : null;
+    const utilizationPercent = totalAllocated > 0
+      ? Math.round((totalSpent / totalAllocated) * 100)
+      : 0;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      burnRate: {
+        creditsPerHour,
+        hoursUntilDepleted,
+        utilizationPercent,
+      },
+      summary: {
+        totalAllocated,
+        totalSpent,
+        totalRemaining,
+        activeKeys: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
     }));

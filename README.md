@@ -161,6 +161,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Error Rate** — `GET /admin/tool-error-rate` per-tool error rates with denied/allowed counts, error percentage, and overall reliability metrics
 - **Consumer Spend Velocity** — `GET /admin/consumer-spend-velocity` per-consumer spend rate with credits/hour, depletion forecast, and velocity ranking
 - **Namespace Activity** — `GET /admin/namespace-activity` per-namespace activity metrics with key counts, spend, calls, credits remaining for multi-tenant visibility
+- **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3720,6 +3721,22 @@ curl http://localhost:3000/admin/namespace-activity -H "X-Admin-Key: YOUR_ADMIN_
 ```
 
 Per-namespace activity breakdown for multi-tenant visibility. Per-namespace: key count, total spend, total calls, credits remaining. Keys without a namespace are grouped as "default". Summary identifies the top namespace by spend. Excludes revoked/suspended keys. Sorted by totalSpent descending. Read-only.
+
+### Credit Burn Rate
+
+```bash
+curl http://localhost:3000/admin/credit-burn-rate -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "burnRate": { "creditsPerHour": 45.5, "hoursUntilDepleted": 104.4, "utilizationPercent": 25 },
+  "summary": { "totalAllocated": 5000, "totalSpent": 1250, "totalRemaining": 3750, "activeKeys": 10 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+System-wide credit burn rate analysis. Shows aggregate credits/hour burn rate, utilization percentage (spent/allocated), and estimated hours until all credits are depleted. Summary includes total allocated, spent, remaining, and active key count. Zero-spend systems show `creditsPerHour: 0` and `hoursUntilDepleted: null`. Excludes revoked/suspended keys. Read-only.
 
 ### IP Allowlisting
 
