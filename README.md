@@ -152,6 +152,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Namespace Revenue** — `GET /admin/namespace-revenue` revenue breakdown by namespace with spend, call counts, key counts, and percentage breakdown
 - **Group Revenue** — `GET /admin/group-revenue` revenue breakdown by key group with spend, call counts, key counts, and percentage breakdown
 - **Peak Usage Times** — `GET /admin/peak-usage` traffic patterns by hour-of-day with request counts, credits, unique consumers, and peak hour identification
+- **Consumer Activity** — `GET /admin/consumer-activity` per-consumer activity metrics with calls, spend, credits remaining, last active time, and active/inactive status
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3532,6 +3533,25 @@ curl http://localhost:3000/admin/peak-usage -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Traffic patterns by hour-of-day (UTC). Per-hour: total requests, allowed/denied split, credits spent, unique consumers, and traffic percentage. `peakHour` identifies the busiest hour for capacity planning. Hours are 0-23 (UTC), sorted ascending. Only hours with traffic are included. Read-only.
+
+### Consumer Activity
+
+```bash
+curl http://localhost:3000/admin/consumer-activity -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "consumers": [
+    { "name": "alice", "totalCalls": 150, "totalSpent": 750, "creditsRemaining": 250, "lastActive": "2025-01-15T14:30:00Z", "status": "active" },
+    { "name": "bob", "totalCalls": 0, "totalSpent": 0, "creditsRemaining": 500, "lastActive": null, "status": "inactive" }
+  ],
+  "summary": { "totalConsumers": 2, "activeConsumers": 1, "inactiveConsumers": 1 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-consumer activity metrics. Shows each active key's call count, total spend, credits remaining, last active timestamp, and active/inactive status. Consumers with zero calls are "inactive". Excludes revoked/suspended keys. Sorted by spend descending. Read-only.
 
 ### IP Allowlisting
 

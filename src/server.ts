@@ -1042,6 +1042,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-activity':
+        if (req.method === 'GET') return this.handleConsumerActivity(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1662,6 +1667,7 @@ export class PayGateServer {
         namespaceRevenue: 'GET /admin/namespace-revenue — Revenue breakdown by namespace with spend, call counts, key counts, and percentage breakdown (requires X-Admin-Key)',
         groupRevenue: 'GET /admin/group-revenue — Revenue breakdown by key group with spend, call counts, key counts, and percentage breakdown (requires X-Admin-Key)',
         peakUsage: 'GET /admin/peak-usage — Traffic patterns by hour-of-day with requests, credits, consumers per hour for capacity planning (requires X-Admin-Key)',
+        consumerActivity: 'GET /admin/consumer-activity — Per-consumer activity with calls, spend, credits remaining, last active time, and status (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8559,6 +8565,70 @@ export class PayGateServer {
         totalRequests,
         peakHour: peak.hour,
         peakRequests: peak.requests,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/consumer-activity — Per-consumer activity metrics ─────────────
+
+  private handleConsumerActivity(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        consumers: [],
+        summary: { totalConsumers: 0, activeConsumers: 0, inactiveConsumers: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Find last active timestamp per key from request log
+    const lastActiveMap = new Map<string, string>();
+    for (const entry of this.requestLog) {
+      // entry.key is masked (first7...last4), so we need to match differently
+      // Store all timestamps, keyed by the masked key
+      const existing = lastActiveMap.get(entry.key);
+      if (!existing || entry.timestamp > existing) {
+        lastActiveMap.set(entry.key, entry.timestamp);
+      }
+    }
+
+    let activeCount = 0;
+    let inactiveCount = 0;
+
+    const consumers = activeRecords.map(rec => {
+      const calls = rec.totalCalls || 0;
+      const spent = rec.totalSpent || 0;
+      const isActive = calls > 0;
+      if (isActive) activeCount++; else inactiveCount++;
+
+      // Build masked key to match request log entries
+      const masked = rec.key.slice(0, 7) + '...' + rec.key.slice(-4);
+      const lastActive = lastActiveMap.get(masked) || null;
+
+      return {
+        name: rec.name || 'unnamed',
+        totalCalls: calls,
+        totalSpent: spent,
+        creditsRemaining: rec.credits,
+        lastActive,
+        status: isActive ? 'active' : 'inactive',
+      };
+    }).sort((a, b) => b.totalSpent - a.totalSpent);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      consumers,
+      summary: {
+        totalConsumers: consumers.length,
+        activeConsumers: activeCount,
+        inactiveConsumers: inactiveCount,
       },
       generatedAt: new Date().toISOString(),
     }));
