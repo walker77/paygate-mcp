@@ -1,5 +1,18 @@
 # Changelog
 
+## 8.88.0 (2026-02-27)
+
+### Export Response Caps
+- **Added pagination to all export endpoints** — prevents memory exhaustion DoS from unbounded response data
+- `/audit/export`, `/requests/export`, `/keys/export` now accept `limit` (default 1000, max 5000) and `offset` query params
+- Responses include pagination metadata: `limit`, `offset`, `total` for client-side pagination
+- CSV exports also respect `limit`/`offset` parameters
+- `/keys` legacy listing capped at 500 entries
+- `clampInt()` enforces bounds: negative limits clamped to 1, over-max clamped to 5000
+- 17 new tests covering pagination metadata, default limits, custom limits, clamping, CSV enforcement across all 3 export endpoints and legacy /keys
+
+---
+
 ## 8.87.0 (2026-02-27)
 
 ### Webhook SSRF Prevention

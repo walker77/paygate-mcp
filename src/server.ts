@@ -2242,10 +2242,12 @@ export class PayGateServer {
       return;
     }
 
-    // Legacy: plain list with optional namespace
+    // Legacy: plain list with optional namespace — cap at 500 to prevent memory exhaustion
     const namespace = params.get('namespace') || undefined;
+    const allKeysList = this.gate.store.listKeys(namespace);
+    const cappedKeys = allKeysList.slice(0, 500);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(this.gate.store.listKeys(namespace), null, 2));
+    res.end(JSON.stringify(cappedKeys, null, 2));
   }
 
   // ─── /topup — Add credits ───────────────────────────────────────────────────
@@ -2571,10 +2573,16 @@ export class PayGateServer {
     const activeOnly = params.get('activeOnly') === 'true';
     const format = params.get('format') || 'json';
 
-    const keys = this.gate.store.exportKeys({ namespace, activeOnly });
+    const allKeys = this.gate.store.exportKeys({ namespace, activeOnly });
 
-    this.audit.log('keys.exported', 'admin', `Exported ${keys.length} keys`, {
-      count: keys.length, namespace: namespace || 'all', activeOnly,
+    // Enforce result cap to prevent memory exhaustion (default 1000, max 5000)
+    const limit = params.has('limit') ? clampInt(parseInt(params.get('limit')!, 10), 1, 5000, 1000) : 1000;
+    const offset = params.has('offset') ? clampInt(parseInt(params.get('offset')!, 10), 0, 100_000, 0) : 0;
+    const totalKeys = allKeys.length;
+    const keys = allKeys.slice(offset, offset + limit);
+
+    this.audit.log('keys.exported', 'admin', `Exported ${keys.length} keys (of ${totalKeys} total)`, {
+      count: keys.length, total: totalKeys, namespace: namespace || 'all', activeOnly,
     });
 
     if (format === 'csv') {
@@ -2603,6 +2611,9 @@ export class PayGateServer {
       version: '1.0',
       exportedAt: new Date().toISOString(),
       count: keys.length,
+      total: totalKeys,
+      limit,
+      offset,
       keys,
     }, null, 2));
   }
@@ -10961,11 +10972,17 @@ export class PayGateServer {
     const params = new URLSearchParams(urlParts[1] || '');
     const format = params.get('format') || 'json';
 
+    // Enforce result cap to prevent memory exhaustion (default 1000, max 5000)
+    const limit = params.has('limit') ? clampInt(parseInt(params.get('limit')!, 10), 1, 5000, 1000) : 1000;
+    const offset = params.has('offset') ? clampInt(parseInt(params.get('offset')!, 10), 0, 100_000, 0) : 0;
+
     if (format === 'csv') {
       const csv = this.audit.exportCsv({
         types: params.get('types')?.split(',').filter(Boolean) as import('./audit').AuditEventType[] | undefined,
         since: params.get('since') || undefined,
         until: params.get('until') || undefined,
+        limit,
+        offset,
       });
       res.writeHead(200, {
         'Content-Type': 'text/csv',
@@ -10973,9 +10990,15 @@ export class PayGateServer {
       });
       res.end(csv);
     } else {
-      const events = this.audit.exportAll();
+      const result = this.audit.query({
+        types: params.get('types')?.split(',').filter(Boolean) as import('./audit').AuditEventType[] | undefined,
+        since: params.get('since') || undefined,
+        until: params.get('until') || undefined,
+        limit,
+        offset,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ count: events.length, events }, null, 2));
+      res.end(JSON.stringify({ count: result.events.length, total: result.total, limit, offset, events: result.events }, null, 2));
     }
   }
 
@@ -12610,12 +12633,16 @@ export class PayGateServer {
       }
     }
 
-    // Return newest first
+    // Return newest first, with result cap to prevent memory exhaustion
     const sorted = [...filtered].reverse();
+    const limit = params.has('limit') ? clampInt(parseInt(params.get('limit')!, 10), 1, 5000, 1000) : 1000;
+    const offset = params.has('offset') ? clampInt(parseInt(params.get('offset')!, 10), 0, 100_000, 0) : 0;
+    const totalFiltered = sorted.length;
+    const page = sorted.slice(offset, offset + limit);
 
     if (format === 'csv') {
       const header = 'id,timestamp,tool,key,status,credits,durationMs,denyReason,requestId';
-      const rows = sorted.map(e => {
+      const rows = page.map(e => {
         const escapeCsv = (v: string | undefined) => {
           if (v === undefined || v === null) return '';
           const s = String(v);
@@ -12647,7 +12674,7 @@ export class PayGateServer {
         'Content-Type': 'application/json',
         'Content-Disposition': 'attachment; filename="paygate-requests.json"',
       });
-      res.end(JSON.stringify({ count: sorted.length, requests: sorted }, null, 2));
+      res.end(JSON.stringify({ count: page.length, total: totalFiltered, limit, offset, requests: page }, null, 2));
     }
   }
 
