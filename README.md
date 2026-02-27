@@ -156,6 +156,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Popularity** — `GET /admin/tool-popularity` tool usage popularity with call counts, credits, unique consumers, percentage, and most popular tool identification
 - **Credit Allocation Summary** — `GET /admin/credit-allocation` credit allocation across active keys with tier breakdown (1-100, 101-500, 501+), totals, and average allocation
 - **Daily Summary** — `GET /admin/daily-summary` daily rollup of requests, credits spent, new keys, errors, unique consumers and tools for trend analysis
+- **Key Ranking** — `GET /admin/key-ranking` leaderboard of active keys ranked by spend, calls, or credits remaining with configurable sorting
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3614,6 +3615,28 @@ curl http://localhost:3000/admin/daily-summary -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Daily activity rollup for trend analysis. Per-day: total requests, allowed/denied breakdown, credits spent, unique consumers, unique tools, and new keys created. Summary includes total days, total requests, total credits, and average requests per day. Sorted by date descending (most recent first). Read-only.
+
+### Key Ranking
+
+```bash
+curl http://localhost:3000/admin/key-ranking -H "X-Admin-Key: YOUR_ADMIN_KEY"
+# Sort by calls: ?sortBy=totalCalls
+# Sort by credits remaining: ?sortBy=creditsRemaining
+```
+
+```json
+{
+  "rankings": [
+    { "rank": 1, "name": "power-user", "totalSpent": 500, "totalCalls": 100, "creditsRemaining": 500 },
+    { "rank": 2, "name": "moderate-user", "totalSpent": 200, "totalCalls": 40, "creditsRemaining": 800 },
+    { "rank": 3, "name": "light-user", "totalSpent": 50, "totalCalls": 10, "creditsRemaining": 950 }
+  ],
+  "summary": { "totalKeys": 3, "sortedBy": "totalSpent" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Key leaderboard ranked by configurable metric. Default sorts by `totalSpent` descending. Use `?sortBy=totalCalls` or `?sortBy=creditsRemaining` for alternative rankings. Each entry includes rank number, name, spend, calls, and credits remaining. Excludes revoked/suspended keys. Read-only.
 
 ### IP Allowlisting
 

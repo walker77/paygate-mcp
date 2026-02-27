@@ -1062,6 +1062,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/key-ranking':
+        if (req.method === 'GET') return this.handleKeyRanking(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1686,6 +1691,7 @@ export class PayGateServer {
         toolPopularity: 'GET /admin/tool-popularity — Tool usage popularity with call counts, credits, unique consumers, and percentage breakdown (requires X-Admin-Key)',
         creditAllocation: 'GET /admin/credit-allocation — Credit allocation summary with tier breakdown, totals, and average allocation across active keys (requires X-Admin-Key)',
         dailySummary: 'GET /admin/daily-summary — Daily rollup of requests, credits spent, new keys, errors, and unique consumers for trend analysis (requires X-Admin-Key)',
+        keyRanking: 'GET /admin/key-ranking — Key leaderboard ranked by spend, calls, or credits remaining with configurable sorting (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8700,6 +8706,62 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/key-ranking — Key leaderboard ────────────────────────────────
+
+  private handleKeyRanking(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    // Parse sortBy from query params
+    const url = new URL(_req.url || '/', `http://localhost`);
+    const validSortFields = ['totalSpent', 'totalCalls', 'creditsRemaining'];
+    let sortBy = url.searchParams.get('sortBy') || 'totalSpent';
+    if (!validSortFields.includes(sortBy)) sortBy = 'totalSpent';
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        rankings: [],
+        summary: {
+          totalKeys: 0,
+          sortedBy: sortBy,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Build ranking entries
+    const entries = activeRecords.map(rec => ({
+      name: rec.name,
+      totalSpent: rec.totalSpent || 0,
+      totalCalls: rec.totalCalls || 0,
+      creditsRemaining: rec.credits,
+    }));
+
+    // Sort descending by the chosen field
+    entries.sort((a, b) => {
+      const aVal = (a as any)[sortBy] as number;
+      const bVal = (b as any)[sortBy] as number;
+      return bVal - aVal;
+    });
+
+    // Assign ranks
+    const rankings = entries.map((e, i) => ({ rank: i + 1, ...e }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      rankings,
+      summary: {
+        totalKeys: rankings.length,
+        sortedBy: sortBy,
       },
       generatedAt: new Date().toISOString(),
     }));
