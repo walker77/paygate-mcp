@@ -117,6 +117,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Traffic Analysis** — `GET /admin/traffic` request volume analysis with tool popularity, hourly volume, top consumers by call count, namespace breakdown, peak hour identification, and success rates
 - **Security Audit** — `GET /admin/security` security posture analysis identifying keys without IP allowlists, quotas, ACL restrictions, spending limits, or expiry dates, flagging high-credit keys, and computing a composite security score
 - **Revenue Analysis** — `GET /admin/revenue` revenue metrics with per-tool revenue breakdown, per-key spending, hourly revenue trends, credit flow summary (allocated/spent/remaining), and average revenue per call
+- **Key Portfolio Health** — `GET /admin/key-portfolio` portfolio-wide key health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2694,6 +2695,24 @@ curl http://localhost:3000/admin/revenue -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Returns revenue summary with total credits earned, per-tool revenue ranked by earnings with average per-call, top 10 per-key spending, hourly revenue trends (last 24 hours), and credit flow showing total allocated vs spent vs remaining across all active keys. Only counts successful (allowed) calls. Read-only.
+
+### Key Portfolio Health
+
+```bash
+curl http://localhost:3000/admin/key-portfolio -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalKeys": 10, "activeKeys": 7, "inactiveKeys": 2, "suspendedKeys": 1, "averageCreditUtilization": 0.35 },
+  "staleKeys": [{ "name": "unused-key", "createdAt": "2025-01-01T00:00:00Z", "credits": 500, "ageDays": 30 }],
+  "expiringSoon": [{ "name": "temp-key", "expiresAt": "2025-01-20T00:00:00Z", "hoursRemaining": 48, "credits": 100 }],
+  "ageDistribution": { "averageAgeDays": 15, "oldestAgeDays": 60, "newestAgeDays": 0 },
+  "byNamespace": [{ "namespace": "production", "total": 5, "active": 4, "suspended": 1 }]
+}
+```
+
+Returns portfolio-wide key health: active/inactive/suspended counts, average credit utilization, stale keys (created but never used), keys expiring within 7 days sorted by urgency, age distribution statistics, and namespace breakdown. Read-only.
 
 ### IP Allowlisting
 

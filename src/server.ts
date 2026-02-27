@@ -867,6 +867,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/key-portfolio':
+        if (req.method === 'GET') return this.handleLifecycleAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1452,6 +1457,7 @@ export class PayGateServer {
         trafficAnalysis: 'GET /admin/traffic — Traffic volume analysis with tool popularity, hourly volume, top consumers, namespace breakdown, and peak hour identification (requires X-Admin-Key)',
         securityAudit: 'GET /admin/security — Security posture analysis with findings for missing IP allowlists, quotas, ACLs, spending limits, expiry, high-credit keys, and composite score (requires X-Admin-Key)',
         revenueAnalysis: 'GET /admin/revenue — Revenue metrics with per-tool revenue, per-key spending, hourly revenue trends, credit flow summary, and average revenue per call (requires X-Admin-Key)',
+        keyPortfolio: 'GET /admin/key-portfolio — Key portfolio health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5871,6 +5877,94 @@ export class PayGateServer {
         totalSpent,
         totalRemaining,
       },
+    }));
+  }
+
+  // ─── /admin/lifecycle — Key lifecycle analysis ─────────────────────────
+
+  private handleLifecycleAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const now = Date.now();
+    const EXPIRY_SOON_MS = 7 * 24 * 3600 * 1000; // 7 days
+
+    // ── Summary counts ──
+    const activeKeys = allRecords.filter(r => r.active && !r.suspended);
+    const inactiveKeys = allRecords.filter(r => !r.active);
+    const suspendedKeys = allRecords.filter(r => r.active && r.suspended);
+
+    // ── Stale keys (active, never used) ──
+    const staleKeys = allRecords
+      .filter(r => r.active && !r.suspended && !r.lastUsedAt)
+      .map(r => ({
+        name: r.name,
+        createdAt: r.createdAt,
+        credits: r.credits,
+        ageDays: Math.round((now - new Date(r.createdAt).getTime()) / 86400000 * 10) / 10,
+      }));
+
+    // ── Expiring soon (active, expiry within threshold) ──
+    const expiringSoon = allRecords
+      .filter(r => {
+        if (!r.active || !r.expiresAt) return false;
+        const expiresMs = new Date(r.expiresAt).getTime();
+        return expiresMs > now && expiresMs - now <= EXPIRY_SOON_MS;
+      })
+      .map(r => ({
+        name: r.name,
+        expiresAt: r.expiresAt,
+        hoursRemaining: Math.round((new Date(r.expiresAt!).getTime() - now) / 3600000 * 10) / 10,
+        credits: r.credits,
+      }))
+      .sort((a, b) => a.hoursRemaining - b.hoursRemaining);
+
+    // ── Age distribution ──
+    const ages = allRecords.map(r => (now - new Date(r.createdAt).getTime()) / 86400000);
+    const averageAgeDays = ages.length > 0 ? Math.round(ages.reduce((s, a) => s + a, 0) / ages.length * 10) / 10 : 0;
+    const oldestAgeDays = ages.length > 0 ? Math.round(Math.max(...ages) * 10) / 10 : 0;
+    const newestAgeDays = ages.length > 0 ? Math.round(Math.min(...ages) * 10) / 10 : 0;
+
+    // ── Credit utilization ──
+    let totalAllocated = 0;
+    let totalSpent = 0;
+    for (const r of allRecords) {
+      totalAllocated += r.credits + (r.totalSpent || 0);
+      totalSpent += r.totalSpent || 0;
+    }
+    const averageCreditUtilization = totalAllocated > 0 ? Math.round(totalSpent / totalAllocated * 10000) / 10000 : 0;
+
+    // ── Namespace breakdown ──
+    const nsMap = new Map<string, { total: number; active: number; suspended: number }>();
+    for (const r of allRecords) {
+      const ns = r.namespace || 'default';
+      if (!nsMap.has(ns)) nsMap.set(ns, { total: 0, active: 0, suspended: 0 });
+      const n = nsMap.get(ns)!;
+      n.total++;
+      if (r.active && !r.suspended) n.active++;
+      if (r.suspended) n.suspended++;
+    }
+    const byNamespace = Array.from(nsMap.entries())
+      .map(([namespace, stats]) => ({ namespace, ...stats }))
+      .sort((a, b) => b.total - a.total);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalKeys: allRecords.length,
+        activeKeys: activeKeys.length,
+        inactiveKeys: inactiveKeys.length,
+        suspendedKeys: suspendedKeys.length,
+        averageCreditUtilization,
+      },
+      staleKeys,
+      expiringSoon,
+      ageDistribution: {
+        averageAgeDays,
+        oldestAgeDays,
+        newestAgeDays,
+      },
+      byNamespace,
     }));
   }
 
