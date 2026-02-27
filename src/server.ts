@@ -1072,6 +1072,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/tool-error-rate':
+        if (req.method === 'GET') return this.handleToolErrorRate(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1698,6 +1703,7 @@ export class PayGateServer {
         dailySummary: 'GET /admin/daily-summary — Daily rollup of requests, credits spent, new keys, errors, and unique consumers for trend analysis (requires X-Admin-Key)',
         keyRanking: 'GET /admin/key-ranking — Key leaderboard ranked by spend, calls, or credits remaining with configurable sorting (requires X-Admin-Key)',
         hourlyTraffic: 'GET /admin/hourly-traffic — Granular per-hour request counts with allowed/denied breakdown, credits, consumers, and tools (requires X-Admin-Key)',
+        toolErrorRate: 'GET /admin/tool-error-rate — Per-tool error rates with denied/allowed counts, error percentage, and overall reliability metrics (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8712,6 +8718,80 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/tool-error-rate — Per-tool error rates ───────────────────────
+
+  private handleToolErrorRate(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    if (this.requestLog.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        tools: [],
+        summary: {
+          totalTools: 0,
+          overallErrorRate: 0,
+          highestErrorTool: null,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Aggregate per tool
+    const toolMap = new Map<string, { allowed: number; denied: number }>();
+    let totalAllowed = 0;
+    let totalDenied = 0;
+
+    for (const entry of this.requestLog) {
+      const tool = entry.tool || 'unknown';
+      let t = toolMap.get(tool);
+      if (!t) {
+        t = { allowed: 0, denied: 0 };
+        toolMap.set(tool, t);
+      }
+      if (entry.status === 'allowed') {
+        t.allowed++;
+        totalAllowed++;
+      } else {
+        t.denied++;
+        totalDenied++;
+      }
+    }
+
+    const totalRequests = totalAllowed + totalDenied;
+    const overallErrorRate = totalRequests > 0
+      ? Math.round((totalDenied / totalRequests) * 10000) / 100
+      : 0;
+
+    // Build tools array sorted by error rate descending
+    const tools = Array.from(toolMap.entries())
+      .map(([tool, t]) => {
+        const total = t.allowed + t.denied;
+        return {
+          tool,
+          totalRequests: total,
+          allowed: t.allowed,
+          denied: t.denied,
+          errorRate: total > 0 ? Math.round((t.denied / total) * 10000) / 100 : 0,
+        };
+      })
+      .sort((a, b) => b.errorRate - a.errorRate || b.totalRequests - a.totalRequests);
+
+    // Find highest error tool (with at least 1 error)
+    const highestError = tools.find(t => t.errorRate > 0);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tools,
+      summary: {
+        totalTools: tools.length,
+        overallErrorRate,
+        highestErrorTool: highestError?.tool || null,
       },
       generatedAt: new Date().toISOString(),
     }));

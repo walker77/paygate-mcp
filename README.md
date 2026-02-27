@@ -158,6 +158,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Daily Summary** — `GET /admin/daily-summary` daily rollup of requests, credits spent, new keys, errors, unique consumers and tools for trend analysis
 - **Key Ranking** — `GET /admin/key-ranking` leaderboard of active keys ranked by spend, calls, or credits remaining with configurable sorting
 - **Hourly Traffic** — `GET /admin/hourly-traffic` granular per-hour request counts with allowed/denied breakdown, credits, consumers, tools, and busiest hour
+- **Tool Error Rate** — `GET /admin/tool-error-rate` per-tool error rates with denied/allowed counts, error percentage, and overall reliability metrics
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3657,6 +3658,26 @@ curl http://localhost:3000/admin/hourly-traffic -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Granular per-hour request metrics. Per-hour: total requests, allowed/denied breakdown, credits spent, unique consumers, and unique tools. Summary includes totals and identifies the busiest hour. Sorted by timestamp descending (most recent first). Read-only.
+
+### Tool Error Rate
+
+```bash
+curl http://localhost:3000/admin/tool-error-rate -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "tools": [
+    { "tool": "translate", "totalRequests": 100, "allowed": 85, "denied": 15, "errorRate": 15 },
+    { "tool": "search", "totalRequests": 200, "allowed": 190, "denied": 10, "errorRate": 5 },
+    { "tool": "generate", "totalRequests": 150, "allowed": 150, "denied": 0, "errorRate": 0 }
+  ],
+  "summary": { "totalTools": 3, "overallErrorRate": 5.56, "highestErrorTool": "translate" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-tool error/denial rate analysis. Per-tool: total requests, allowed/denied counts, and error rate percentage. Summary includes total tools, overall error rate, and identifies the tool with highest error rate. Sorted by error rate descending. Read-only.
 
 ### IP Allowlisting
 
