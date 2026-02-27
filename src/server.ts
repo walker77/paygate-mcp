@@ -1117,6 +1117,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-growth':
+        if (req.method === 'GET') return this.handleConsumerGrowth(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1749,6 +1754,7 @@ export class PayGateServer {
         creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
         consumerRiskScore: 'GET /admin/consumer-risk-score — Per-consumer risk scoring based on utilization, spend velocity, and credit depletion proximity with risk levels (requires X-Admin-Key)',
         revenueForecast: 'GET /admin/revenue-forecast — Projected revenue with hourly/daily/weekly/monthly forecasts based on current spend trends, capped by remaining credits (requires X-Admin-Key)',
+        consumerGrowth: 'GET /admin/consumer-growth — Consumer growth metrics with age, spend rate, credits allocated, and new consumer count (requires X-Admin-Key)',
         toolProfitability: 'GET /admin/tool-profitability — Per-tool profitability analysis with revenue, calls, avg revenue per call, and unique callers (requires X-Admin-Key)',
         creditWaste: 'GET /admin/credit-waste — Per-key credit waste analysis with utilization metrics and waste percentage (requires X-Admin-Key)',
         groupActivity: 'GET /admin/group-activity — Per-group activity metrics with key counts, spend, calls, credits remaining for policy-template-based analytics (requires X-Admin-Key)',
@@ -8772,6 +8778,61 @@ export class PayGateServer {
   }
 
   // ─── /admin/group-activity — Per-group activity metrics ──────────────────
+
+  private handleConsumerGrowth(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        consumers: [],
+        summary: { totalConsumers: 0, newConsumers24h: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const now = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    const consumers = activeRecords.map(rec => {
+      const createdAt = new Date(rec.createdAt).getTime();
+      const ageMs = now - createdAt;
+      const ageHours = Math.round((ageMs / (1000 * 60 * 60)) * 100) / 100;
+      const creditsAllocated = rec.credits + rec.totalSpent;
+      const spendRate = ageMs > 0
+        ? Math.round((rec.totalSpent / (ageMs / (1000 * 60 * 60))) * 100) / 100
+        : 0;
+
+      return {
+        name: rec.name || rec.key.slice(0, 12),
+        ageHours,
+        totalSpent: rec.totalSpent,
+        creditsAllocated,
+        spendRate,
+      };
+    });
+
+    consumers.sort((a, b) => b.creditsAllocated - a.creditsAllocated);
+
+    const newConsumers24h = activeRecords.filter(rec => {
+      const createdAt = new Date(rec.createdAt).getTime();
+      return (now - createdAt) < oneDayMs;
+    }).length;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      consumers,
+      summary: {
+        totalConsumers: consumers.length,
+        newConsumers24h,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
 
   private handleToolProfitability(_req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(_req, res)) return;

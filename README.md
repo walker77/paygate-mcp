@@ -164,6 +164,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Consumer Risk Score** — `GET /admin/consumer-risk-score` per-consumer risk scoring based on utilization with risk levels (low/medium/high/critical)
 - **Revenue Forecast** — `GET /admin/revenue-forecast` projected revenue with hourly/daily/weekly/monthly forecasts capped by remaining credits
+- **Consumer Growth** — `GET /admin/consumer-growth` consumer growth metrics with age, spend rate, credits allocated, new consumer count
 - **Tool Profitability** — `GET /admin/tool-profitability` per-tool profitability analysis with revenue, calls, avg revenue per call, unique callers
 - **Credit Waste Analysis** — `GET /admin/credit-waste` per-key credit waste analysis with utilization metrics and waste percentage
 - **Group Activity** — `GET /admin/group-activity` per-group activity metrics with key counts, spend, calls, credits remaining for policy-template analytics
@@ -3778,6 +3779,25 @@ curl http://localhost:3000/admin/revenue-forecast -H "X-Admin-Key: YOUR_ADMIN_KE
 ```
 
 Projected revenue based on current spend trends. Forecasts for next hour, day, week, and month are extrapolated from aggregate credits/hour rate and capped by total remaining credits. Includes current totals and active key count. Zero-spend systems show zero forecasts. Excludes revoked/suspended keys. Read-only.
+
+### Consumer Growth
+
+```bash
+curl http://localhost:3000/admin/consumer-growth -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "consumers": [
+    { "name": "enterprise-key", "ageHours": 720, "totalSpent": 4500, "creditsAllocated": 10000, "spendRate": 6.25 },
+    { "name": "trial-key", "ageHours": 24, "totalSpent": 10, "creditsAllocated": 100, "spendRate": 0.42 }
+  ],
+  "summary": { "totalConsumers": 2, "newConsumers24h": 1 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Consumer growth metrics per key. Per consumer: age in hours since creation, total credits spent, original credits allocated (credits + totalSpent), spend rate (credits/hour). Summary includes total active consumer count and new consumers created in the last 24 hours. Sorted by creditsAllocated descending. Excludes revoked/suspended keys. Read-only.
 
 ### Tool Profitability
 
