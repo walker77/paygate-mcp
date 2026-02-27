@@ -57,6 +57,15 @@ import { KeyTemplateManager } from './key-templates';
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
 
+/** Max length for user-supplied string fields (names, reasons, messages, memos) */
+const MAX_STRING_FIELD = 500;
+
+/** Truncate user-supplied strings to MAX_STRING_FIELD to prevent log injection and memory abuse. */
+function sanitizeString(value: string | undefined | null, maxLen = MAX_STRING_FIELD): string {
+  if (!value) return '';
+  return String(value).slice(0, maxLen);
+}
+
 /** Generate a unique request ID (16 hex chars = 8 bytes of randomness) */
 export function generateRequestId(): string {
   return `req_${randomBytes(8).toString('hex')}`;
@@ -622,10 +631,11 @@ export class PayGateServer {
     res.end(JSON.stringify(data));
   }
 
-  /** Send a JSON error response: { error: message }. */
+  /** Send a JSON error response: { error, requestId }. */
   private sendError(res: ServerResponse, status: number, message: string): void {
+    const requestId = res.getHeader('X-Request-Id') as string | undefined;
     res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: message }));
+    res.end(JSON.stringify(requestId ? { error: message, requestId } : { error: message }));
   }
 
   // ─── Request Handling ──────────────────────────────────────────────────────
@@ -2317,7 +2327,7 @@ export class PayGateServer {
 
     const fromBalance = sourceRecord.credits;
     const toBalance = destRecord.credits;
-    const memo = params.memo || '';
+    const memo = sanitizeString(params.memo);
 
     this.creditLedger.record(sourceRecord.key, {
       type: 'transfer_out', amount: credits, balanceBefore: sourceBalanceBefore, balanceAfter: fromBalance, memo: memo || undefined,
@@ -2698,13 +2708,14 @@ export class PayGateServer {
     }
     this.syncKeyMutation(record.key);
 
-    this.audit.log('key.suspended', 'admin', `Key suspended${params.reason ? ': ' + params.reason : ''}`, {
+    const reason = sanitizeString(params.reason) || null;
+    this.audit.log('key.suspended', 'admin', `Key suspended${reason ? ': ' + reason : ''}`, {
       keyMasked: maskKeyForAudit(record.key),
-      reason: params.reason || null,
+      reason,
     });
     this.emitWebhookAdmin('key.suspended', 'admin', {
       keyMasked: maskKeyForAudit(record.key),
-      reason: params.reason || null,
+      reason,
     });
 
     this.sendJson(res, 200, { message: 'Key suspended', suspended: true });
@@ -2801,7 +2812,7 @@ export class PayGateServer {
     }
 
     const cloned = this.gate.store.cloneKey(source.key, {
-      name: params.name,
+      name: params.name ? sanitizeString(String(params.name)) : undefined,
       credits: params.credits,
       tags: params.tags,
       namespace: params.namespace,
@@ -2869,7 +2880,7 @@ export class PayGateServer {
       return;
     }
 
-    const alias = params.alias !== undefined ? (params.alias === null || params.alias === '' ? null : String(params.alias)) : undefined;
+    const alias = params.alias !== undefined ? (params.alias === null || params.alias === '' ? null : sanitizeString(String(params.alias))) : undefined;
     if (alias === undefined) {
       this.sendError(res, 400, 'Missing "alias" parameter (string to set, null to clear)');
       return;
@@ -4797,7 +4808,7 @@ export class PayGateServer {
       this.maintenanceMode = params.enabled;
 
       if (params.enabled) {
-        this.maintenanceMessage = params.message || 'Server is under maintenance';
+        this.maintenanceMessage = sanitizeString(params.message) || 'Server is under maintenance';
         this.maintenanceSince = new Date().toISOString();
         if (!wasEnabled) {
           this.audit.log('maintenance.enabled', 'admin', `Maintenance mode enabled: ${this.maintenanceMessage}`, {
@@ -10167,7 +10178,7 @@ export class PayGateServer {
         credits: params.credits,
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
-        memo: params.memo?.slice(0, 200),
+        memo: sanitizeString(params.memo),
       };
 
       this.creditReservations.set(reservation.id, reservation);
@@ -10728,7 +10739,7 @@ export class PayGateServer {
     try {
       const rule = this.gate.webhookRouter.addRule({
         id: '',  // auto-generated
-        name: String(params.name || ''),
+        name: sanitizeString(params.name as string) || '',
         events: Array.isArray(params.events) ? params.events.map(String) : [],
         url: String(params.url || ''),
         secret: params.secret ? String(params.secret) : undefined,
@@ -10773,7 +10784,7 @@ export class PayGateServer {
 
     try {
       const rule = this.gate.webhookRouter.updateRule(filterId, {
-        name: params.name !== undefined ? String(params.name) : undefined,
+        name: params.name !== undefined ? sanitizeString(String(params.name)) : undefined,
         events: Array.isArray(params.events) ? params.events.map(String) : undefined,
         url: params.url !== undefined ? String(params.url) : undefined,
         secret: params.secret !== undefined ? String(params.secret) : undefined,
@@ -10982,8 +10993,8 @@ export class PayGateServer {
     }
 
     const team = this.teams.createTeam({
-      name: params.name as string,
-      description: params.description as string | undefined,
+      name: sanitizeString(params.name as string) || 'unnamed',
+      description: sanitizeString(params.description as string) || undefined,
       budget: params.budget as number | undefined,
       quota: params.quota as any,
       tags: params.tags as Record<string, string> | undefined,
@@ -11022,8 +11033,8 @@ export class PayGateServer {
     }
 
     const success = this.teams.updateTeam(params.teamId as string, {
-      name: params.name as string | undefined,
-      description: params.description as string | undefined,
+      name: params.name ? sanitizeString(params.name as string) : undefined,
+      description: params.description !== undefined ? (sanitizeString(params.description as string) || undefined) : undefined,
       budget: params.budget as number | undefined,
       quota: params.quota as any,
       tags: params.tags as Record<string, string | null> | undefined,
@@ -11283,7 +11294,7 @@ export class PayGateServer {
       return;
     }
 
-    const entry = this.tokens.revokeToken(params.token, params.reason);
+    const entry = this.tokens.revokeToken(params.token, sanitizeString(params.reason) || undefined);
     if (!entry) {
       // Already revoked or invalid signature
       this.sendError(res, 409, 'Token already revoked or invalid signature');
@@ -11369,8 +11380,8 @@ export class PayGateServer {
 
     try {
       const group = this.groups.createGroup({
-        name: String(params.name || ''),
-        description: params.description as string | undefined,
+        name: sanitizeString(params.name as string) || '',
+        description: sanitizeString(params.description as string) || undefined,
         allowedTools: params.allowedTools as string[] | undefined,
         deniedTools: params.deniedTools as string[] | undefined,
         rateLimitPerMin: params.rateLimitPerMin as number | undefined,
@@ -11421,8 +11432,8 @@ export class PayGateServer {
 
     try {
       const group = this.groups.updateGroup(groupId, {
-        name: params.name as string | undefined,
-        description: params.description as string | undefined,
+        name: params.name ? sanitizeString(params.name as string) : undefined,
+        description: params.description !== undefined ? (sanitizeString(params.description as string) || undefined) : undefined,
         allowedTools: params.allowedTools as string[] | undefined,
         deniedTools: params.deniedTools as string[] | undefined,
         rateLimitPerMin: params.rateLimitPerMin as number | undefined,
@@ -11631,15 +11642,16 @@ export class PayGateServer {
     const callerKey = req.headers['x-admin-key'] as string;
     const callerMasked = callerKey.slice(0, 7) + '...' + callerKey.slice(-4);
 
-    const record = this.adminKeys.create(params.name, role, callerMasked);
+    const safeName = sanitizeString(params.name) || 'unnamed';
+    const record = this.adminKeys.create(safeName, role, callerMasked);
 
-    this.audit.log('admin_key.created', callerMasked, `Created admin key "${params.name}" with role ${role}`, {
+    this.audit.log('admin_key.created', callerMasked, `Created admin key "${safeName}" with role ${role}`, {
       newKeyMasked: record.key.slice(0, 7) + '...' + record.key.slice(-4),
       role,
     });
     this.emitWebhookAdmin('admin_key.created', callerMasked, {
       newKeyMasked: record.key.slice(0, 7) + '...' + record.key.slice(-4),
-      name: params.name,
+      name: safeName,
       role,
     });
 
@@ -11756,14 +11768,15 @@ export class PayGateServer {
       return;
     }
 
-    const name = params.name;
-    if (!name || typeof name !== 'string') {
+    const rawName = params.name;
+    if (!rawName || typeof rawName !== 'string') {
       this.sendError(res, 400, 'Missing required field: name');
       return;
     }
+    const name = sanitizeString(rawName);
 
-    const existing = this.templates.get(name as string);
-    const result = this.templates.set(name as string, params as any);
+    const existing = this.templates.get(name);
+    const result = this.templates.set(name, params as any);
 
     if (!result.success) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -11800,19 +11813,20 @@ export class PayGateServer {
       this.sendError(res, 400, 'Missing required field: name');
       return;
     }
+    const templateName = sanitizeString(params.name);
 
-    const deleted = this.templates.delete(params.name);
+    const deleted = this.templates.delete(templateName);
     if (!deleted) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Template "${params.name}" not found` }));
+      res.end(JSON.stringify({ error: `Template "${templateName}" not found` }));
       return;
     }
 
-    this.audit.log('template.deleted', 'admin', `Deleted template: ${params.name}`, {
-      templateName: params.name,
+    this.audit.log('template.deleted', 'admin', `Deleted template: ${templateName}`, {
+      templateName,
     });
 
-    this.sendJson(res, 200, { deleted: true, name: params.name });
+    this.sendJson(res, 200, { deleted: true, name: templateName });
   }
 
   /**

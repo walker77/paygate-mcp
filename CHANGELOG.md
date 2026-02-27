@@ -1,5 +1,19 @@
 # Changelog
 
+## 8.80.0 (2026-02-27)
+
+### Request ID in Error Responses
+- Every JSON error response (`4xx`/`5xx`) now includes a `requestId` field matching the `X-Request-Id` response header
+- Enables client-side log correlation: match server errors to specific requests without inspecting headers
+- Works across all error codes: 400, 401, 403, 404, 405, 409, 429
+
+### String Field Sanitization
+- All user-supplied string fields are now truncated to 500 characters via `sanitizeString()` to prevent log injection and memory abuse
+- Protected fields: admin key names, team names/descriptions, group names/descriptions, template names, webhook filter names, key aliases, suspend reasons, maintenance messages, transfer memos, reservation memos, token revocation reasons
+- 19 new tests (7 request-ID correlation, 12 string truncation)
+
+---
+
 ## 8.79.0 (2026-02-27)
 
 ### Admin Endpoint Rate Limiting
