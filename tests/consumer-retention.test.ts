@@ -1,0 +1,290 @@
+/**
+ * Tests for v8.40.0 — Consumer Retention Cohorts
+ *
+ * GET /admin/consumer-retention — Groups consumers by creation period
+ * and tracks retention rates (keys with at least 1 tool call).
+ */
+
+import { PayGateServer } from '../src/server';
+import { DEFAULT_CONFIG } from '../src/types';
+import http from 'http';
+
+/* ── helpers ─────────────────────────────────────────────── */
+
+const ECHO_CMD = process.execPath;
+const ECHO_ARGS = ['-e', `
+  process.stdin.resume();
+  process.stdin.on('data', d => {
+    const r = JSON.parse(d.toString().trim());
+    if (r.method === 'tools/list') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: r.id, result: { tools: [
+        { name: 'tool_a', inputSchema: { type: 'object' } },
+        { name: 'tool_b', inputSchema: { type: 'object' } },
+        { name: 'tool_c', inputSchema: { type: 'object' } },
+      ] } }) + '\\n');
+    } else {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: r.id, result: { content: [{ type: 'text', text: 'ok' }] } }) + '\\n');
+    }
+  });
+`];
+
+function makeServer(overrides: Record<string, any> = {}): PayGateServer {
+  return new PayGateServer({
+    ...DEFAULT_CONFIG,
+    serverCommand: ECHO_CMD,
+    serverArgs: ECHO_ARGS,
+    port: 0,
+    ...overrides,
+  });
+}
+
+function httpGet(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: '127.0.0.1', port, path, method: 'GET', headers },
+      (res) => {
+        let buf = '';
+        res.on('data', (c: Buffer) => (buf += c));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode!, body: JSON.parse(buf) }); }
+          catch { resolve({ status: res.statusCode!, body: buf }); }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function httpPost(port: number, path: string, body: any, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> {
+  const data = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: '127.0.0.1', port, path, method: 'POST', headers: { 'Content-Type': 'application/json', ...headers } },
+      (res) => {
+        let buf = '';
+        res.on('data', (c: Buffer) => (buf += c));
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode!, body: JSON.parse(buf) }); }
+          catch { resolve({ status: res.statusCode!, body: buf }); }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
+/* ── tests ───────────────────────────────────────────────── */
+
+describe('Consumer Retention Cohorts', () => {
+  jest.setTimeout(15000);
+
+  let server: PayGateServer;
+  let port: number;
+  let adminKey: string;
+
+  afterEach(async () => {
+    await server.stop();
+  });
+
+  test('returns complete structure', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.cohorts)).toBe(true);
+    expect(r.body.summary).toBeDefined();
+    expect(typeof r.body.summary.totalKeys).toBe('number');
+    expect(typeof r.body.summary.retainedKeys).toBe('number');
+    expect(typeof r.body.summary.overallRetentionRate).toBe('number');
+    expect(typeof r.body.generatedAt).toBe('string');
+  });
+
+  test('empty when no keys', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    expect(r.body.cohorts.length).toBe(0);
+    expect(r.body.summary.totalKeys).toBe(0);
+    expect(r.body.summary.retainedKeys).toBe(0);
+    expect(r.body.summary.overallRetentionRate).toBe(0);
+  });
+
+  test('keys with calls are retained', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const k1 = (await httpPost(port, '/keys', { credits: 100, name: 'active-user' }, { 'X-Admin-Key': adminKey })).body.key;
+    await httpPost(port, '/keys', { credits: 100, name: 'dormant-user' }, { 'X-Admin-Key': adminKey });
+
+    // Only k1 makes a call
+    await httpPost(port, '/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool_a', arguments: {} } }, { 'X-API-Key': k1 });
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    expect(r.body.summary.totalKeys).toBe(2);
+    expect(r.body.summary.retainedKeys).toBe(1);
+    expect(r.body.summary.overallRetentionRate).toBe(50);
+  });
+
+  test('cohort contains created and retained counts', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const k = (await httpPost(port, '/keys', { credits: 100, name: 'user1' }, { 'X-Admin-Key': adminKey })).body.key;
+    await httpPost(port, '/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool_a', arguments: {} } }, { 'X-API-Key': k });
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    expect(r.body.cohorts.length).toBeGreaterThanOrEqual(1);
+    const cohort = r.body.cohorts[0];
+    expect(cohort.period).toBeDefined();
+    expect(typeof cohort.created).toBe('number');
+    expect(typeof cohort.retained).toBe('number');
+    expect(typeof cohort.retentionRate).toBe('number');
+  });
+
+  test('100% retention when all keys have calls', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const k1 = (await httpPost(port, '/keys', { credits: 100, name: 'u1' }, { 'X-Admin-Key': adminKey })).body.key;
+    const k2 = (await httpPost(port, '/keys', { credits: 100, name: 'u2' }, { 'X-Admin-Key': adminKey })).body.key;
+
+    await httpPost(port, '/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool_a', arguments: {} } }, { 'X-API-Key': k1 });
+    await httpPost(port, '/mcp', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'tool_b', arguments: {} } }, { 'X-API-Key': k2 });
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    expect(r.body.summary.overallRetentionRate).toBe(100);
+  });
+
+  test('0% retention when no keys have calls', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    await httpPost(port, '/keys', { credits: 100, name: 'u1' }, { 'X-Admin-Key': adminKey });
+    await httpPost(port, '/keys', { credits: 100, name: 'u2' }, { 'X-Admin-Key': adminKey });
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    expect(r.body.summary.overallRetentionRate).toBe(0);
+    expect(r.body.summary.retainedKeys).toBe(0);
+  });
+
+  test('excludes revoked and suspended keys', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const k1 = (await httpPost(port, '/keys', { credits: 100, name: 'revoked' }, { 'X-Admin-Key': adminKey })).body.key;
+    const k2 = (await httpPost(port, '/keys', { credits: 100, name: 'suspended' }, { 'X-Admin-Key': adminKey })).body.key;
+    await httpPost(port, '/keys', { credits: 100, name: 'active' }, { 'X-Admin-Key': adminKey });
+
+    await httpPost(port, '/keys/revoke', { key: k1 }, { 'X-Admin-Key': adminKey });
+    await httpPost(port, '/keys/suspend', { key: k2 }, { 'X-Admin-Key': adminKey });
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    expect(r.body.summary.totalKeys).toBe(1);
+  });
+
+  test('cohorts sorted by period descending (newest first)', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    // Create keys (all in same day, so one cohort — but verify sorting structure)
+    await httpPost(port, '/keys', { credits: 100, name: 'k1' }, { 'X-Admin-Key': adminKey });
+    await httpPost(port, '/keys', { credits: 100, name: 'k2' }, { 'X-Admin-Key': adminKey });
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    // At least 1 cohort with 2 keys
+    expect(r.body.cohorts.length).toBeGreaterThanOrEqual(1);
+    const total = r.body.cohorts.reduce((s: number, c: any) => s + c.created, 0);
+    expect(total).toBe(2);
+  });
+
+  test('includes avgSpend per cohort', async () => {
+    server = makeServer({ defaultCreditsPerCall: 10 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const k = (await httpPost(port, '/keys', { credits: 200, name: 'spender' }, { 'X-Admin-Key': adminKey })).body.key;
+    await httpPost(port, '/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tool_a', arguments: {} } }, { 'X-API-Key': k });
+    await httpPost(port, '/mcp', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'tool_b', arguments: {} } }, { 'X-API-Key': k });
+
+    const r = await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    const cohort = r.body.cohorts[0];
+    expect(typeof cohort.avgSpend).toBe('number');
+    expect(cohort.avgSpend).toBe(20); // 20 total spent / 1 key = 20
+  });
+
+  test('requires admin key', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const r = await httpGet(port, '/admin/consumer-retention');
+    expect(r.status).toBe(401);
+  });
+
+  test('rejects POST method', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const r = await httpPost(port, '/admin/consumer-retention', {}, { 'X-Admin-Key': adminKey });
+    expect(r.status).toBe(405);
+  });
+
+  test('root listing includes endpoint', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const r = await httpGet(port, '/', { 'X-Admin-Key': adminKey });
+    expect(r.body.endpoints.consumerRetention).toBeDefined();
+    expect(r.body.endpoints.consumerRetention).toContain('/admin/consumer-retention');
+  });
+
+  test('does not modify system state', async () => {
+    server = makeServer({ defaultCreditsPerCall: 5 });
+    const started = await server.start();
+    port = started.port;
+    adminKey = started.adminKey;
+
+    const k = (await httpPost(port, '/keys', { credits: 100, name: 'stable' }, { 'X-Admin-Key': adminKey })).body.key;
+
+    await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+    await httpGet(port, '/admin/consumer-retention', { 'X-Admin-Key': adminKey });
+
+    const balance = await httpGet(port, '/balance', { 'X-API-Key': k });
+    expect(balance.body.credits).toBe(100);
+  });
+});

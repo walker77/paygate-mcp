@@ -146,6 +146,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Response Time Distribution** — `GET /admin/response-time-distribution` histogram of response times with latency buckets and p50/p95/p99 percentiles
 - **Consumer Lifetime Value** — `GET /admin/consumer-lifetime-value` per-consumer spend analysis with value tiers, tool diversity, and top spender rankings
 - **Tool Revenue Ranking** — `GET /admin/tool-revenue` ranks tools by total credits consumed with call counts, unique consumers, and percentage breakdown
+- **Consumer Retention Cohorts** — `GET /admin/consumer-retention` groups consumers by creation date with retention rates and avg spend per cohort
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3405,6 +3406,25 @@ curl http://localhost:3000/admin/tool-revenue -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Ranks tools by total credits consumed from allowed requests. Each tool entry includes call count, average credits per call, unique consumer count, and revenue percentage. `topTool` is the highest revenue generator. Only allowed requests are counted; denied requests are excluded. Sorted by total credits descending. Read-only.
+
+### Consumer Retention Cohorts
+
+```bash
+curl http://localhost:3000/admin/consumer-retention -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "cohorts": [
+    { "period": "2025-01-15", "created": 10, "retained": 8, "retentionRate": 80, "avgSpend": 150 },
+    { "period": "2025-01-14", "created": 5, "retained": 3, "retentionRate": 60, "avgSpend": 80 }
+  ],
+  "summary": { "totalKeys": 15, "retainedKeys": 11, "overallRetentionRate": 73 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Groups active consumers by creation date (YYYY-MM-DD cohorts). A consumer is "retained" if they have at least 1 tool call. Per-cohort: created count, retained count, retention rate percentage, and average spend. Excludes revoked/suspended keys. Cohorts sorted newest first. Read-only.
 
 ### IP Allowlisting
 

@@ -1012,6 +1012,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-retention':
+        if (req.method === 'GET') return this.handleConsumerRetention(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1626,6 +1631,7 @@ export class PayGateServer {
         responseTimeDistribution: 'GET /admin/response-time-distribution — Histogram of response times with latency buckets, percentiles p50/p95/p99, and performance analysis (requires X-Admin-Key)',
         consumerLifetimeValue: 'GET /admin/consumer-lifetime-value — Per-consumer value metrics with spend, calls, tool diversity, and tier classification (requires X-Admin-Key)',
         toolRevenue: 'GET /admin/tool-revenue — Tool revenue ranking with credits consumed, call counts, unique consumers, and percentage breakdown (requires X-Admin-Key)',
+        consumerRetention: 'GET /admin/consumer-retention — Consumer retention cohorts grouped by creation date with retention rates and avg spend per cohort (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8162,6 +8168,68 @@ export class PayGateServer {
         totalTools: tools.length,
         totalRevenue,
         topTool: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/consumer-retention — Retention cohorts ───────────────────────
+
+  private handleConsumerRetention(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        cohorts: [],
+        summary: { totalKeys: 0, retainedKeys: 0, overallRetentionRate: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Group by creation date (YYYY-MM-DD)
+    const cohortMap = new Map<string, { created: number; retained: number; totalSpend: number }>();
+
+    for (const rec of activeRecords) {
+      const dateStr = rec.createdAt
+        ? new Date(rec.createdAt).toISOString().slice(0, 10)
+        : 'unknown';
+      let cohort = cohortMap.get(dateStr);
+      if (!cohort) {
+        cohort = { created: 0, retained: 0, totalSpend: 0 };
+        cohortMap.set(dateStr, cohort);
+      }
+      cohort.created += 1;
+      cohort.totalSpend += rec.totalSpent || 0;
+      if ((rec.totalCalls || 0) > 0) {
+        cohort.retained += 1;
+      }
+    }
+
+    const totalKeys = activeRecords.length;
+    const retainedKeys = activeRecords.filter(r => (r.totalCalls || 0) > 0).length;
+
+    const cohorts = Array.from(cohortMap.entries())
+      .map(([period, data]) => ({
+        period,
+        created: data.created,
+        retained: data.retained,
+        retentionRate: data.created > 0 ? Math.round((data.retained / data.created) * 100) : 0,
+        avgSpend: data.created > 0 ? Math.round(data.totalSpend / data.created) : 0,
+      }))
+      .sort((a, b) => b.period.localeCompare(a.period));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      cohorts,
+      summary: {
+        totalKeys,
+        retainedKeys,
+        overallRetentionRate: totalKeys > 0 ? Math.round((retainedKeys / totalKeys) * 100) : 0,
       },
       generatedAt: new Date().toISOString(),
     }));
