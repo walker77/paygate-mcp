@@ -1097,6 +1097,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/revenue-forecast':
+        if (req.method === 'GET') return this.handleRevenueForecast(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1728,6 +1733,7 @@ export class PayGateServer {
         namespaceActivity: 'GET /admin/namespace-activity — Per-namespace activity metrics with key counts, spend, calls, credits remaining for multi-tenant visibility (requires X-Admin-Key)',
         creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
         consumerRiskScore: 'GET /admin/consumer-risk-score — Per-consumer risk scoring based on utilization, spend velocity, and credit depletion proximity with risk levels (requires X-Admin-Key)',
+        revenueForecast: 'GET /admin/revenue-forecast — Projected revenue with hourly/daily/weekly/monthly forecasts based on current spend trends, capped by remaining credits (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8742,6 +8748,66 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/revenue-forecast — Projected revenue ────────────────────────
+
+  private handleRevenueForecast(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        forecast: { nextHour: 0, nextDay: 0, nextWeek: 0, nextMonth: 0 },
+        current: { totalSpent: 0, totalRemaining: 0, creditsPerHour: 0, activeKeys: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const now = Date.now();
+    let totalSpent = 0;
+    let totalRemaining = 0;
+    let weightedBurnRate = 0;
+
+    for (const rec of activeRecords) {
+      const spent = rec.totalSpent || 0;
+      totalSpent += spent;
+      totalRemaining += rec.credits;
+
+      const createdAt = rec.createdAt ? new Date(rec.createdAt).getTime() : now;
+      const hoursActive = Math.max((now - createdAt) / (1000 * 60 * 60), 0.001);
+      weightedBurnRate += spent / hoursActive;
+    }
+
+    const creditsPerHour = totalSpent > 0 ? Math.round(weightedBurnRate * 100) / 100 : 0;
+
+    // Forecast capped by remaining credits
+    const capForecast = (hours: number): number => {
+      if (creditsPerHour <= 0) return 0;
+      const projected = Math.round(creditsPerHour * hours * 100) / 100;
+      return Math.min(projected, totalRemaining);
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      forecast: {
+        nextHour: capForecast(1),
+        nextDay: capForecast(24),
+        nextWeek: capForecast(168),
+        nextMonth: capForecast(720),
+      },
+      current: {
+        totalSpent,
+        totalRemaining,
+        creditsPerHour,
+        activeKeys: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
     }));

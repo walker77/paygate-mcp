@@ -163,6 +163,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Namespace Activity** — `GET /admin/namespace-activity` per-namespace activity metrics with key counts, spend, calls, credits remaining for multi-tenant visibility
 - **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Consumer Risk Score** — `GET /admin/consumer-risk-score` per-consumer risk scoring based on utilization with risk levels (low/medium/high/critical)
+- **Revenue Forecast** — `GET /admin/revenue-forecast` projected revenue with hourly/daily/weekly/monthly forecasts capped by remaining credits
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3758,6 +3759,22 @@ curl http://localhost:3000/admin/consumer-risk-score -H "X-Admin-Key: YOUR_ADMIN
 ```
 
 Per-consumer risk scoring based on credit utilization. Risk score (0–100) maps to levels: low (0–24), medium (25–49), high (50–74), critical (75–100). Per-consumer: risk score, risk level, credits remaining, total spent, utilization percentage. Summary includes risk distribution counts. Excludes revoked/suspended keys. Sorted by riskScore descending. Read-only.
+
+### Revenue Forecast
+
+```bash
+curl http://localhost:3000/admin/revenue-forecast -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "forecast": { "nextHour": 45.5, "nextDay": 1092, "nextWeek": 7644, "nextMonth": 32760 },
+  "current": { "totalSpent": 1250, "totalRemaining": 48750, "creditsPerHour": 45.5, "activeKeys": 10 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Projected revenue based on current spend trends. Forecasts for next hour, day, week, and month are extrapolated from aggregate credits/hour rate and capped by total remaining credits. Includes current totals and active key count. Zero-spend systems show zero forecasts. Excludes revoked/suspended keys. Read-only.
 
 ### IP Allowlisting
 
