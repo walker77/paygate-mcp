@@ -104,6 +104,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Stats** — `GET /tools/stats` per-tool analytics: call counts, success rate, avg/p95 latency, credits consumed, deny reason breakdown, top 10 consumers — optional `?tool=` for detailed single-tool view, `?since=` filter
 - **Request Log Export** — `GET /requests/export` exports the full request log as JSON or CSV with Content-Disposition headers — filter by key/tool/status/since/until, combined time-window queries, no pagination limit
 - **Tool Call Dry Run** — `POST /requests/dry-run` simulates a tool call without executing — checks key validity, ACL, rate limits, credits, and spending limits, returns predicted outcome with credits-after calculation and rate limit status
+- **Batch Dry Run** — `POST /requests/dry-run/batch` simulates multiple tool calls at once — aggregate credit check, per-tool ACL validation, spending limit, returns per-tool results with total credits required and credits-after
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2272,6 +2273,33 @@ curl -X POST http://localhost:3402/requests/dry-run \
 ```
 
 Checks key validity, suspension, tool ACL, rate limits, credit balance, and spending limits. Supports alias keys. Useful for agents that want to pre-flight check a call before committing.
+
+### Batch Dry Run
+
+Simulate multiple tool calls at once to check if an entire batch would succeed:
+
+```bash
+curl -X POST http://localhost:3402/requests/dry-run/batch \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "tools": [{"name": "tool_a"}, {"name": "tool_b"}]}'
+```
+
+**Response:**
+
+```json
+{
+  "allAllowed": true,
+  "totalCreditsRequired": 10,
+  "creditsAvailable": 100,
+  "creditsAfter": 90,
+  "results": [
+    { "tool": "tool_a", "allowed": true, "creditsRequired": 5 },
+    { "tool": "tool_b", "allowed": true, "creditsRequired": 5 }
+  ]
+}
+```
+
+Performs aggregate credit check (sum of all tool prices vs balance), per-tool ACL validation, spending limit, and rate limit checks. Returns per-tool results so you can see which specific tools would fail. Max 100 tools per batch. Supports alias keys.
 
 ### IP Allowlisting
 

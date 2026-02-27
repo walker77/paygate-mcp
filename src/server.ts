@@ -724,6 +724,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
         return;
+      case '/requests/dry-run/batch':
+        if (req.method === 'POST') return this.handleRequestDryRunBatch(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+        return;
       // ─── Registry / Discovery endpoints ──────────────────────────────
       case '/.well-known/mcp-payment':
         return this.handlePaymentMetadata(req, res);
@@ -1373,6 +1378,7 @@ export class PayGateServer {
         requestLog: 'GET /requests — Queryable log of tool call requests with timing, credits, status (requires X-Admin-Key)',
         requestLogExport: 'GET /requests/export — Export request log as JSON or CSV with filters (requires X-Admin-Key)',
         requestDryRun: 'POST /requests/dry-run — Simulate a tool call without executing (requires X-Admin-Key)',
+        requestDryRunBatch: 'POST /requests/dry-run/batch — Simulate multiple tool calls without executing (requires X-Admin-Key)',
         toolStats: 'GET /tools/stats — Per-tool call counts, success rates, latency, credits, and top consumers (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
@@ -7205,6 +7211,154 @@ export class PayGateServer {
           creditsAvailable: keyRecord.credits,
           creditsAfter: keyRecord.credits - creditsRequired,
           ...(rateStatus.limit > 0 ? { rateLimit: rateStatus } : {}),
+        }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read request body' }));
+    }
+  }
+
+  // ─── /requests/dry-run/batch — Simulate multiple tool calls without executing ──
+
+  private async handleRequestDryRunBatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+
+    try {
+      const raw = await this.readBody(req);
+      try {
+        const params = JSON.parse(raw);
+        const apiKey = params.key;
+        const tools = params.tools;
+
+        if (!apiKey || typeof apiKey !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing required field: key' }));
+          return;
+        }
+
+        if (!Array.isArray(tools) || tools.length === 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing required field: tools (non-empty array of {name} objects)' }));
+          return;
+        }
+
+        if (tools.length > 100) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Maximum 100 tools per batch dry run' }));
+          return;
+        }
+
+        // Validate tool entries
+        for (let i = 0; i < tools.length; i++) {
+          if (!tools[i]?.name || typeof tools[i].name !== 'string') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `tools[${i}] missing required "name" field` }));
+            return;
+          }
+        }
+
+        // Step 1: Key lookup (resolveKeyRaw handles aliases)
+        const keyRecord = this.gate.store.resolveKeyRaw(apiKey);
+        if (!keyRecord) {
+          const isExpired = this.gate.store.isExpired(apiKey);
+          const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allAllowed: false,
+            reason,
+            totalCreditsRequired: 0,
+            results: tools.map((t: any) => ({ tool: t.name, allowed: false, reason, creditsRequired: 0 })),
+          }));
+          return;
+        }
+
+        // Step 2: Suspended?
+        if (keyRecord.suspended) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allAllowed: false,
+            reason: 'key_suspended',
+            totalCreditsRequired: 0,
+            creditsAvailable: keyRecord.credits,
+            results: tools.map((t: any) => ({ tool: t.name, allowed: false, reason: 'key_suspended', creditsRequired: 0 })),
+          }));
+          return;
+        }
+
+        // Step 3: Rate limit check (read-only)
+        const rateStatus = this.gate.rateLimiter.getStatus(keyRecord.key);
+        if (rateStatus.limit > 0 && rateStatus.remaining <= 0) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allAllowed: false,
+            reason: 'rate_limited',
+            totalCreditsRequired: 0,
+            creditsAvailable: keyRecord.credits,
+            rateLimit: rateStatus,
+            results: tools.map((t: any) => ({ tool: t.name, allowed: false, reason: 'rate_limited', creditsRequired: 0 })),
+          }));
+          return;
+        }
+
+        // Step 4: Per-tool checks
+        const results: Array<{ tool: string; allowed: boolean; reason?: string; creditsRequired: number }> = [];
+        let totalCreditsRequired = 0;
+        let allAllowed = true;
+        let firstDenyReason: string | undefined;
+
+        for (const toolEntry of tools) {
+          const toolName = toolEntry.name;
+          const toolArgs = toolEntry.arguments;
+
+          // ACL check
+          const effectiveAllowed = keyRecord.allowedTools || [];
+          const effectiveDenied = keyRecord.deniedTools || [];
+          if (effectiveDenied.includes(toolName)) {
+            results.push({ tool: toolName, allowed: false, reason: `tool_not_allowed: ${toolName} is in deniedTools`, creditsRequired: 0 });
+            allAllowed = false;
+            if (!firstDenyReason) firstDenyReason = `tool_not_allowed: ${toolName}`;
+            continue;
+          }
+          if (effectiveAllowed.length > 0 && !effectiveAllowed.includes(toolName)) {
+            results.push({ tool: toolName, allowed: false, reason: `tool_not_allowed: ${toolName} not in allowedTools`, creditsRequired: 0 });
+            allAllowed = false;
+            if (!firstDenyReason) firstDenyReason = `tool_not_allowed: ${toolName}`;
+            continue;
+          }
+
+          const creditsRequired = this.gate.getToolPrice(toolName, toolArgs);
+          totalCreditsRequired += creditsRequired;
+          results.push({ tool: toolName, allowed: true, creditsRequired });
+        }
+
+        // Step 5: Aggregate credits check
+        if (allAllowed && keyRecord.credits < totalCreditsRequired) {
+          allAllowed = false;
+          firstDenyReason = `insufficient_credits: need ${totalCreditsRequired}, have ${keyRecord.credits}`;
+        }
+
+        // Step 6: Spending limit
+        if (allAllowed && keyRecord.spendingLimit > 0) {
+          const wouldSpend = keyRecord.totalSpent + totalCreditsRequired;
+          if (wouldSpend > keyRecord.spendingLimit) {
+            allAllowed = false;
+            firstDenyReason = `spending_limit_exceeded: limit ${keyRecord.spendingLimit}, spent ${keyRecord.totalSpent}, need ${totalCreditsRequired}`;
+          }
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          allAllowed,
+          ...(firstDenyReason ? { reason: firstDenyReason } : {}),
+          totalCreditsRequired,
+          creditsAvailable: keyRecord.credits,
+          ...(allAllowed ? { creditsAfter: keyRecord.credits - totalCreditsRequired } : {}),
+          ...(rateStatus.limit > 0 ? { rateLimit: rateStatus } : {}),
+          results,
         }));
       } catch {
         res.writeHead(400, { 'Content-Type': 'application/json' });
