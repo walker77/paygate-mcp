@@ -127,6 +127,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Latency Analysis** — `GET /admin/latency` per-tool response time metrics with avg/p95/min/max durations, slowest tools ranking, and per-key latency breakdown
 - **Error Rate Trends** — `GET /admin/error-trends` denial rate trends with per-tool error rates, denial reason breakdown, worst-performing tools, and trend direction
 - **Credit Flow Analysis** — `GET /admin/credit-flow` credit inflow/outflow analysis with utilization percentage, top spenders, and per-tool spend breakdown
+- **Key Age Analysis** — `GET /admin/key-age` key age distribution with oldest/newest keys, age buckets (24h/7d/30d/older), and recently created list
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2939,6 +2940,29 @@ curl http://localhost:3000/admin/credit-flow -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Credit inflow/outflow analysis: total credits allocated (initial + spent) vs spent vs remaining, utilization percentage, top 10 spenders ranked by credits consumed, and per-tool spend breakdown sorted by revenue. Read-only.
+
+### Key Age Analysis
+
+```bash
+curl http://localhost:3000/admin/key-age -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": {
+    "totalKeys": 15, "avgAgeHours": 168.5,
+    "oldestKey": { "keyName": "legacy", "ageHours": 720, "createdAt": "2025-01-01T00:00:00Z" },
+    "newestKey": { "keyName": "fresh", "ageHours": 0.5, "createdAt": "2025-01-31T12:00:00Z" }
+  },
+  "distribution": { "last24h": 3, "last7d": 5, "last30d": 4, "older": 3 },
+  "recentlyCreated": [
+    { "keyName": "fresh", "ageHours": 0.5, "createdAt": "2025-01-31T12:00:00Z" }
+  ],
+  "generatedAt": "2025-01-31T12:30:00Z"
+}
+```
+
+Key age distribution: average age across all active keys, oldest/newest key identification, age buckets (last 24h / 7d / 30d / older), and recently created list (newest first, top 10). Read-only.
 
 ### IP Allowlisting
 

@@ -917,6 +917,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/key-age':
+        if (req.method === 'GET') return this.handleKeyAge(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1512,6 +1517,7 @@ export class PayGateServer {
         latencyAnalysis: 'GET /admin/latency — Per-tool response time metrics with avg/p95/min/max, slowest tools ranking, and per-key latency breakdown (requires X-Admin-Key)',
         errorTrends: 'GET /admin/error-trends — Denial rate trends with per-tool error rates, denial reason breakdown, and trend direction (requires X-Admin-Key)',
         creditFlow: 'GET /admin/credit-flow — Credit inflow/outflow analysis with utilization, top spenders, and per-tool spend breakdown (requires X-Admin-Key)',
+        keyAge: 'GET /admin/key-age — Key age distribution with oldest/newest keys, age buckets, and recently created list (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6788,6 +6794,73 @@ export class PayGateServer {
       summary: { totalAllocated, totalSpent, totalRemaining, utilizationPct },
       topSpenders,
       byTool,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/key-age — Key Age Analysis ──────────────────────────────────
+
+  private handleKeyAge(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const records = this.gate.store.getAllRecords().filter(r => r.active);
+    const now = Date.now();
+
+    if (records.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        summary: { totalKeys: 0, avgAgeHours: 0 },
+        distribution: { last24h: 0, last7d: 0, last30d: 0, older: 0 },
+        recentlyCreated: [],
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // ── Age calculations ──
+    const keysWithAge = records.map(r => {
+      const createdMs = r.createdAt ? new Date(r.createdAt).getTime() : now;
+      const ageMs = now - createdMs;
+      const ageHours = Math.round((ageMs / (1000 * 60 * 60)) * 100) / 100;
+      return { keyName: r.name, createdAt: r.createdAt, ageHours };
+    });
+
+    const totalKeys = keysWithAge.length;
+    const avgAgeHours = Math.round((keysWithAge.reduce((sum, k) => sum + k.ageHours, 0) / totalKeys) * 100) / 100;
+
+    // ── Distribution buckets ──
+    const h24 = 24;
+    const d7 = 7 * 24;
+    const d30 = 30 * 24;
+    let last24h = 0, last7d = 0, last30d = 0, older = 0;
+    for (const k of keysWithAge) {
+      if (k.ageHours < h24) last24h++;
+      else if (k.ageHours < d7) last7d++;
+      else if (k.ageHours < d30) last30d++;
+      else older++;
+    }
+
+    // ── Oldest and newest ──
+    const sorted = [...keysWithAge].sort((a, b) => b.ageHours - a.ageHours);
+    const oldestKey = { keyName: sorted[0].keyName, ageHours: sorted[0].ageHours, createdAt: sorted[0].createdAt };
+    const newestKey = { keyName: sorted[sorted.length - 1].keyName, ageHours: sorted[sorted.length - 1].ageHours, createdAt: sorted[sorted.length - 1].createdAt };
+
+    // ── Recently created (newest first, top 10) ──
+    const recentlyCreated = [...keysWithAge]
+      .sort((a, b) => {
+        const diff = a.ageHours - b.ageHours;
+        if (diff !== 0) return diff;
+        // Tie-break: compare createdAt descending (newest first)
+        return (b.createdAt || '').localeCompare(a.createdAt || '');
+      })
+      .slice(0, 10)
+      .map(k => ({ keyName: k.keyName, ageHours: k.ageHours, createdAt: k.createdAt }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: { totalKeys, avgAgeHours, oldestKey, newestKey },
+      distribution: { last24h, last7d, last30d, older },
+      recentlyCreated,
       generatedAt: new Date().toISOString(),
     }));
   }
