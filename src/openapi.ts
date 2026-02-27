@@ -242,6 +242,107 @@ function corePaths() {
         },
       },
     },
+    '/balance/history': {
+      get: {
+        tags: ['Core'],
+        summary: 'Credit mutation history',
+        description: 'Returns per-key credit history (topups, deductions, transfers, refunds) with spending velocity. Self-service endpoint for API key holders.',
+        security: apiKeySecurity(),
+        parameters: [
+          { name: 'type', in: 'query', schema: { type: 'string', enum: ['initial', 'topup', 'deduction', 'transfer_in', 'transfer_out', 'auto_topup', 'refund', 'bulk_topup'] }, description: 'Filter by entry type' },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 200 }, description: 'Max entries to return' },
+          { name: 'since', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Return entries since this ISO date' },
+        ],
+        responses: {
+          200: jsonResponse('Credit history', {
+            type: 'object',
+            properties: {
+              key: { type: 'string', description: 'Masked API key' },
+              entries: { type: 'array', items: { type: 'object' } },
+              total: { type: 'integer' },
+              velocity: { type: 'object' },
+            },
+          }),
+          ...errorResponse(401, 'Missing or invalid API key'),
+        },
+      },
+    },
+    '/balance/alerts': {
+      get: {
+        tags: ['Core'],
+        summary: 'Get self-service usage alert config',
+        description: 'Returns the current low-credit alert configuration for this API key.',
+        security: apiKeySecurity(),
+        responses: {
+          200: jsonResponse('Alert configuration', {
+            type: 'object',
+            properties: {
+              configured: { type: 'boolean' },
+              alert: { type: 'object', nullable: true },
+              currentCredits: { type: 'number' },
+            },
+          }),
+          ...errorResponse(401, 'Missing or invalid API key'),
+        },
+      },
+      post: {
+        tags: ['Core'],
+        summary: 'Configure self-service usage alerts',
+        description: 'Set a low-credit threshold alert. When credits drop below the threshold, an alert is triggered (visible in portal or delivered via webhook).',
+        security: apiKeySecurity(),
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  lowCreditThreshold: { type: 'number', description: 'Credit threshold to trigger alert', minimum: 0, maximum: 1000000 },
+                  webhookUrl: { type: 'string', description: 'HTTPS webhook URL for alert delivery (optional)', nullable: true },
+                  enabled: { type: 'boolean', description: 'Set to false to disable alerts' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: jsonResponse('Alert configured'),
+          ...errorResponse(400, 'Invalid configuration'),
+          ...errorResponse(401, 'Missing or invalid API key'),
+        },
+      },
+      delete: {
+        tags: ['Core'],
+        summary: 'Remove self-service usage alert',
+        description: 'Delete the usage alert configuration for this API key.',
+        security: apiKeySecurity(),
+        responses: {
+          200: jsonResponse('Alert removed'),
+          ...errorResponse(401, 'Missing or invalid API key'),
+        },
+      },
+    },
+    '/portal/rotate': {
+      post: {
+        tags: ['Core'],
+        summary: 'Self-service key rotation',
+        description: 'Rotate your own API key. The old key is revoked and a new key is issued with the same credits, ACL, and configuration. Rate limited to once per 5 minutes.',
+        security: apiKeySecurity(),
+        responses: {
+          200: jsonResponse('Key rotated', {
+            type: 'object',
+            properties: {
+              message: { type: 'string' },
+              newKey: { type: 'string' },
+              name: { type: 'string' },
+              credits: { type: 'number' },
+            },
+          }),
+          ...errorResponse(401, 'Missing or invalid API key'),
+          ...errorResponse(429, 'Rate limited — try again later'),
+        },
+      },
+    },
     '/info': {
       get: {
         tags: ['Core'],

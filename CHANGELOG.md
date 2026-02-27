@@ -1,5 +1,41 @@
 # Changelog
 
+## 9.1.0 (2026-02-28)
+
+### Self-Service Key Rotation
+- **Portal key rotation** (`POST /portal/rotate`): API key holders can rotate their own keys
+  - Old key is permanently revoked, new key inherits all config (credits, ACL, quotas, tags, IP)
+  - Rate limited to once per 5 minutes per key name (survives across rotations)
+  - Rotation modal in portal with copy-to-clipboard and forced re-login
+  - Audit trail with `source: 'portal'` flag
+  - Self-service alerts automatically migrate to the new key
+
+### Credit History for Key Holders
+- **Credit mutation history** (`GET /balance/history`): Key holders can view their credit history
+  - Shows all credit events: initial allocation, topups, deductions, transfers, refunds, auto-topups
+  - Spending velocity data: credits/hour, credits/day, calls/day, depletion forecast
+  - Query params: `?type=`, `?limit=`, `?since=` for filtering
+  - Visual history panel in portal with color-coded entries and velocity bar
+
+### Self-Service Usage Alerts
+- **Usage alert configuration** (`GET/POST/DELETE /balance/alerts`): Key holders set low-credit alerts
+  - Configurable credit threshold (0-1,000,000)
+  - Optional HTTPS webhook URL for alert delivery
+  - Enable/disable without losing config
+  - Visual alert indicator in portal when credits drop below threshold
+  - Capped at 10,000 alert configs to prevent memory abuse
+
+### Portal Enhancements
+- Action buttons bar: Credit History, Usage Alerts, Rotate Key
+- Credit history panel with spending velocity metrics and color-coded entries
+- Alert configuration panel with threshold input and save/disable buttons
+- Key rotation modal with confirmation, new key display, and copy-to-clipboard
+- All portal UI built with safe DOM methods (XSS-safe)
+
+### Infrastructure
+- All new endpoints in OpenAPI 3.1 spec and root listing
+- 27 new tests (186 suites, 3,521 tests total)
+
 ## 9.0.0 (2026-02-27)
 
 ### Stripe Checkout — Self-Service Credit Purchases

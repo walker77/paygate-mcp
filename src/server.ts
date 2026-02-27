@@ -309,6 +309,15 @@ function ipToNum(ip: string): number | null {
 /** Union type for both proxy backends */
 type ProxyBackend = McpProxy | HttpMcpProxy;
 
+/** Self-service alert configuration stored per API key */
+interface SelfServiceAlert {
+  lowCreditThreshold: number;
+  webhookUrl: string | null;
+  enabled: boolean;
+  createdAt: string;
+  lastTriggeredAt: string | null;
+}
+
 /** Common interface for request handling (single proxy or multi-server router) */
 interface RequestHandler {
   handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse>;
@@ -1087,6 +1096,12 @@ export class PayGateServer {
         return this.handleKeyImport(req, res);
       case '/balance':
         return this.handleBalance(req, res);
+      case '/balance/history':
+        return this.handleBalanceHistory(req, res);
+      case '/balance/alerts':
+        return this.handleBalanceAlerts(req, res);
+      case '/portal/rotate':
+        return this.handlePortalRotate(req, res);
       case '/limits':
         return this.handleLimits(req, res);
       case '/usage':
@@ -2063,6 +2078,9 @@ export class PayGateServer {
         mcp: 'POST /mcp — JSON-RPC (MCP transport). Send X-API-Key header.',
         info: 'GET /info — Server capabilities, features, pricing summary (public)',
         balance: 'GET /balance — Check own credits (requires X-API-Key)',
+        balanceHistory: 'GET /balance/history — Credit mutation history (requires X-API-Key)',
+        balanceAlerts: 'GET/POST /balance/alerts — Self-service low-credit alerts (requires X-API-Key)',
+        portalRotate: 'POST /portal/rotate — Self-service key rotation (requires X-API-Key)',
         portal: 'GET /portal — Self-service API key portal (browser UI, requires X-API-Key)',
         dashboard: 'GET /dashboard — Admin web dashboard (browser UI)',
         ready: 'GET /ready — Readiness probe for k8s (returns 503 when draining/maintenance)',
@@ -4611,6 +4629,216 @@ export class PayGateServer {
       },
     });
   }
+
+  // ─── /balance/history — Self-service credit history ──────────────────────
+
+  private handleBalanceHistory(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      this.sendError(res, 405, 'Method not allowed');
+      return;
+    }
+
+    const apiKey = (req.headers['x-api-key'] as string) || null;
+    if (!apiKey) {
+      this.sendError(res, 401, 'Missing X-API-Key header');
+      return;
+    }
+
+    const record = this.gate.store.getKey(apiKey);
+    if (!record || !record.active) {
+      this.sendError(res, 404, 'Invalid or inactive API key');
+      return;
+    }
+
+    // Parse query params
+    const url = new URL(req.url || '/', `http://localhost`);
+    const type = url.searchParams.get('type') || undefined;
+    const since = url.searchParams.get('since') || undefined;
+    const limitStr = url.searchParams.get('limit');
+    const limit = limitStr ? Math.min(200, Math.max(1, parseInt(limitStr, 10) || 50)) : 50;
+
+    const history = this.creditLedger.getHistory(apiKey, { type, limit, since });
+    const velocity = this.creditLedger.getSpendingVelocity(apiKey, record.credits);
+
+    this.sendJson(res, 200, {
+      key: maskKeyForAudit(apiKey),
+      entries: history,
+      total: this.creditLedger.count(apiKey),
+      velocity,
+    });
+  }
+
+  // ─── /balance/alerts — Self-service usage alert configuration ──────────
+
+  private selfServiceAlerts = new Map<string, SelfServiceAlert>();
+
+  private async handleBalanceAlerts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const apiKey = (req.headers['x-api-key'] as string) || null;
+    if (!apiKey) {
+      this.sendError(res, 401, 'Missing X-API-Key header');
+      return;
+    }
+
+    const record = this.gate.store.getKey(apiKey);
+    if (!record || !record.active) {
+      this.sendError(res, 404, 'Invalid or inactive API key');
+      return;
+    }
+
+    if (req.method === 'GET') {
+      const alert = this.selfServiceAlerts.get(apiKey);
+      this.sendJson(res, 200, {
+        configured: !!alert,
+        alert: alert || null,
+        currentCredits: record.credits,
+      });
+      return;
+    }
+
+    if (req.method === 'POST') {
+      const body = await this.readBody(req);
+      let params: { lowCreditThreshold?: number; webhookUrl?: string; enabled?: boolean };
+      try {
+        params = safeJsonParse(body);
+      } catch {
+        this.sendError(res, 400, 'Invalid JSON');
+        return;
+      }
+
+      // Validate threshold
+      const threshold = params.lowCreditThreshold;
+      if (threshold !== undefined && (typeof threshold !== 'number' || threshold < 0 || threshold > 1_000_000)) {
+        this.sendError(res, 400, 'lowCreditThreshold must be 0-1000000');
+        return;
+      }
+
+      // Validate webhook URL if provided (optional — alerts can work without webhook via portal polling)
+      if (params.webhookUrl !== undefined && params.webhookUrl !== null) {
+        if (typeof params.webhookUrl !== 'string' || params.webhookUrl.length > 500) {
+          this.sendError(res, 400, 'webhookUrl must be a string under 500 chars');
+          return;
+        }
+        // Basic URL validation — must be https
+        if (params.webhookUrl && !params.webhookUrl.startsWith('https://')) {
+          this.sendError(res, 400, 'webhookUrl must use HTTPS');
+          return;
+        }
+      }
+
+      // Handle disable
+      if (params.enabled === false) {
+        this.selfServiceAlerts.delete(apiKey);
+        this.sendJson(res, 200, { configured: false, message: 'Alert disabled' });
+        return;
+      }
+
+      const alert: SelfServiceAlert = {
+        lowCreditThreshold: threshold ?? 10,
+        webhookUrl: params.webhookUrl || null,
+        enabled: true,
+        createdAt: new Date().toISOString(),
+        lastTriggeredAt: null,
+      };
+
+      // Cap total alerts to prevent memory abuse
+      if (this.selfServiceAlerts.size >= 10_000 && !this.selfServiceAlerts.has(apiKey)) {
+        this.sendError(res, 429, 'Too many alert configurations');
+        return;
+      }
+
+      this.selfServiceAlerts.set(apiKey, alert);
+      this.sendJson(res, 200, { configured: true, alert });
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      this.selfServiceAlerts.delete(apiKey);
+      this.sendJson(res, 200, { configured: false, message: 'Alert removed' });
+      return;
+    }
+
+    this.sendError(res, 405, 'Method not allowed');
+  }
+
+  // ─── /portal/rotate — Self-service key rotation ─────────────────────────
+
+  private async handlePortalRotate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      this.sendError(res, 405, 'Method not allowed');
+      return;
+    }
+
+    const apiKey = (req.headers['x-api-key'] as string) || null;
+    if (!apiKey) {
+      this.sendError(res, 401, 'Missing X-API-Key header');
+      return;
+    }
+
+    const record = this.gate.store.getKey(apiKey);
+    if (!record || !record.active) {
+      this.sendError(res, 404, 'Invalid or inactive API key');
+      return;
+    }
+
+    // Rate limit rotation: once per 5 minutes per key (track by name to survive rotation)
+    const now = Date.now();
+    const rateKey = `rotate:${record.name || apiKey}`;
+    const lastRotation = this.selfServiceRotationTimestamps.get(rateKey);
+    if (lastRotation && now - lastRotation < 300_000) {
+      const waitSec = Math.ceil((300_000 - (now - lastRotation)) / 1000);
+      this.sendError(res, 429, `Key rotation rate limited. Try again in ${waitSec}s`);
+      return;
+    }
+
+    const rotated = this.gate.store.rotateKey(apiKey);
+    if (!rotated) {
+      this.sendError(res, 500, 'Key rotation failed');
+      return;
+    }
+
+    // Track rotation timestamp for rate limiting (by name so it persists across rotations)
+    this.selfServiceRotationTimestamps.set(rateKey, now);
+    // Clean up old timestamps (> 10 min) periodically
+    if (this.selfServiceRotationTimestamps.size > 10_000) {
+      for (const [k, ts] of this.selfServiceRotationTimestamps) {
+        if (now - ts > 600_000) this.selfServiceRotationTimestamps.delete(k);
+      }
+    }
+
+    // Sync to Redis if applicable
+    if (this.redisSync) {
+      this.redisSync.saveKey(rotated).catch(() => {});
+      this.redisSync.publishEvent({ type: 'key_created', key: rotated.key }).catch(() => {});
+    }
+
+    this.audit.log('key.rotated', maskKeyForAudit(apiKey), `Self-service key rotation`, {
+      oldKeyMasked: maskKeyForAudit(apiKey),
+      newKeyMasked: maskKeyForAudit(rotated.key),
+      source: 'portal',
+    });
+
+    this.emitWebhookAdmin('key.rotated', maskKeyForAudit(apiKey), {
+      oldKeyMasked: maskKeyForAudit(apiKey),
+      newKeyMasked: maskKeyForAudit(rotated.key),
+      source: 'portal',
+    });
+
+    // Migrate self-service alerts to new key
+    const alertConfig = this.selfServiceAlerts.get(apiKey);
+    if (alertConfig) {
+      this.selfServiceAlerts.delete(apiKey);
+      this.selfServiceAlerts.set(rotated.key, alertConfig);
+    }
+
+    this.sendJson(res, 200, {
+      message: 'Key rotated successfully',
+      newKey: rotated.key,
+      name: rotated.name,
+      credits: rotated.credits,
+    });
+  }
+
+  private selfServiceRotationTimestamps = new Map<string, number>();
 
   // ─── /limits — Set spending limit ────────────────────────────────────────
 

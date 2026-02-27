@@ -88,6 +88,42 @@ border-radius:8px;font-size:13px;cursor:pointer;font-family:var(--mono);transiti
 .pkg-btn:hover{border-color:var(--accent);color:var(--accent2)}
 .pkg-btn .pkg-price{color:var(--green);font-weight:600}
 .pkg-btn .pkg-credits{color:var(--accent2)}
+.actions-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.action-btn{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 16px;
+border-radius:8px;font-size:13px;cursor:pointer;font-family:var(--font);transition:all 0.2s}
+.action-btn:hover{border-color:var(--accent);color:var(--accent2)}
+.action-btn.danger-btn{border-color:var(--red);color:var(--red)}
+.action-btn.danger-btn:hover{background:var(--red);color:#fff}
+.history-entry{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px}
+.history-entry:last-child{border-bottom:none}
+.history-type{padding:2px 8px;border-radius:4px;font-size:11px;font-family:var(--mono);font-weight:500;white-space:nowrap}
+.history-type.credit{background:#22c55e20;color:var(--green)}
+.history-type.debit{background:#ef444420;color:var(--red)}
+.history-amount{font-family:var(--mono);min-width:70px;text-align:right}
+.history-amount.positive{color:var(--green)}
+.history-amount.negative{color:var(--red)}
+.history-balance{color:var(--muted);font-family:var(--mono);font-size:12px}
+.history-memo{color:var(--muted);font-size:12px;flex:1}
+.history-time{color:var(--muted);font-size:12px;margin-left:auto;white-space:nowrap}
+.alert-config{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:16px}
+.alert-config h3{font-size:14px;font-weight:600;margin-bottom:12px}
+.alert-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.alert-form input{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;
+border-radius:8px;font-size:13px;font-family:var(--mono);width:120px}
+.alert-form input:focus{outline:none;border-color:var(--accent)}
+.alert-form label{font-size:13px;color:var(--muted)}
+.alert-status{font-size:12px;color:var(--green);margin-left:8px}
+.velocity-bar{display:flex;gap:16px;margin-top:8px;font-size:12px;color:var(--muted);font-family:var(--mono)}
+.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);
+display:none;align-items:center;justify-content:center;z-index:1000}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;
+max-width:480px;width:90%;text-align:center}
+.modal h3{margin-bottom:12px;font-size:16px}
+.modal p{font-size:13px;color:var(--muted);margin-bottom:16px}
+.modal .new-key{background:var(--bg);border:1px solid var(--accent);border-radius:8px;padding:12px;
+font-family:var(--mono);font-size:14px;color:var(--green);word-break:break-all;margin-bottom:16px;
+user-select:all;cursor:pointer}
+.modal-actions{display:flex;gap:8px;justify-content:center}
 #app{display:none}
 </style>
 </head>
@@ -117,6 +153,46 @@ border-radius:8px;font-size:13px;cursor:pointer;font-family:var(--mono);transiti
     <div class="buy-bar" id="buy-credits-bar">
       <h3>&#x1f4b3; Buy Credits</h3>
       <div id="packages-list" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    </div>
+
+    <div class="actions-bar">
+      <button class="action-btn" onclick="showHistory()">&#x1f4ca; Credit History</button>
+      <button class="action-btn" onclick="showAlertConfig()">&#x1f514; Usage Alerts</button>
+      <button class="action-btn danger-btn" onclick="confirmRotate()">&#x1f504; Rotate Key</button>
+    </div>
+
+    <div class="alert-config" id="alert-panel" style="display:none">
+      <h3>&#x1f514; Low-Credit Alert</h3>
+      <div class="alert-form">
+        <label>Trigger when credits below:</label>
+        <input type="number" id="alert-threshold" value="10" min="0" max="1000000">
+        <button class="action-btn" onclick="saveAlert()">Save</button>
+        <button class="action-btn" onclick="removeAlert()">Disable</button>
+        <span class="alert-status" id="alert-status"></span>
+      </div>
+    </div>
+
+    <div class="panel" id="history-panel" style="display:none">
+      <h2>&#x1f4ca; Credit History</h2>
+      <div class="velocity-bar" id="velocity-bar"></div>
+      <div class="feed" id="history-feed" style="max-height:400px"></div>
+      <div id="history-empty" style="color:var(--muted);font-size:13px">No credit history yet.</div>
+    </div>
+
+    <div class="modal-overlay" id="rotate-modal">
+      <div class="modal">
+        <h3>&#x1f504; Rotate API Key</h3>
+        <p>Your current key will be permanently revoked and a new key issued. Credits, ACLs, and all configuration will transfer to the new key.</p>
+        <div id="rotate-result" style="display:none">
+          <p style="color:var(--green);font-weight:600">Key rotated successfully!</p>
+          <p style="color:var(--yellow);font-size:12px">Copy your new key now. It won't be shown again.</p>
+          <div class="new-key" id="new-key-value" onclick="copyNewKey()"></div>
+        </div>
+        <div class="modal-actions" id="rotate-actions">
+          <button class="action-btn danger-btn" onclick="doRotate()">Rotate Now</button>
+          <button class="action-btn" onclick="closeRotateModal()">Cancel</button>
+        </div>
+      </div>
     </div>
 
     <div class="cards">
@@ -422,8 +498,216 @@ async function refresh() {
     } catch(e) {}
 
     setText('last-refresh', 'Updated ' + new Date().toLocaleTimeString());
+
+    // Check alerts
+    checkAlertStatus(b.credits);
   } catch (err) {
     console.error('Refresh failed:', err);
+  }
+}
+
+// ─── Credit History ───
+var historyVisible = false;
+function showHistory() {
+  historyVisible = !historyVisible;
+  document.getElementById('history-panel').style.display = historyVisible ? 'block' : 'none';
+  if (historyVisible) loadHistory();
+}
+
+async function loadHistory() {
+  try {
+    var res = await apiFetch('/balance/history?limit=50');
+    if (res.status !== 200) return;
+    var data = res.body;
+
+    // Velocity bar
+    var velEl = document.getElementById('velocity-bar');
+    if (data.velocity) {
+      var v = data.velocity;
+      velEl.textContent = '';
+      var items = [
+        v.creditsPerHour.toFixed(1) + ' cr/hr',
+        v.creditsPerDay.toFixed(0) + ' cr/day',
+        v.callsPerDay.toFixed(0) + ' calls/day',
+      ];
+      if (v.estimatedHoursRemaining !== null) {
+        items.push(v.estimatedHoursRemaining < 24
+          ? v.estimatedHoursRemaining.toFixed(1) + 'h remaining'
+          : Math.round(v.estimatedHoursRemaining / 24) + 'd remaining');
+      }
+      items.forEach(function(t) {
+        var span = document.createElement('span');
+        span.textContent = t;
+        velEl.appendChild(span);
+      });
+    }
+
+    // Entries
+    var feedEl = document.getElementById('history-feed');
+    var emptyEl = document.getElementById('history-empty');
+    feedEl.textContent = '';
+
+    var entries = data.entries || [];
+    if (entries.length === 0) { emptyEl.style.display = 'block'; return; }
+    emptyEl.style.display = 'none';
+
+    var creditTypes = new Set(['initial', 'topup', 'transfer_in', 'auto_topup', 'refund', 'bulk_topup']);
+
+    entries.forEach(function(e) {
+      var row = document.createElement('div');
+      row.className = 'history-entry';
+
+      var badge = document.createElement('span');
+      badge.className = 'history-type ' + (creditTypes.has(e.type) ? 'credit' : 'debit');
+      badge.textContent = e.type.replace(/_/g, ' ');
+
+      var amount = document.createElement('span');
+      var isCredit = creditTypes.has(e.type);
+      amount.className = 'history-amount ' + (isCredit ? 'positive' : 'negative');
+      amount.textContent = (isCredit ? '+' : '-') + e.amount;
+
+      var bal = document.createElement('span');
+      bal.className = 'history-balance';
+      bal.textContent = e.balanceAfter + ' bal';
+
+      var memo = document.createElement('span');
+      memo.className = 'history-memo';
+      memo.textContent = e.memo || e.tool || '';
+
+      var time = document.createElement('span');
+      time.className = 'history-time';
+      time.textContent = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
+
+      row.appendChild(badge);
+      row.appendChild(amount);
+      row.appendChild(bal);
+      row.appendChild(memo);
+      row.appendChild(time);
+      feedEl.appendChild(row);
+    });
+  } catch(e) { console.error('History load failed:', e); }
+}
+
+// ─── Usage Alerts ───
+var alertVisible = false;
+function showAlertConfig() {
+  alertVisible = !alertVisible;
+  document.getElementById('alert-panel').style.display = alertVisible ? 'block' : 'none';
+  if (alertVisible) loadAlertConfig();
+}
+
+async function loadAlertConfig() {
+  try {
+    var res = await apiFetch('/balance/alerts');
+    if (res.status !== 200) return;
+    var data = res.body;
+    if (data.configured && data.alert) {
+      document.getElementById('alert-threshold').value = data.alert.lowCreditThreshold;
+      document.getElementById('alert-status').textContent = 'Active (threshold: ' + data.alert.lowCreditThreshold + ')';
+    } else {
+      document.getElementById('alert-status').textContent = 'Not configured';
+    }
+  } catch(e) {}
+}
+
+async function saveAlert() {
+  var threshold = parseInt(document.getElementById('alert-threshold').value, 10);
+  if (isNaN(threshold) || threshold < 0) { alert('Enter a valid threshold'); return; }
+  try {
+    var res = await fetch(BASE + '/balance/alerts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+      body: JSON.stringify({ lowCreditThreshold: threshold, enabled: true }),
+    });
+    var data = await res.json();
+    if (data.configured) {
+      document.getElementById('alert-status').textContent = 'Saved! Threshold: ' + threshold;
+    }
+  } catch(e) { alert('Failed to save alert'); }
+}
+
+async function removeAlert() {
+  try {
+    await fetch(BASE + '/balance/alerts', {
+      method: 'DELETE',
+      headers: { 'X-API-Key': API_KEY },
+    });
+    document.getElementById('alert-status').textContent = 'Disabled';
+  } catch(e) {}
+}
+
+function checkAlertStatus(credits) {
+  // Visual indicator if below threshold
+  var statusEl = document.getElementById('alert-status');
+  if (!statusEl) return;
+  var threshold = parseInt(document.getElementById('alert-threshold').value, 10);
+  if (threshold > 0 && credits <= threshold && credits > 0) {
+    statusEl.textContent = 'WARNING: Credits below threshold!';
+    statusEl.style.color = 'var(--yellow)';
+  }
+}
+
+// ─── Key Rotation ───
+function confirmRotate() {
+  document.getElementById('rotate-modal').style.display = 'flex';
+  document.getElementById('rotate-result').style.display = 'none';
+  var actionsEl = document.getElementById('rotate-actions');
+  actionsEl.textContent = '';
+  var rotBtn = document.createElement('button');
+  rotBtn.className = 'action-btn danger-btn';
+  rotBtn.textContent = 'Rotate Now';
+  rotBtn.onclick = doRotate;
+  var cancelBtn = document.createElement('button');
+  cancelBtn.className = 'action-btn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = closeRotateModal;
+  actionsEl.appendChild(rotBtn);
+  actionsEl.appendChild(cancelBtn);
+}
+
+function closeRotateModal() {
+  document.getElementById('rotate-modal').style.display = 'none';
+  // If key was rotated, reload the page to force re-login with new key
+  if (document.getElementById('rotate-result').style.display !== 'none') {
+    window.location.reload();
+  }
+}
+
+async function doRotate() {
+  try {
+    var res = await fetch(BASE + '/portal/rotate', {
+      method: 'POST',
+      headers: { 'X-API-Key': API_KEY },
+    });
+    var data = await res.json();
+    if (res.status === 200 && data.newKey) {
+      document.getElementById('rotate-result').style.display = 'block';
+      document.getElementById('new-key-value').textContent = data.newKey;
+      var actionsEl = document.getElementById('rotate-actions');
+      actionsEl.textContent = '';
+      var copyBtn = document.createElement('button');
+      copyBtn.className = 'action-btn';
+      copyBtn.textContent = 'Copy Key';
+      copyBtn.onclick = copyNewKey;
+      var doneBtn = document.createElement('button');
+      doneBtn.className = 'action-btn';
+      doneBtn.textContent = 'Done';
+      doneBtn.onclick = closeRotateModal;
+      actionsEl.appendChild(copyBtn);
+      actionsEl.appendChild(doneBtn);
+      API_KEY = data.newKey;
+    } else {
+      alert(data.error || 'Rotation failed');
+    }
+  } catch(e) { alert('Rotation failed: ' + e.message); }
+}
+
+function copyNewKey() {
+  var key = document.getElementById('new-key-value').textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(key).then(function() {
+      document.getElementById('new-key-value').style.borderColor = 'var(--green)';
+    });
   }
 }
 </script>
