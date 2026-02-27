@@ -1,5 +1,29 @@
 # Changelog
 
+## 8.97.0 (2026-02-27)
+
+### Developer Experience & Discovery
+- **OpenAPI 3.1 spec** (`GET /openapi.json`): Auto-generated spec covering all 130+ endpoints
+  - 13 tags: Core, Keys, Billing, Discovery, OAuth, Webhooks, Analytics, Teams, Tokens, Groups, Admin, Operations, Audit
+  - 8 component schemas: JsonRpcRequest, JsonRpcResponse, JsonRpcError, ApiKey, ToolPricing, PaymentMetadata, x402Block, Error
+  - 3 security schemes: ApiKeyAuth (X-API-Key), AdminKeyAuth (X-Admin-Key), BearerAuth (OAuth)
+  - Programmatically generated — always in sync with server version
+  - Cacheable (1-hour public cache)
+- **Interactive API docs** (`GET /docs`): Swagger UI loaded from CDN
+  - Dark topbar with PayGate branding, accent colors per HTTP method
+  - Filter, deep linking, model expansion — zero bundled dependencies
+  - No authentication required
+- **MCP Server Identity** (`GET /.well-known/mcp.json`): Machine-readable server identity card
+  - Protocol, transport, capabilities (tools, tasks, elicitation)
+  - Payment metadata: model, currency, free tool count, x402 compatibility
+  - Auth methods: API key, OAuth 2.1 (conditional)
+  - Endpoint map: all major URLs for agent discovery
+  - Links: homepage, repository, npm
+  - Enables agent registries and automated MCP server cataloging
+
+### Stats
+- 3,414 tests across 182 suites (49 new tests)
+
 ## 8.96.0 (2026-02-27)
 
 ### Protocol & Competitive Alignment

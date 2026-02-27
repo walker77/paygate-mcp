@@ -41,6 +41,8 @@ import { CreditLedger } from './credit-ledger';
 import { ToolRegistry } from './registry';
 import { MetricsCollector } from './metrics';
 import { getDashboardHtml } from './dashboard';
+import { getDocsHtml } from './docs';
+import { generateOpenApiSpec } from './openapi';
 import { AnalyticsEngine } from './analytics';
 import { AlertEngine, Alert } from './alerts';
 import { TeamManager } from './teams';
@@ -1015,8 +1017,14 @@ export class PayGateServer {
       // ─── Registry / Discovery endpoints ──────────────────────────────
       case '/.well-known/mcp-payment':
         return this.handlePaymentMetadata(req, res);
+      case '/.well-known/mcp.json':
+        return this.handleMcpIdentity(req, res);
       case '/pricing':
         return this.handlePricing(req, res);
+      case '/openapi.json':
+        return this.handleOpenApiSpec(req, res);
+      case '/docs':
+        return this.handleDocs(req, res);
       case '/metrics':
         return this.handleMetrics(req, res);
       case '/analytics':
@@ -4886,6 +4894,76 @@ export class PayGateServer {
   private handlePricing(_req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(this.registry.getFullPricing(), null, 2));
+  }
+
+  // ─── /openapi.json — OpenAPI 3.1 specification ───────────────────────────────
+
+  private handleOpenApiSpec(_req: IncomingMessage, res: ServerResponse): void {
+    const spec = generateOpenApiSpec(this.config.name, PKG_VERSION);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' });
+    res.end(JSON.stringify(spec, null, 2));
+  }
+
+  // ─── /docs — Interactive API documentation (Swagger UI) ──────────────────────
+
+  private handleDocs(_req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=3600' });
+    res.end(getDocsHtml(this.config.name));
+  }
+
+  // ─── /.well-known/mcp.json — MCP Server Identity card ───────────────────────
+
+  private handleMcpIdentity(_req: IncomingMessage, res: ServerResponse): void {
+    const meta = this.registry.getServerMetadata();
+    const identity = {
+      // MCP Server Identity (per MCP spec direction for .well-known discovery)
+      name: this.config.name,
+      version: PKG_VERSION,
+      description: 'PayGate MCP — Pay-per-tool-call gating proxy with auth, billing, rate limiting, and analytics.',
+      protocol: 'mcp',
+      transport: ['streamable-http'],
+      capabilities: {
+        tools: true,
+        resources: false,
+        prompts: false,
+        // MCP 2025-11-25 features
+        tasks: true,
+        elicitation: true,
+      },
+      payment: {
+        required: !meta.shadowMode,
+        model: 'credits',
+        currency: 'credits',
+        defaultPrice: meta.defaultCreditsPerCall,
+        freeToolCount: meta.freeToolCount,
+        toolCount: meta.toolCount,
+        x402Compatible: meta.x402Compatible,
+      },
+      auth: {
+        apiKey: true,
+        oauth2: !!this.oauth,
+        bearer: !!this.oauth,
+      },
+      endpoints: {
+        mcp: '/mcp',
+        health: '/health',
+        pricing: '/pricing',
+        balance: '/balance',
+        docs: '/docs',
+        openapi: '/openapi.json',
+        metrics: '/metrics',
+        dashboard: '/dashboard',
+        paymentMetadata: '/.well-known/mcp-payment',
+        oauthMetadata: this.oauth ? '/.well-known/oauth-authorization-server' : undefined,
+      },
+      links: {
+        homepage: 'https://paygated.dev',
+        repository: 'https://github.com/walker77/paygate-mcp',
+        npm: 'https://www.npmjs.com/package/paygate-mcp',
+      },
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' });
+    res.end(JSON.stringify(identity, null, 2));
   }
 
   // ─── /metrics — Prometheus metrics ──────────────────────────────────────────
