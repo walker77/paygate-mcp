@@ -135,6 +135,14 @@ export interface PayGateConfig {
     /** Max age for preflight cache in seconds. Default: 86400 (24 hours). */
     maxAge?: number;
   };
+  /** Max time (ms) to complete a request. 0 = no timeout. Default: 30000 (30s). */
+  requestTimeoutMs?: number;
+  /** Max time (ms) to receive request headers. Default: 10000 (10s). */
+  headersTimeoutMs?: number;
+  /** Keep-alive timeout (ms) for idle connections. Default: 65000 (65s). */
+  keepAliveTimeoutMs?: number;
+  /** Max HTTP requests per socket (pipelining limit). 0 = unlimited. Default: 0. */
+  maxRequestsPerSocket?: number;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────

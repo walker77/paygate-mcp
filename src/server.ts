@@ -531,6 +531,14 @@ export class PayGateServer {
         }
       });
 
+      // Production server hardening — prevent resource exhaustion
+      this.server.requestTimeout = this.config.requestTimeoutMs ?? 30_000;       // 30s max per request (Node default: 0 = none)
+      this.server.headersTimeout = this.config.headersTimeoutMs ?? 10_000;       // 10s to receive headers (Node default: 60s)
+      this.server.keepAliveTimeout = this.config.keepAliveTimeoutMs ?? 65_000;   // 65s keep-alive (> typical 60s LB idle)
+      if (this.config.maxRequestsPerSocket) {
+        this.server.maxRequestsPerSocket = this.config.maxRequestsPerSocket;     // Limit pipelined requests per socket
+      }
+
       this.server.listen(this.config.port, () => {
         const addr = this.server!.address();
         const actualPort = typeof addr === 'object' && addr ? addr.port : this.config.port;
@@ -1837,6 +1845,12 @@ export class PayGateServer {
       pricing,
       rateLimit: {
         globalPerMin: this.config.globalRateLimitPerMin,
+      },
+      serverLimits: {
+        requestTimeoutMs: this.server?.requestTimeout ?? this.config.requestTimeoutMs ?? 30_000,
+        headersTimeoutMs: this.server?.headersTimeout ?? this.config.headersTimeoutMs ?? 10_000,
+        keepAliveTimeoutMs: this.server?.keepAliveTimeout ?? this.config.keepAliveTimeoutMs ?? 65_000,
+        maxRequestsPerSocket: this.server?.maxRequestsPerSocket ?? this.config.maxRequestsPerSocket ?? 0,
       },
       endpoints: {
         mcp: '/mcp',

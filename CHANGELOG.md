@@ -1,5 +1,20 @@
 # Changelog
 
+## 8.70.0 (2026-02-27)
+
+### Server Hardening
+- **Request timeout** — `requestTimeoutMs` config (default 30s) prevents slow-loris and hung requests (Node.js default: no timeout)
+- **Headers timeout** — `headersTimeoutMs` config (default 10s) limits time to receive HTTP headers
+- **Keep-alive timeout** — `keepAliveTimeoutMs` config (default 65s, > typical 60s LB idle) for idle connection recycling
+- **Max requests per socket** — `maxRequestsPerSocket` config for HTTP pipelining limits
+- **CLI flags**: `--request-timeout`, `--headers-timeout`, `--keepalive-timeout`, `--max-requests-per-socket`
+- **Env vars**: `PAYGATE_REQUEST_TIMEOUT`, `PAYGATE_HEADERS_TIMEOUT`, `PAYGATE_KEEPALIVE_TIMEOUT`, `PAYGATE_MAX_REQUESTS_PER_SOCKET`
+- **Config file**: `requestTimeoutMs`, `headersTimeoutMs`, `keepAliveTimeoutMs`, `maxRequestsPerSocket` in paygate.config.json
+- **`/info` endpoint**: Exposes `serverLimits` section with all timeout settings
+- 11 new tests
+
+---
+
 ## 8.69.0 (2026-02-27)
 
 ### Structured Logging
