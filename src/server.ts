@@ -967,6 +967,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/credit-efficiency':
+        if (req.method === 'GET') return this.handleCreditEfficiency(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1572,6 +1577,7 @@ export class PayGateServer {
         consumerInsights: 'GET /admin/consumer-insights — Per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns (requires X-Admin-Key)',
         systemHealth: 'GET /admin/system-health — Composite system health score 0-100 with component breakdowns for key health, error rates, and credit utilization (requires X-Admin-Key)',
         toolAdoption: 'GET /admin/tool-adoption — Per-tool adoption metrics with unique consumers, adoption rate, first/last seen, and never-used tool identification (requires X-Admin-Key)',
+        creditEfficiency: 'GET /admin/credit-efficiency — Credit allocation efficiency with burn efficiency, waste ratio, over-provisioned and under-provisioned key detection (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7507,6 +7513,86 @@ export class PayGateServer {
         usedTools,
         unusedTools: totalTools - usedTools,
       },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/credit-efficiency — Credit allocation efficiency ──────────────
+
+  private handleCreditEfficiency(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    let totalAllocated = 0;
+    let totalSpent = 0;
+    let totalRemaining = 0;
+
+    const overProvisioned: any[] = [];
+    const underProvisioned: any[] = [];
+
+    for (const rec of activeRecords) {
+      const allocated = (rec.credits || 0) + (rec.totalSpent || 0);
+      const spent = rec.totalSpent || 0;
+      const remaining = rec.credits || 0;
+
+      totalAllocated += allocated;
+      totalSpent += spent;
+      totalRemaining += remaining;
+
+      if (allocated > 0) {
+        const remainingPercent = Math.round((remaining / allocated) * 100);
+
+        // Over-provisioned: >90% remaining with some activity or never used
+        if (remainingPercent > 90 && allocated > 0) {
+          overProvisioned.push({
+            name: rec.name || 'unnamed',
+            credits: remaining,
+            totalAllocated: allocated,
+            totalSpent: spent,
+            remainingPercent,
+          });
+        }
+
+        // Under-provisioned: <=10 credits remaining or <=10% remaining (with some usage)
+        if (spent > 0 && (remaining <= 10 || remainingPercent <= 10)) {
+          underProvisioned.push({
+            name: rec.name || 'unnamed',
+            credits: remaining,
+            totalAllocated: allocated,
+            totalSpent: spent,
+            remainingPercent,
+          });
+        }
+      }
+    }
+
+    // Sort over-provisioned by remaining credits descending
+    overProvisioned.sort((a, b) => b.credits - a.credits);
+
+    // Sort under-provisioned by remaining credits ascending (most urgent first)
+    underProvisioned.sort((a, b) => a.credits - b.credits);
+
+    const burnEfficiency = totalAllocated > 0
+      ? Math.round((totalSpent / totalAllocated) * 100)
+      : 0;
+    const wasteRatio = totalAllocated > 0
+      ? Math.round((totalRemaining / totalAllocated) * 100)
+      : 0;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalAllocated,
+        totalSpent,
+        totalRemaining,
+        burnEfficiency,
+        wasteRatio,
+        activeKeys: activeRecords.length,
+      },
+      overProvisioned: overProvisioned.slice(0, 10),
+      underProvisioned: underProvisioned.slice(0, 10),
       generatedAt: new Date().toISOString(),
     }));
   }

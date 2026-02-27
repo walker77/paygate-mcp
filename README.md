@@ -137,6 +137,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Consumer Insights** — `GET /admin/consumer-insights` per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns
 - **System Health Score** — `GET /admin/system-health` composite 0-100 health score with weighted component breakdowns for key health, error rates, and credit utilization
 - **Tool Adoption** — `GET /admin/tool-adoption` per-tool adoption metrics with unique consumers, adoption rate, first/last seen timestamps, and usage ranking
+- **Credit Efficiency** — `GET /admin/credit-efficiency` credit allocation efficiency with burn efficiency, waste ratio, over-provisioned and under-provisioned key detection
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3194,6 +3195,34 @@ curl http://localhost:3000/admin/tool-adoption -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Per-tool adoption metrics showing which tools are being used and by how many consumers. `uniqueConsumers` counts distinct API keys that called the tool. `adoptionRate` is the percentage of active keys that have used the tool. Sorted by adoption rate descending, then by total calls. Read-only.
+
+### Credit Efficiency
+
+```bash
+curl http://localhost:3000/admin/credit-efficiency -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": {
+    "totalAllocated": 5000,
+    "totalSpent": 1200,
+    "totalRemaining": 3800,
+    "burnEfficiency": 24,
+    "wasteRatio": 76,
+    "activeKeys": 10
+  },
+  "overProvisioned": [
+    { "name": "idle-whale", "credits": 950, "totalAllocated": 1000, "totalSpent": 50, "remainingPercent": 95 }
+  ],
+  "underProvisioned": [
+    { "name": "heavy-user", "credits": 3, "totalAllocated": 500, "totalSpent": 497, "remainingPercent": 1 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Credit allocation efficiency analysis. `burnEfficiency` is the percentage of allocated credits actually spent. `wasteRatio` is the percentage remaining unused. Over-provisioned keys have >90% remaining credits. Under-provisioned keys have <=10 credits or <=10% remaining with active usage. Top 10 in each category, sorted by urgency. Read-only.
 
 ### IP Allowlisting
 
