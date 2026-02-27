@@ -29,6 +29,11 @@ export class KeyStore {
     }
   }
 
+  /** Number of keys in the store (including revoked/expired). */
+  getKeyCount(): number {
+    return this.keys.size;
+  }
+
   /**
    * Sanitize and validate credit amounts. Must be non-negative integer.
    */

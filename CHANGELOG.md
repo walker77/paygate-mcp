@@ -1,5 +1,18 @@
 # Changelog
 
+## 8.72.0 (2026-02-27)
+
+### Startup Summary
+- **Configuration summary log** on server start — transport, price, rate limit, active features, key count
+- Text format: `[paygate] Listening on port 3402 { transport: 'stdio', price: 1, ... }`
+- JSON format: `{"ts":"...","level":"info","msg":"Listening on port 3402","transport":"stdio","features":"webhooks, quotas",...}`
+- Detects 11 optional features: shadow-mode, redis, webhooks, oauth, multi-server, plugins, alerts, expiry-scanner, quotas, trusted-proxies, cors-restricted
+- **`KeyStore.getKeyCount()`** — new public method for key count without iterating
+- Respects log level (silent = no banner)
+- 10 new tests
+
+---
+
 ## 8.71.0 (2026-02-27)
 
 ### Security Headers

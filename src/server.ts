@@ -542,10 +542,43 @@ export class PayGateServer {
       this.server.listen(this.config.port, () => {
         const addr = this.server!.address();
         const actualPort = typeof addr === 'object' && addr ? addr.port : this.config.port;
+
+        // Startup summary — log active features for operators
+        this.logStartupSummary(actualPort);
+
         resolve({ port: actualPort, adminKey: this.bootstrapAdminKey });
       });
 
       this.server.on('error', reject);
+    });
+  }
+
+  // ─── Startup Summary ─────────────────────────────────────────────────────
+
+  /** Log a summary of the running configuration for operator visibility. */
+  private logStartupSummary(port: number): void {
+    const features: string[] = [];
+    if (this.config.shadowMode) features.push('shadow-mode');
+    if (this.redisSync) features.push('redis');
+    if (this.config.webhookUrl) features.push('webhooks');
+    if (this.config.oauth) features.push('oauth');
+    if (this.router) features.push('multi-server');
+    if (this.plugins.count > 0) features.push(`plugins(${this.plugins.count})`);
+    if (this.config.alertRules?.length) features.push('alerts');
+    if (this.expiryScanner) features.push('expiry-scanner');
+    if (this.config.globalQuota) features.push('quotas');
+    if (this.config.trustedProxies?.length) features.push('trusted-proxies');
+    if (this.config.cors && this.config.cors.origin !== '*') features.push('cors-restricted');
+
+    const transport = this.router ? 'multi-server' : (this.proxy instanceof HttpMcpProxy ? 'http' : 'stdio');
+    const keys = this.gate.store.getKeyCount?.() ?? 0;
+
+    this.logger.info(`Listening on port ${port}`, {
+      transport,
+      price: this.config.defaultCreditsPerCall,
+      rateLimit: this.config.globalRateLimitPerMin,
+      features: features.length > 0 ? features.join(', ') : 'none',
+      keys,
     });
   }
 
