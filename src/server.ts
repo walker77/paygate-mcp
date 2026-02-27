@@ -877,6 +877,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/forecast':
+        if (req.method === 'GET') return this.handleUsageForecasting(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1464,6 +1469,7 @@ export class PayGateServer {
         revenueAnalysis: 'GET /admin/revenue — Revenue metrics with per-tool revenue, per-key spending, hourly revenue trends, credit flow summary, and average revenue per call (requires X-Admin-Key)',
         keyPortfolio: 'GET /admin/key-portfolio — Key portfolio health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown (requires X-Admin-Key)',
         anomalyDetection: 'GET /admin/anomalies — Anomaly detection identifying high denial rates, rapid credit depletion, low credit balances, and other unusual patterns (requires X-Admin-Key)',
+        usageForecasting: 'GET /admin/forecast — Usage forecasting with per-key depletion estimates, system-wide consumption trends, per-tool breakdown, and at-risk key identification (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6073,6 +6079,93 @@ export class PayGateServer {
       },
       anomalies,
       analyzedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/forecast — Usage Forecasting ─────────────────────────────────
+
+  private handleUsageForecasting(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active);
+
+    // ── Per-key forecasts ──
+    const keyForecasts: Array<{
+      keyName: string;
+      creditsRemaining: number;
+      totalSpent: number;
+      callCount: number;
+      avgCreditsPerCall: number;
+      estimatedCallsRemaining: number | null;
+      atRisk: boolean;
+    }> = [];
+
+    for (const record of activeRecords) {
+      const keyName = record.name;
+      const creditsRemaining = record.credits;
+      const totalSpent = record.totalSpent || 0;
+      const callCount = record.totalCalls || 0;
+      const avgCreditsPerCall = callCount > 0 ? totalSpent / callCount : 0;
+      const estimatedCallsRemaining = callCount > 0 && avgCreditsPerCall > 0
+        ? Math.floor(creditsRemaining / avgCreditsPerCall)
+        : null;
+
+      // At risk: has usage history and <= 5 estimated calls remaining
+      const atRisk = estimatedCallsRemaining !== null && estimatedCallsRemaining <= 5;
+
+      keyForecasts.push({
+        keyName,
+        creditsRemaining,
+        totalSpent,
+        callCount,
+        avgCreditsPerCall: Math.round(avgCreditsPerCall * 100) / 100,
+        estimatedCallsRemaining,
+        atRisk,
+      });
+    }
+
+    // ── System-wide forecast ──
+    const totalCreditsRemaining = activeRecords.reduce((sum, r) => sum + r.credits, 0);
+    const totalCreditsSpent = activeRecords.reduce((sum, r) => sum + (r.totalSpent || 0), 0);
+    const totalCalls = activeRecords.reduce((sum, r) => sum + (r.totalCalls || 0), 0);
+
+    // Per-tool breakdown from events
+    const toolMap = new Map<string, { calls: number; totalCredits: number }>();
+    const allowedEvents = events.filter(e => e.allowed);
+    for (const e of allowedEvents) {
+      const tool = e.tool || 'unknown';
+      if (!toolMap.has(tool)) toolMap.set(tool, { calls: 0, totalCredits: 0 });
+      const t = toolMap.get(tool)!;
+      t.calls++;
+      t.totalCredits += e.creditsCharged || 0;
+    }
+    const byTool = Array.from(toolMap.entries())
+      .map(([tool, stats]) => ({
+        tool,
+        calls: stats.calls,
+        totalCredits: stats.totalCredits,
+        avgCreditsPerCall: stats.calls > 0 ? Math.round(stats.totalCredits / stats.calls * 100) / 100 : 0,
+      }))
+      .sort((a, b) => b.totalCredits - a.totalCredits);
+
+    const keysAtRisk = keyForecasts.filter(f => f.atRisk).length;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalActiveKeys: activeRecords.length,
+        keysAtRisk,
+      },
+      keyForecasts,
+      systemForecast: {
+        totalCreditsRemaining,
+        totalCreditsSpent,
+        totalCalls,
+        byTool,
+      },
+      generatedAt: new Date().toISOString(),
     }));
   }
 

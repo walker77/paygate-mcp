@@ -119,6 +119,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Revenue Analysis** — `GET /admin/revenue` revenue metrics with per-tool revenue breakdown, per-key spending, hourly revenue trends, credit flow summary (allocated/spent/remaining), and average revenue per call
 - **Key Portfolio Health** — `GET /admin/key-portfolio` portfolio-wide key health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown
 - **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
+- **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2734,6 +2735,34 @@ curl http://localhost:3000/admin/anomalies -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Scans all active keys for anomalous patterns: keys with >50% denial rates (3+ calls minimum), rapid credit depletion (>=75% spent), and low remaining credits (<=10 credits or <=10% remaining). Each anomaly includes type, severity, affected key name, and human-readable description. Read-only.
+
+### Usage Forecasting
+
+```bash
+curl http://localhost:3000/admin/forecast -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalActiveKeys": 3, "keysAtRisk": 1 },
+  "keyForecasts": [
+    { "keyName": "heavy-user", "creditsRemaining": 50, "totalSpent": 950, "callCount": 95, "avgCreditsPerCall": 10, "estimatedCallsRemaining": 5, "atRisk": true },
+    { "keyName": "light-user", "creditsRemaining": 900, "totalSpent": 100, "callCount": 20, "avgCreditsPerCall": 5, "estimatedCallsRemaining": 180, "atRisk": false }
+  ],
+  "systemForecast": {
+    "totalCreditsRemaining": 950,
+    "totalCreditsSpent": 1050,
+    "totalCalls": 115,
+    "byTool": [
+      { "tool": "expensive_tool", "calls": 50, "totalCredits": 500, "avgCreditsPerCall": 10 },
+      { "tool": "cheap_tool", "calls": 65, "totalCredits": 325, "avgCreditsPerCall": 5 }
+    ]
+  },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Forecasts credit consumption for all active keys: per-key depletion estimates with calls remaining, at-risk identification (<=5 estimated calls), system-wide credit aggregates, and per-tool cost breakdown sorted by revenue. Keys with no usage history show `estimatedCallsRemaining: null`. Read-only.
 
 ### IP Allowlisting
 
