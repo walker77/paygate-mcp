@@ -131,6 +131,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Namespace Usage Summary** — `GET /admin/namespace-usage` per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison
 - **Audit Summary** — `GET /admin/audit-summary` audit event analytics with type breakdown, top actors, recent events, and activity summary
 - **Group Performance** — `GET /admin/group-performance` per-group analytics with key counts, credit allocation/spending, call volume, utilization, and policy summary
+- **Request Volume Trends** — `GET /admin/request-trends` hourly time-series of request volume, success/failure counts, credit spend, avg duration, and peak hour identification
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3035,6 +3036,29 @@ curl http://localhost:3000/admin/group-performance -H "X-Admin-Key: YOUR_ADMIN_K
 ```
 
 Per-group analytics: key counts, credit allocation/spending/remaining, call volume, and utilization percentages. Includes group policy summary (allowed/denied tools, rate limits). Sorted by spending (highest first). Also reports ungrouped key count. Read-only.
+
+### Request Volume Trends
+
+```bash
+curl http://localhost:3000/admin/request-trends -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": {
+    "totalRequests": 150, "totalAllowed": 130, "totalDenied": 20,
+    "totalCredits": 650, "avgDurationMs": 45,
+    "peakHour": { "hour": "2025-01-15T14:00:00Z", "total": 42 }
+  },
+  "hourly": [
+    { "hour": "2025-01-15T12:00:00Z", "total": 35, "allowed": 30, "denied": 5, "credits": 150, "avgDurationMs": 40 },
+    { "hour": "2025-01-15T13:00:00Z", "total": 42, "allowed": 38, "denied": 4, "credits": 190, "avgDurationMs": 50 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Hourly request volume time-series: total/allowed/denied counts, credit spend, and average duration per hour. Includes summary with peak hour identification. Built from request log data. Sorted chronologically. Read-only.
 
 ### IP Allowlisting
 

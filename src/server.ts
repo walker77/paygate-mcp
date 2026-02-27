@@ -937,6 +937,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/request-trends':
+        if (req.method === 'GET') return this.handleRequestTrends(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1536,6 +1541,7 @@ export class PayGateServer {
         namespaceUsage: 'GET /admin/namespace-usage — Per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison (requires X-Admin-Key)',
         auditSummary: 'GET /admin/audit-summary — Audit event analytics with type breakdown, top actors, recent events, and activity summary (requires X-Admin-Key)',
         groupPerformance: 'GET /admin/group-performance — Per-group analytics with key counts, credit allocation/spending, call volume, and utilization (requires X-Admin-Key)',
+        requestTrends: 'GET /admin/request-trends — Hourly request volume time-series with success/failure counts, credit spend, and avg duration (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7048,6 +7054,88 @@ export class PayGateServer {
         ungroupedKeys,
       },
       groups,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/request-trends — Hourly request volume time-series ──────────
+
+  private handleRequestTrends(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const entries = this.requestLog;
+
+    if (entries.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        summary: {
+          totalRequests: 0, totalAllowed: 0, totalDenied: 0,
+          totalCredits: 0, avgDurationMs: 0, peakHour: null,
+        },
+        hourly: [],
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // ── Aggregate into hourly buckets ──
+    let totalAllowed = 0;
+    let totalDenied = 0;
+    let totalCredits = 0;
+    let totalDuration = 0;
+
+    const buckets = new Map<string, { total: number; allowed: number; denied: number; credits: number; totalDurationMs: number }>();
+
+    for (const e of entries) {
+      const ts = new Date(e.timestamp);
+      const hour = ts.toISOString().slice(0, 13) + ':00:00Z'; // YYYY-MM-DDTHH:00:00Z
+
+      if (!buckets.has(hour)) {
+        buckets.set(hour, { total: 0, allowed: 0, denied: 0, credits: 0, totalDurationMs: 0 });
+      }
+      const b = buckets.get(hour)!;
+      b.total++;
+      if (e.status === 'allowed') {
+        b.allowed++;
+        totalAllowed++;
+        b.credits += e.credits || 0;
+        totalCredits += e.credits || 0;
+      } else {
+        b.denied++;
+        totalDenied++;
+      }
+      b.totalDurationMs += e.durationMs || 0;
+      totalDuration += e.durationMs || 0;
+    }
+
+    const hourly = Array.from(buckets.entries())
+      .map(([hour, b]) => ({
+        hour,
+        total: b.total,
+        allowed: b.allowed,
+        denied: b.denied,
+        credits: b.credits,
+        avgDurationMs: b.total > 0 ? Math.round(b.totalDurationMs / b.total) : 0,
+      }))
+      .sort((a, b) => a.hour.localeCompare(b.hour));
+
+    // ── Peak hour ──
+    let peakHour = hourly[0];
+    for (const h of hourly) {
+      if (h.total > peakHour.total) peakHour = h;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalRequests: entries.length,
+        totalAllowed,
+        totalDenied,
+        totalCredits,
+        avgDurationMs: entries.length > 0 ? Math.round(totalDuration / entries.length) : 0,
+        peakHour: { hour: peakHour.hour, total: peakHour.total },
+      },
+      hourly,
       generatedAt: new Date().toISOString(),
     }));
   }
