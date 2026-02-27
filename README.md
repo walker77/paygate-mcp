@@ -148,6 +148,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Revenue Ranking** — `GET /admin/tool-revenue` ranks tools by total credits consumed with call counts, unique consumers, and percentage breakdown
 - **Consumer Retention Cohorts** — `GET /admin/consumer-retention` groups consumers by creation date with retention rates and avg spend per cohort
 - **Error Breakdown** — `GET /admin/error-breakdown` categorizes denied requests by reason with counts, percentages, affected consumers, and error rate
+- **Credit Utilization Rate** — `GET /admin/credit-utilization` shows utilization percentage across active keys with utilization bands and over-provisioning detection
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3446,6 +3447,28 @@ curl http://localhost:3000/admin/error-breakdown -H "X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
 Categorizes denied requests by deny reason for root-cause analysis. Per-reason: count, percentage of total denials, and affected consumer count. `errorRate` is the percentage of total requests that were denied. Sorted by count descending. Read-only.
+
+### Credit Utilization Rate
+
+```bash
+curl http://localhost:3000/admin/credit-utilization -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "bands": [
+    { "range": "0%", "count": 5, "percentage": 25 },
+    { "range": "1-25%", "count": 8, "percentage": 40 },
+    { "range": "26-50%", "count": 4, "percentage": 20 },
+    { "range": "51-75%", "count": 2, "percentage": 10 },
+    { "range": "76-99%", "count": 1, "percentage": 5 }
+  ],
+  "summary": { "totalAllocated": 10000, "totalSpent": 3500, "overallUtilization": 35, "totalKeys": 20 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Shows what percentage of allocated credits are being used across active keys. Utilization bands: **0%** (unused), **1-25%**, **26-50%**, **51-75%**, **76-99%**, **100%** (fully consumed). `totalAllocated` = remaining credits + spent credits (original allocation). Excludes revoked/suspended keys. Read-only.
 
 ### IP Allowlisting
 

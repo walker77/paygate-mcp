@@ -1022,6 +1022,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/credit-utilization':
+        if (req.method === 'GET') return this.handleCreditUtilization(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1638,6 +1643,7 @@ export class PayGateServer {
         toolRevenue: 'GET /admin/tool-revenue — Tool revenue ranking with credits consumed, call counts, unique consumers, and percentage breakdown (requires X-Admin-Key)',
         consumerRetention: 'GET /admin/consumer-retention — Consumer retention cohorts grouped by creation date with retention rates and avg spend per cohort (requires X-Admin-Key)',
         errorBreakdown: 'GET /admin/error-breakdown — Denied request breakdown by reason with counts, percentages, affected consumers, and overall error rate (requires X-Admin-Key)',
+        creditUtilization: 'GET /admin/credit-utilization — Credit utilization rate across active keys with utilization bands and over/under-provisioning detection (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8284,6 +8290,76 @@ export class PayGateServer {
         totalDenied,
         totalAllowed,
         errorRate: totalRequests > 0 ? Math.round((totalDenied / totalRequests) * 100) : 0,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/credit-utilization — Credit utilization rate ─────────────────
+
+  private handleCreditUtilization(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        bands: [],
+        summary: { totalAllocated: 0, totalSpent: 0, overallUtilization: 0, totalKeys: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const bandDefs = [
+      { range: '0%', min: 0, max: 0 },
+      { range: '1-25%', min: 1, max: 25 },
+      { range: '26-50%', min: 26, max: 50 },
+      { range: '51-75%', min: 51, max: 75 },
+      { range: '76-99%', min: 76, max: 99 },
+      { range: '100%', min: 100, max: 100 },
+    ];
+
+    const bandCounts = bandDefs.map(() => 0);
+    let totalAllocated = 0;
+    let totalSpent = 0;
+
+    for (const rec of activeRecords) {
+      const spent = rec.totalSpent || 0;
+      const allocated = rec.credits + spent; // credits remaining + credits spent = original allocation
+      totalAllocated += allocated;
+      totalSpent += spent;
+
+      const utilPct = allocated > 0 ? Math.round((spent / allocated) * 100) : 0;
+
+      for (let i = 0; i < bandDefs.length; i++) {
+        if (utilPct >= bandDefs[i].min && utilPct <= bandDefs[i].max) {
+          bandCounts[i]++;
+          break;
+        }
+      }
+    }
+
+    const bands = bandDefs
+      .map((def, i) => ({
+        range: def.range,
+        count: bandCounts[i],
+        percentage: activeRecords.length > 0
+          ? Math.round((bandCounts[i] / activeRecords.length) * 100)
+          : 0,
+      }))
+      .filter(b => b.count > 0);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      bands,
+      summary: {
+        totalAllocated,
+        totalSpent,
+        overallUtilization: totalAllocated > 0 ? Math.round((totalSpent / totalAllocated) * 100) : 0,
+        totalKeys: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
     }));
