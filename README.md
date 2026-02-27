@@ -155,6 +155,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Consumer Activity** — `GET /admin/consumer-activity` per-consumer activity metrics with calls, spend, credits remaining, last active time, and active/inactive status
 - **Tool Popularity** — `GET /admin/tool-popularity` tool usage popularity with call counts, credits, unique consumers, percentage, and most popular tool identification
 - **Credit Allocation Summary** — `GET /admin/credit-allocation` credit allocation across active keys with tier breakdown (1-100, 101-500, 501+), totals, and average allocation
+- **Daily Summary** — `GET /admin/daily-summary` daily rollup of requests, credits spent, new keys, errors, unique consumers and tools for trend analysis
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3594,6 +3595,25 @@ curl http://localhost:3000/admin/credit-allocation -H "X-Admin-Key: YOUR_ADMIN_K
 ```
 
 Credit allocation distribution across active keys. Groups keys into allocation tiers (1-100, 101-500, 501+) with count, total credits, and percentage per tier. Summary includes total keys, total allocated/remaining/spent credits, and average allocation per key. Excludes revoked/suspended keys. Read-only.
+
+### Daily Summary
+
+```bash
+curl http://localhost:3000/admin/daily-summary -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "days": [
+    { "date": "2025-01-15", "requests": 150, "allowed": 140, "denied": 10, "creditsSpent": 700, "uniqueConsumers": 25, "uniqueTools": 8, "newKeys": 3 },
+    { "date": "2025-01-14", "requests": 120, "allowed": 115, "denied": 5, "creditsSpent": 575, "uniqueConsumers": 20, "uniqueTools": 7, "newKeys": 1 }
+  ],
+  "summary": { "totalDays": 2, "totalRequests": 270, "totalCreditsSpent": 1275, "averageRequestsPerDay": 135 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Daily activity rollup for trend analysis. Per-day: total requests, allowed/denied breakdown, credits spent, unique consumers, unique tools, and new keys created. Summary includes total days, total requests, total credits, and average requests per day. Sorted by date descending (most recent first). Read-only.
 
 ### IP Allowlisting
 

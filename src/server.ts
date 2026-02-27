@@ -1057,6 +1057,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/daily-summary':
+        if (req.method === 'GET') return this.handleDailySummary(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1680,6 +1685,7 @@ export class PayGateServer {
         consumerActivity: 'GET /admin/consumer-activity — Per-consumer activity with calls, spend, credits remaining, last active time, and status (requires X-Admin-Key)',
         toolPopularity: 'GET /admin/tool-popularity — Tool usage popularity with call counts, credits, unique consumers, and percentage breakdown (requires X-Admin-Key)',
         creditAllocation: 'GET /admin/credit-allocation — Credit allocation summary with tier breakdown, totals, and average allocation across active keys (requires X-Admin-Key)',
+        dailySummary: 'GET /admin/daily-summary — Daily rollup of requests, credits spent, new keys, errors, and unique consumers for trend analysis (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8694,6 +8700,94 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/daily-summary — Daily activity rollup ────────────────────────
+
+  private handleDailySummary(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    if (this.requestLog.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        days: [],
+        summary: {
+          totalDays: 0,
+          totalRequests: 0,
+          totalCreditsSpent: 0,
+          averageRequestsPerDay: 0,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Group request log entries by date (YYYY-MM-DD)
+    const dayMap = new Map<string, {
+      requests: number;
+      allowed: number;
+      denied: number;
+      creditsSpent: number;
+      consumers: Set<string>;
+      tools: Set<string>;
+    }>();
+
+    for (const entry of this.requestLog) {
+      const date = entry.timestamp.slice(0, 10); // YYYY-MM-DD
+      let d = dayMap.get(date);
+      if (!d) {
+        d = { requests: 0, allowed: 0, denied: 0, creditsSpent: 0, consumers: new Set(), tools: new Set() };
+        dayMap.set(date, d);
+      }
+      d.requests++;
+      if (entry.status === 'allowed') {
+        d.allowed++;
+        d.creditsSpent += entry.credits || 0;
+      } else {
+        d.denied++;
+      }
+      d.consumers.add(entry.key);
+      if (entry.tool) d.tools.add(entry.tool);
+    }
+
+    // Count new keys per day from store records
+    const allRecords = this.gate.store.getAllRecords();
+    const newKeysPerDay = new Map<string, number>();
+    for (const rec of allRecords) {
+      if (rec.createdAt) {
+        const date = new Date(rec.createdAt).toISOString().slice(0, 10);
+        newKeysPerDay.set(date, (newKeysPerDay.get(date) || 0) + 1);
+      }
+    }
+
+    // Build days array sorted by date descending
+    const days = Array.from(dayMap.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, d]) => ({
+        date,
+        requests: d.requests,
+        allowed: d.allowed,
+        denied: d.denied,
+        creditsSpent: d.creditsSpent,
+        uniqueConsumers: d.consumers.size,
+        uniqueTools: d.tools.size,
+        newKeys: newKeysPerDay.get(date) || 0,
+      }));
+
+    const totalRequests = days.reduce((s, d) => s + d.requests, 0);
+    const totalCreditsSpent = days.reduce((s, d) => s + d.creditsSpent, 0);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      days,
+      summary: {
+        totalDays: days.length,
+        totalRequests,
+        totalCreditsSpent,
+        averageRequestsPerDay: days.length > 0 ? Math.round(totalRequests / days.length) : 0,
       },
       generatedAt: new Date().toISOString(),
     }));
