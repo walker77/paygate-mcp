@@ -1132,6 +1132,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/system-overview':
+        if (req.method === 'GET') return this.handleSystemOverview(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1764,6 +1769,7 @@ export class PayGateServer {
         creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
         consumerRiskScore: 'GET /admin/consumer-risk-score — Per-consumer risk scoring based on utilization, spend velocity, and credit depletion proximity with risk levels (requires X-Admin-Key)',
         revenueForecast: 'GET /admin/revenue-forecast — Projected revenue with hourly/daily/weekly/monthly forecasts based on current spend trends, capped by remaining credits (requires X-Admin-Key)',
+        systemOverview: 'GET /admin/system-overview — Executive summary with key counts, credit totals, utilization, activity metrics (requires X-Admin-Key)',
         keyHealthOverview: 'GET /admin/key-health-overview — Holistic per-key health check with utilization, status (healthy/warning/critical), and health distribution (requires X-Admin-Key)',
         namespaceComparison: 'GET /admin/namespace-comparison — Side-by-side namespace comparison with allocation, spend, utilization, and leader namespace (requires X-Admin-Key)',
         consumerGrowth: 'GET /admin/consumer-growth — Consumer growth metrics with age, spend rate, credits allocated, and new consumer count (requires X-Admin-Key)',
@@ -8790,6 +8796,60 @@ export class PayGateServer {
   }
 
   // ─── /admin/group-activity — Per-group activity metrics ──────────────────
+
+  private handleSystemOverview(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+    const revokedCount = allRecords.filter(r => !r.active).length;
+    const suspendedCount = allRecords.filter(r => r.active && r.suspended).length;
+
+    let totalAllocated = 0;
+    let totalSpent = 0;
+    let totalRemaining = 0;
+    let totalCalls = 0;
+
+    for (const rec of activeRecords) {
+      totalAllocated += rec.credits + rec.totalSpent;
+      totalSpent += rec.totalSpent;
+      totalRemaining += rec.credits;
+      totalCalls += rec.totalCalls;
+    }
+
+    // Count unique tools from request log
+    const toolSet = new Set<string>();
+    for (const entry of this.requestLog) {
+      if (entry.status === 'allowed') {
+        toolSet.add(entry.tool);
+      }
+    }
+
+    const utilizationPercent = totalAllocated > 0
+      ? Math.round((totalSpent / totalAllocated) * 100)
+      : 0;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      keys: {
+        total: allRecords.length,
+        active: activeRecords.length,
+        revoked: revokedCount,
+        suspended: suspendedCount,
+      },
+      credits: {
+        totalAllocated,
+        totalSpent,
+        totalRemaining,
+        utilizationPercent,
+      },
+      activity: {
+        totalCalls,
+        uniqueTools: toolSet.size,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
 
   private handleKeyHealthOverview(_req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(_req, res)) return;

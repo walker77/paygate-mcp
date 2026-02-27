@@ -164,6 +164,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Consumer Risk Score** — `GET /admin/consumer-risk-score` per-consumer risk scoring based on utilization with risk levels (low/medium/high/critical)
 - **Revenue Forecast** — `GET /admin/revenue-forecast` projected revenue with hourly/daily/weekly/monthly forecasts capped by remaining credits
+- **System Overview** — `GET /admin/system-overview` executive summary with key counts, credit totals, utilization, activity metrics
 - **Key Health Overview** — `GET /admin/key-health-overview` holistic per-key health check with utilization, status levels, health distribution
 - **Namespace Comparison** — `GET /admin/namespace-comparison` side-by-side namespace comparison with allocation, spend, utilization, leader
 - **Consumer Growth** — `GET /admin/consumer-growth` consumer growth metrics with age, spend rate, credits allocated, new consumer count
@@ -3781,6 +3782,23 @@ curl http://localhost:3000/admin/revenue-forecast -H "X-Admin-Key: YOUR_ADMIN_KE
 ```
 
 Projected revenue based on current spend trends. Forecasts for next hour, day, week, and month are extrapolated from aggregate credits/hour rate and capped by total remaining credits. Includes current totals and active key count. Zero-spend systems show zero forecasts. Excludes revoked/suspended keys. Read-only.
+
+### System Overview
+
+```bash
+curl http://localhost:3000/admin/system-overview -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "keys": { "total": 15, "active": 12, "revoked": 2, "suspended": 1 },
+  "credits": { "totalAllocated": 150000, "totalSpent": 45000, "totalRemaining": 105000, "utilizationPercent": 30 },
+  "activity": { "totalCalls": 3500, "uniqueTools": 8 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Executive summary of the entire system. Key counts by status (active, revoked, suspended). Credit totals with utilization percentage. Activity metrics including total calls and unique tools used. Single endpoint for dashboards and monitoring integrations. Read-only.
 
 ### Key Health Overview
 
