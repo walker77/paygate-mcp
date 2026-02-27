@@ -136,6 +136,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Webhook Health** — `GET /admin/webhook-health` webhook delivery health overview with success rate, pending retries, dead letter count, pause status, and buffered events
 - **Consumer Insights** — `GET /admin/consumer-insights` per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns
 - **System Health Score** — `GET /admin/system-health` composite 0-100 health score with weighted component breakdowns for key health, error rates, and credit utilization
+- **Tool Adoption** — `GET /admin/tool-adoption` per-tool adoption metrics with unique consumers, adoption rate, first/last seen timestamps, and usage ranking
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3156,6 +3157,43 @@ curl http://localhost:3000/admin/system-health -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Composite system health score 0-100 with weighted component breakdowns. Key health (40%): penalizes suspended/revoked/expired/low-credit keys. Error rate (35%): penalizes high denial rates. Credit utilization (25%): healthy at 10-80%, degrades at >80%. Levels: healthy (>=80), good (>=60), warning (>=40), critical (<40). Read-only.
+
+### Tool Adoption
+
+```bash
+curl http://localhost:3000/admin/tool-adoption -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "tools": [
+    {
+      "tool": "search",
+      "uniqueConsumers": 8,
+      "adoptionRate": 80,
+      "totalCalls": 245,
+      "firstSeen": "2025-01-10T08:00:00Z",
+      "lastSeen": "2025-01-15T14:30:00Z"
+    },
+    {
+      "tool": "translate",
+      "uniqueConsumers": 3,
+      "adoptionRate": 30,
+      "totalCalls": 42,
+      "firstSeen": "2025-01-12T10:00:00Z",
+      "lastSeen": "2025-01-15T12:00:00Z"
+    }
+  ],
+  "summary": {
+    "totalTools": 2,
+    "usedTools": 2,
+    "unusedTools": 0
+  },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-tool adoption metrics showing which tools are being used and by how many consumers. `uniqueConsumers` counts distinct API keys that called the tool. `adoptionRate` is the percentage of active keys that have used the tool. Sorted by adoption rate descending, then by total calls. Read-only.
 
 ### IP Allowlisting
 

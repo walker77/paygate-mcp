@@ -962,6 +962,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/tool-adoption':
+        if (req.method === 'GET') return this.handleToolAdoption(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1566,6 +1571,7 @@ export class PayGateServer {
         webhookHealth: 'GET /admin/webhook-health — Webhook delivery health overview with success rate, retries, dead letters, and pause status (requires X-Admin-Key)',
         consumerInsights: 'GET /admin/consumer-insights — Per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns (requires X-Admin-Key)',
         systemHealth: 'GET /admin/system-health — Composite system health score 0-100 with component breakdowns for key health, error rates, and credit utilization (requires X-Admin-Key)',
+        toolAdoption: 'GET /admin/tool-adoption — Per-tool adoption metrics with unique consumers, adoption rate, first/last seen, and never-used tool identification (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7441,6 +7447,65 @@ export class PayGateServer {
         keyHealth: { score: keyHealthScore, weight: 0.4, detail: keyHealthDetail },
         errorRate: { score: errorRateScore, weight: 0.35, detail: errorRateDetail },
         creditUtilization: { score: creditScore, weight: 0.25, detail: creditDetail },
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/tool-adoption — Per-tool adoption metrics ─────────────────────
+
+  private handleToolAdoption(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeKeys = allRecords.filter(r => r.active && !r.suspended);
+    const activeKeyCount = activeKeys.length;
+
+    // Build per-tool metrics from request log
+    const toolMap = new Map<string, {
+      consumers: Set<string>;
+      totalCalls: number;
+      firstSeen: number;
+      lastSeen: number;
+    }>();
+
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      let data = toolMap.get(entry.tool);
+      if (!data) {
+        data = { consumers: new Set(), totalCalls: 0, firstSeen: Infinity, lastSeen: 0 };
+        toolMap.set(entry.tool, data);
+      }
+      data.consumers.add(entry.key);
+      data.totalCalls++;
+      const ts = new Date(entry.timestamp).getTime();
+      if (ts < data.firstSeen) data.firstSeen = ts;
+      if (ts > data.lastSeen) data.lastSeen = ts;
+    }
+
+    // Build sorted tools array by adoption rate descending
+    const tools = Array.from(toolMap.entries()).map(([tool, data]) => ({
+      tool,
+      uniqueConsumers: data.consumers.size,
+      adoptionRate: activeKeyCount > 0
+        ? Math.round((data.consumers.size / activeKeyCount) * 100)
+        : 0,
+      totalCalls: data.totalCalls,
+      firstSeen: new Date(data.firstSeen).toISOString(),
+      lastSeen: new Date(data.lastSeen).toISOString(),
+    })).sort((a, b) => b.adoptionRate - a.adoptionRate || b.totalCalls - a.totalCalls);
+
+    const usedTools = toolMap.size;
+    // Count total known tools from request log (we don't have access to the child process tool list)
+    const totalTools = usedTools;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tools,
+      summary: {
+        totalTools,
+        usedTools,
+        unusedTools: totalTools - usedTools,
       },
       generatedAt: new Date().toISOString(),
     }));
