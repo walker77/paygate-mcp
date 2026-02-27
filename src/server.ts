@@ -232,6 +232,22 @@ export class PayGateServer {
   }> = new Map();
   /** Auto-incrementing reservation ID counter */
   private nextReservationId = 1;
+  /** Request log — ring buffer of tool call entries */
+  private requestLog: Array<{
+    id: number;
+    timestamp: string;
+    tool: string;
+    key: string;
+    status: 'allowed' | 'denied';
+    credits: number;
+    durationMs: number;
+    denyReason?: string;
+    requestId?: string;
+  }> = [];
+  /** Next request log entry ID */
+  private nextRequestLogId = 1;
+  /** Max request log entries (ring buffer) */
+  private readonly maxRequestLogEntries = 5000;
   /** Number of in-flight /mcp requests */
   private inflight = 0;
   /** Config file path for hot reload (null if not using config file) */
@@ -693,6 +709,11 @@ export class PayGateServer {
         return this.handleAuditExport(req, res);
       case '/audit/stats':
         return this.handleAuditStats(req, res);
+      case '/requests':
+        if (req.method === 'GET') return this.handleRequestLog(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Registry / Discovery endpoints ──────────────────────────────
       case '/.well-known/mcp-payment':
         return this.handlePaymentMetadata(req, res);
@@ -943,6 +964,7 @@ export class PayGateServer {
       pluginRequest = await this.plugins.executeBeforeToolCall(pluginCtx);
     }
 
+    const toolCallStartTime = Date.now();
     let response = await this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools);
 
     // Plugin: afterToolCall — let plugins modify the response
@@ -1012,6 +1034,44 @@ export class PayGateServer {
             ...alert.metadata,
           });
         }
+      }
+    }
+
+    // Record request log entry for tools/call
+    if (request.method === 'tools/call') {
+      const toolName = (request.params as Record<string, unknown>)?.name as string || 'unknown';
+      const durationMs = Date.now() - toolCallStartTime;
+      const isError = !!response.error;
+      let denyReason: string | undefined;
+      if (isError) {
+        const msg = response.error!.message || '';
+        if (msg.includes('rate_limited')) denyReason = 'rate_limited';
+        else if (msg.includes('insufficient_credits')) denyReason = 'insufficient_credits';
+        else if (msg.includes('invalid_api_key')) denyReason = 'invalid_api_key';
+        else if (msg.includes('key_suspended')) denyReason = 'key_suspended';
+        else if (msg.includes('api_key_expired')) denyReason = 'api_key_expired';
+        else if (msg.includes('tool_not_allowed')) denyReason = 'tool_not_allowed';
+        else if (msg.includes('quota_exceeded')) denyReason = 'quota_exceeded';
+        else denyReason = msg || 'denied';
+      }
+      const creditsCharged = isError ? 0 : this.gate.getToolPrice(toolName,
+        (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined);
+
+      const logEntry = {
+        id: this.nextRequestLogId++,
+        timestamp: new Date().toISOString(),
+        tool: toolName,
+        key: maskKeyForAudit(apiKey || 'anonymous'),
+        status: (isError ? 'denied' : 'allowed') as 'allowed' | 'denied',
+        credits: creditsCharged,
+        durationMs,
+        ...(denyReason ? { denyReason } : {}),
+        requestId,
+      };
+      this.requestLog.push(logEntry);
+      // Enforce ring buffer size
+      if (this.requestLog.length > this.maxRequestLogEntries) {
+        this.requestLog = this.requestLog.slice(-this.maxRequestLogEntries);
       }
     }
 
@@ -1295,6 +1355,7 @@ export class PayGateServer {
         keySchedule: 'GET /keys/schedule?key=... — List schedules + POST to create + DELETE to cancel (requires X-Admin-Key)',
         keyActivity: 'GET /keys/activity?key=... — Unified activity timeline for a key (requires X-Admin-Key)',
         creditReservations: 'POST /keys/reserve to hold credits, POST /keys/reserve/commit to deduct, POST /keys/reserve/release to release, GET /keys/reserve to list (requires X-Admin-Key)',
+        requestLog: 'GET /requests — Queryable log of tool call requests with timing, credits, status (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6809,5 +6870,76 @@ export class PayGateServer {
     if (this.redisSync) {
       await this.redisSync.destroy();
     }
+  }
+
+  // ─── /requests — Request Log (queryable tool call log) ──────────────────────
+
+  private handleRequestLog(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+
+    // Filters
+    const keyFilter = params.get('key');
+    const toolFilter = params.get('tool');
+    const statusFilter = params.get('status'); // 'allowed' | 'denied'
+    const sinceFilter = params.get('since');
+    const limit = Math.min(1000, Math.max(1, parseInt(params.get('limit') || '100', 10) || 100));
+    const offset = Math.max(0, parseInt(params.get('offset') || '0', 10) || 0);
+
+    let filtered = this.requestLog;
+
+    // Filter by key (partial match on masked key)
+    if (keyFilter) {
+      const kf = keyFilter.toLowerCase();
+      filtered = filtered.filter(e => e.key.toLowerCase().includes(kf));
+    }
+
+    // Filter by tool name (exact match)
+    if (toolFilter) {
+      filtered = filtered.filter(e => e.tool === toolFilter);
+    }
+
+    // Filter by status
+    if (statusFilter === 'allowed' || statusFilter === 'denied') {
+      filtered = filtered.filter(e => e.status === statusFilter);
+    }
+
+    // Filter by since timestamp
+    if (sinceFilter) {
+      const sinceTime = new Date(sinceFilter).getTime();
+      if (!isNaN(sinceTime)) {
+        filtered = filtered.filter(e => new Date(e.timestamp).getTime() >= sinceTime);
+      }
+    }
+
+    const total = filtered.length;
+
+    // Return newest first
+    const reversed = [...filtered].reverse();
+    const page = reversed.slice(offset, offset + limit);
+
+    // Compute summary stats
+    const totalAllowed = filtered.filter(e => e.status === 'allowed').length;
+    const totalDenied = filtered.filter(e => e.status === 'denied').length;
+    const totalCredits = filtered.reduce((sum, e) => sum + e.credits, 0);
+    const avgDurationMs = filtered.length > 0
+      ? Math.round(filtered.reduce((sum, e) => sum + e.durationMs, 0) / filtered.length)
+      : 0;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      total,
+      offset,
+      limit,
+      summary: {
+        totalAllowed,
+        totalDenied,
+        totalCredits,
+        avgDurationMs,
+      },
+      requests: page,
+    }));
   }
 }

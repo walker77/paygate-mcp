@@ -100,6 +100,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Scheduled Actions** — `POST /keys/schedule` creates future-dated actions (revoke/suspend/topup) on API keys, `GET /keys/schedule` lists pending schedules with optional `?key=` filter, `DELETE /keys/schedule?id=...` cancels a schedule — max 20 per key, alias support, background execution timer, audit trail
 - **Key Activity Timeline** — `GET /keys/activity?key=...` returns a unified chronological feed of audit events and usage events for a specific key — newest first, optional `?since=` and `?limit=` filters, alias support
 - **Credit Reservations** — `POST /keys/reserve` holds credits, `POST /keys/reserve/commit` deducts held credits, `POST /keys/reserve/release` frees the hold, `GET /keys/reserve` lists active reservations — prevents overcommit, configurable TTL (10s–1h), max 50 per key, auto-expiry, audit trail
+- **Request Log** — `GET /requests` queryable log of every tool call with timing, credits charged, status (allowed/denied), deny reason, key, and request ID — filter by key/tool/status/since, pagination, summary statistics (totals + avg duration), 5000-entry ring buffer
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2074,6 +2075,73 @@ curl "http://localhost:3402/keys/reserve" -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 TTL range: 10s to 1h (default 5 min). Max 50 reservations per key. Expired reservations auto-cleanup. Alias support. Rejects revoked/suspended keys. Audit trail (`credits.reserved` / `credits.committed` / `credits.released`).
+
+### Request Log
+
+Queryable log of every MCP tool call with timing, credits, status, and deny reason:
+
+```bash
+# Get all requests (newest first)
+curl "http://localhost:3402/requests" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by tool name
+curl "http://localhost:3402/requests?tool=my_tool" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by status (allowed or denied)
+curl "http://localhost:3402/requests?status=denied" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by key (partial match on masked key)
+curl "http://localhost:3402/requests?key=pg_abc1" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by time + pagination
+curl "http://localhost:3402/requests?since=2025-03-01T00:00:00Z&limit=50&offset=0" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Combine filters
+curl "http://localhost:3402/requests?tool=my_tool&status=allowed&limit=10" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "total": 42,
+  "offset": 0,
+  "limit": 100,
+  "summary": {
+    "totalAllowed": 38,
+    "totalDenied": 4,
+    "totalCredits": 190,
+    "avgDurationMs": 45
+  },
+  "requests": [
+    {
+      "id": 42,
+      "timestamp": "2025-03-16T10:30:00Z",
+      "tool": "my_tool",
+      "key": "pg_abc1...2345",
+      "status": "allowed",
+      "credits": 5,
+      "durationMs": 32,
+      "requestId": "req_a1b2c3d4e5f6g7h8"
+    },
+    {
+      "id": 41,
+      "timestamp": "2025-03-16T10:29:55Z",
+      "tool": "my_tool",
+      "key": "pg_xyz9...8765",
+      "status": "denied",
+      "credits": 0,
+      "durationMs": 1,
+      "denyReason": "insufficient_credits",
+      "requestId": "req_i9j0k1l2m3n4o5p6"
+    }
+  ]
+}
+```
+
+5000-entry ring buffer. Summary statistics are computed on filtered results. Deny reasons: `insufficient_credits`, `rate_limited`, `invalid_api_key`, `key_suspended`, `api_key_expired`, `tool_not_allowed`, `quota_exceeded`.
 
 ### IP Allowlisting
 
