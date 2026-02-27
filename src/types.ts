@@ -151,6 +151,8 @@ export interface PayGateConfig {
   adminRateLimit?: number;
   /** Session creation rate limit per IP (sessions/min). 0 = unlimited. Default: 60. */
   sessionRateLimit?: number;
+  /** Public endpoint rate limit per IP (requests/min). 0 = unlimited. Default: 300. */
+  publicRateLimit?: number;
   /** Bill task creation (tasks/send) as tool calls. Default: false. When true, tasks/send is not free. */
   billTaskCreation?: boolean;
 }

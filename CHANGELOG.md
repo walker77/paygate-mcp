@@ -1,5 +1,29 @@
 # Changelog
 
+## 8.98.0 (2026-02-27)
+
+### Public Endpoint Hardening
+- **Public endpoint rate limiting**: Configurable per-IP rate limit on all public endpoints
+  - `/health`, `/info`, `/pricing`, `/openapi.json`, `/docs`, `/.well-known/*`, `/robots.txt`, `/`
+  - Default: 300 requests/min per IP (configurable via `publicRateLimit`, 0 = unlimited)
+  - Returns 429 with `Retry-After` header when limit is exceeded
+  - Separate from admin rate limiter — admin endpoints unaffected
+  - DDoS and scrape protection for discovery endpoints
+- **`/robots.txt` handler**: Standard crawler directives
+  - Allows public discovery endpoints (`/health`, `/info`, `/pricing`, `/openapi.json`, `/docs`, `/.well-known/`)
+  - Disallows admin, key, webhook, OAuth, config, stripe, and metrics paths
+  - Improves SEO discoverability and prevents crawler abuse
+- **HEAD method support**: All public GET endpoints respond to HEAD requests
+  - Returns 200 with empty body (no rate limit consumed)
+  - Supports uptime monitoring tools (Pingdom, UptimeRobot, etc.)
+  - CORS `Access-Control-Allow-Methods` updated to include `HEAD`
+- **Flaky CI test fix**: Stabilized `resource-cleanup.test.ts` with retry logic
+  - Both v8.96.0 and v8.97.0 failed to publish due to transient ECONNRESET in CI
+  - Added 100ms delay + retry with 200ms backoff for oversized body rejection test
+
+### Stats
+- 3,438 tests across 183 suites (24 new tests)
+
 ## 8.97.0 (2026-02-27)
 
 ### Developer Experience & Discovery

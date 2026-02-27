@@ -365,6 +365,8 @@ export class PayGateServer {
   private readonly adminRateLimiter: RateLimiter;
   /** Rate limiter for session creation (prevents session slot exhaustion) */
   private readonly sessionRateLimiter: RateLimiter;
+  /** Rate limiter for public endpoints (DDoS / scrape protection) */
+  private readonly publicRateLimiter: RateLimiter;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -461,6 +463,8 @@ export class PayGateServer {
     this.adminRateLimiter = new RateLimiter(this.config.adminRateLimit ?? 120);
     // Session creation rate limiter: max 60 new sessions/min per IP (prevents session slot exhaustion)
     this.sessionRateLimiter = new RateLimiter(this.config.sessionRateLimit ?? 60);
+    // Public endpoint rate limiter: max 300 req/min per IP (DDoS / scrape protection)
+    this.publicRateLimiter = new RateLimiter(this.config.publicRateLimit ?? 300);
 
     this.gate = new Gate(this.config, statePath);
     this.gate.store.logger = this.logger;
@@ -831,7 +835,7 @@ export class PayGateServer {
     const corsConfig = this.config.cors;
     const allowedOrigin = this.resolveCorsOrigin(req, corsConfig);
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization, X-Request-Id');
     res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id');
     if (corsConfig?.credentials) {
@@ -878,9 +882,17 @@ export class PayGateServer {
         }
         return this.handleMcp(req, res);
       case '/health':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
         return this.handleHealth(req, res);
       case '/info':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
         return this.handleInfo(req, res);
+      case '/robots.txt':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
+        return this.handleRobotsTxt(req, res);
       case '/status':
         return this.handleStatus(req, res);
       case '/keys':
@@ -1014,16 +1026,26 @@ export class PayGateServer {
         if (req.method === 'POST') return this.handleRequestDryRunBatch(req, res);
         this.sendError(res, 405, 'Method not allowed. Use POST.');
         return;
-      // ─── Registry / Discovery endpoints ──────────────────────────────
+      // ─── Registry / Discovery endpoints (public, rate-limited) ────────
       case '/.well-known/mcp-payment':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
         return this.handlePaymentMetadata(req, res);
       case '/.well-known/mcp.json':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
         return this.handleMcpIdentity(req, res);
       case '/pricing':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
         return this.handlePricing(req, res);
       case '/openapi.json':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
         return this.handleOpenApiSpec(req, res);
       case '/docs':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
         return this.handleDocs(req, res);
       case '/metrics':
         return this.handleMetrics(req, res);
@@ -1408,6 +1430,8 @@ export class PayGateServer {
       default:
         // Root — simple info
         if (url === '/' || url === '') {
+          if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+          if (!this.checkPublicRateLimit(req, res)) return;
           return this.handleRoot(req, res);
         }
         this.sendError(res, 404, 'Not found');
@@ -1877,6 +1901,56 @@ export class PayGateServer {
     }
 
     return headers;
+  }
+
+  // ─── Public endpoint rate limiting ────────────────────────────────────────
+
+  /**
+   * Check public endpoint rate limit by source IP.
+   * Returns true if allowed, false (and sends 429) if rate-limited.
+   */
+  private checkPublicRateLimit(req: IncomingMessage, res: ServerResponse): boolean {
+    const sourceIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+      || req.socket.remoteAddress || 'unknown';
+    const result = this.publicRateLimiter.check(`ip:${sourceIp}`);
+    if (!result.allowed) {
+      res.setHeader('Retry-After', String(Math.ceil(result.resetInMs / 1000)));
+      this.sendError(res, 429, 'Too many requests. Try again later.');
+      return false;
+    }
+    this.publicRateLimiter.record(`ip:${sourceIp}`);
+    return true;
+  }
+
+  // ─── /robots.txt — Crawler directives ─────────────────────────────────────
+
+  private handleRobotsTxt(_req: IncomingMessage, res: ServerResponse): void {
+    const body = [
+      'User-agent: *',
+      'Allow: /health',
+      'Allow: /info',
+      'Allow: /pricing',
+      'Allow: /openapi.json',
+      'Allow: /docs',
+      'Allow: /.well-known/',
+      'Disallow: /keys',
+      'Disallow: /admin',
+      'Disallow: /mcp',
+      'Disallow: /status',
+      'Disallow: /dashboard',
+      'Disallow: /audit',
+      'Disallow: /tokens',
+      'Disallow: /teams',
+      'Disallow: /webhooks',
+      'Disallow: /oauth',
+      'Disallow: /config',
+      'Disallow: /stripe',
+      'Disallow: /requests',
+      'Disallow: /metrics',
+      '',
+    ].join('\n');
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(body);
   }
 
   // ─── / — Root info ──────────────────────────────────────────────────────────
@@ -12408,6 +12482,9 @@ export class PayGateServer {
     this.audit.destroy();
     this.tokens.destroy();
     this.expiryScanner.destroy();
+    this.adminRateLimiter.destroy();
+    this.sessionRateLimiter.destroy();
+    this.publicRateLimiter.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }
@@ -12485,6 +12562,7 @@ export class PayGateServer {
     this.expiryScanner.destroy();
     this.adminRateLimiter.destroy();
     this.sessionRateLimiter.destroy();
+    this.publicRateLimiter.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }

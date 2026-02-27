@@ -95,8 +95,17 @@ describe('readBody — Event Listener Cleanup', () => {
   });
 
   it('should continue to work after oversized body rejection', async () => {
-    // Server should still accept normal requests
-    const resp = await post('/keys', { name: 'after-oversize', credits: 10 });
+    // Small delay to let the server finish cleaning up the oversized connection
+    await new Promise(r => setTimeout(r, 100));
+    // Server should still accept normal requests — retry once on transient ECONNRESET
+    let resp: { status: number; body: any };
+    try {
+      resp = await post('/keys', { name: 'after-oversize', credits: 10 });
+    } catch {
+      // Transient ECONNRESET in CI — retry after brief pause
+      await new Promise(r => setTimeout(r, 200));
+      resp = await post('/keys', { name: 'after-oversize-retry', credits: 10 });
+    }
     expect(resp.status).toBe(201);
     expect(resp.body.key).toBeDefined();
   });

@@ -66,6 +66,8 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
 - **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 130+ endpoints documented
+- **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
+- **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
 - **Key Rotation** — Rotate API keys without losing credits, ACLs, or quotas
 - **Rate Limit Headers** — `X-RateLimit-*` and `X-Credits-Remaining` on every `/mcp` response
@@ -444,6 +446,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
 | `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 130+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
+| `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/metrics` | GET | None | Prometheus metrics (counters, gauges, uptime) |
 | `/analytics` | GET | `X-Admin-Key` | Usage analytics (time-series, tool breakdown, trends) |
 | `/alerts` | GET | `X-Admin-Key` | Consume pending alerts |

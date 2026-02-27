@@ -576,6 +576,13 @@ function discoveryPaths() {
         responses: { 200: jsonResponse('Server identity') },
       },
     },
+    '/robots.txt': {
+      get: {
+        tags: ['Discovery'], summary: 'Crawler directives',
+        description: 'Standard robots.txt — allows public discovery endpoints, disallows admin/key paths.',
+        responses: { 200: { description: 'Robots.txt', content: { 'text/plain': {} } } },
+      },
+    },
   };
 }
 
