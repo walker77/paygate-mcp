@@ -907,6 +907,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/error-trends':
+        if (req.method === 'GET') return this.handleErrorTrends(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1500,6 +1505,7 @@ export class PayGateServer {
         capacityPlanning: 'GET /admin/capacity — Capacity planning with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations (requires X-Admin-Key)',
         dependencyMap: 'GET /admin/dependencies — Tool-to-key dependency map with tool usage popularity, unique key counts, per-key tool lists, and used/unused tool identification (requires X-Admin-Key)',
         latencyAnalysis: 'GET /admin/latency — Per-tool response time metrics with avg/p95/min/max, slowest tools ranking, and per-key latency breakdown (requires X-Admin-Key)',
+        errorTrends: 'GET /admin/error-trends — Denial rate trends with per-tool error rates, denial reason breakdown, and trend direction (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6631,6 +6637,80 @@ export class PayGateServer {
       byTool,
       slowestTools,
       byKey,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/error-trends — Error Rate Trends ─────────────────────────────
+
+  private handleErrorTrends(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const entries = this.requestLog;
+
+    if (entries.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        summary: { totalCalls: 0, totalDenials: 0, overallErrorRate: 0, trend: 'stable' },
+        byTool: [],
+        denialReasons: [],
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const totalCalls = entries.length;
+    const denied = entries.filter(e => e.status === 'denied');
+    const totalDenials = denied.length;
+    const overallErrorRate = Math.round((totalDenials / totalCalls) * 10000) / 100; // 2 decimal places
+
+    // ── Trend direction: compare first half vs second half error rates ──
+    let trend: 'improving' | 'degrading' | 'stable' = 'stable';
+    if (entries.length >= 4) {
+      const mid = Math.floor(entries.length / 2);
+      const firstHalf = entries.slice(0, mid);
+      const secondHalf = entries.slice(mid);
+      const firstRate = firstHalf.filter(e => e.status === 'denied').length / firstHalf.length;
+      const secondRate = secondHalf.filter(e => e.status === 'denied').length / secondHalf.length;
+      const diff = secondRate - firstRate;
+      if (diff > 0.05) trend = 'degrading';
+      else if (diff < -0.05) trend = 'improving';
+    }
+
+    // ── Per-tool breakdown ──
+    const toolMap = new Map<string, { total: number; denied: number }>();
+    for (const e of entries) {
+      if (!toolMap.has(e.tool)) toolMap.set(e.tool, { total: 0, denied: 0 });
+      const t = toolMap.get(e.tool)!;
+      t.total++;
+      if (e.status === 'denied') t.denied++;
+    }
+
+    const byTool = Array.from(toolMap.entries())
+      .map(([tool, stats]) => ({
+        tool,
+        totalCalls: stats.total,
+        denials: stats.denied,
+        errorRate: Math.round((stats.denied / stats.total) * 10000) / 100,
+      }))
+      .sort((a, b) => b.errorRate - a.errorRate);
+
+    // ── Denial reasons breakdown ──
+    const reasonMap = new Map<string, number>();
+    for (const e of denied) {
+      const reason = e.denyReason || 'unknown';
+      reasonMap.set(reason, (reasonMap.get(reason) || 0) + 1);
+    }
+
+    const denialReasons = Array.from(reasonMap.entries())
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: { totalCalls, totalDenials, overallErrorRate, trend },
+      byTool,
+      denialReasons,
       generatedAt: new Date().toISOString(),
     }));
   }

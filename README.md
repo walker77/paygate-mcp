@@ -125,6 +125,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Capacity Planning** — `GET /admin/capacity` system capacity analysis with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations
 - **Key Dependency Map** — `GET /admin/dependencies` tool-to-key relationship map with tool usage popularity, unique key counts per tool, per-key tool lists, and used/unused tool identification
 - **Tool Latency Analysis** — `GET /admin/latency` per-tool response time metrics with avg/p95/min/max durations, slowest tools ranking, and per-key latency breakdown
+- **Error Rate Trends** — `GET /admin/error-trends` denial rate trends with per-tool error rates, denial reason breakdown, worst-performing tools, and trend direction
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2892,6 +2893,29 @@ curl http://localhost:3000/admin/latency -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Per-tool response time metrics: average, p95, min, and max durations for each tool sorted by slowest average first, top 10 slowest tools ranking, per-key latency breakdown, and global summary. Only counts successful (allowed) calls. Read-only.
+
+### Error Rate Trends
+
+```bash
+curl http://localhost:3000/admin/error-trends -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalCalls": 500, "totalDenials": 45, "overallErrorRate": 9, "trend": "improving" },
+  "byTool": [
+    { "tool": "translate", "totalCalls": 200, "denials": 30, "errorRate": 15 },
+    { "tool": "search", "totalCalls": 300, "denials": 15, "errorRate": 5 }
+  ],
+  "denialReasons": [
+    { "reason": "insufficient_credits", "count": 30 },
+    { "reason": "rate_limited", "count": 15 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Denial rate trends: overall error rate, per-tool error rates sorted by worst-performing, denial reason breakdown, and trend direction (improving/degrading/stable based on first-half vs second-half comparison). Read-only.
 
 ### IP Allowlisting
 
