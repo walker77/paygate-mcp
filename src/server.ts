@@ -822,6 +822,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/dashboard':
+        if (req.method === 'GET') return this.handleSystemDashboard(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1398,6 +1403,7 @@ export class PayGateServer {
         toolAvailability: 'GET /tools/available?key=... — Per-key tool availability with pricing, affordability, and rate limit status (requires X-Admin-Key)',
         keyDashboard: 'GET /keys/dashboard?key=... — Consolidated key overview with metadata, balance, health, velocity, rate limits, quotas, and recent activity (requires X-Admin-Key)',
         adminNotifications: 'GET /admin/notifications — Actionable notifications for expiring keys, low credits, high error rates, and rate limit pressure (requires X-Admin-Key)',
+        systemDashboard: 'GET /admin/dashboard — System-wide overview with key stats, credit summary, usage breakdown, top consumers, and uptime (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4800,6 +4806,116 @@ export class PayGateServer {
       warning: filtered.filter(n => n.severity === 'warning').length,
       info: filtered.filter(n => n.severity === 'info').length,
       notifications: filtered,
+    }));
+  }
+
+  // ─── /admin/dashboard — System-wide overview ──────────────────────────────
+
+  private handleSystemDashboard(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const now = Date.now();
+
+    // ── Key statistics ──
+    let activeCount = 0;
+    let suspendedCount = 0;
+    let revokedCount = 0;
+    let expiredCount = 0;
+    let totalAllocated = 0;
+    let totalSpent = 0;
+    let totalRemaining = 0;
+
+    for (const record of allRecords) {
+      totalAllocated += record.credits + (record.totalSpent || 0);
+      totalSpent += record.totalSpent || 0;
+      totalRemaining += record.credits;
+
+      if (!record.active) {
+        revokedCount++;
+      } else if (record.expiresAt && new Date(record.expiresAt).getTime() <= now) {
+        expiredCount++;
+      } else if (record.suspended) {
+        suspendedCount++;
+      } else {
+        activeCount++;
+      }
+    }
+
+    // ── Usage summary ──
+    const usageSummary = this.gate.meter.getSummary();
+
+    // ── Top consumers (by credits spent) ──
+    const perKeyEntries = Object.entries(usageSummary.perKey)
+      .map(([name, stats]) => ({ name, ...stats }))
+      .sort((a, b) => b.credits - a.credits)
+      .slice(0, 10);
+
+    // ── Top tools (by call count) ──
+    const perToolEntries = Object.entries(usageSummary.perTool)
+      .map(([tool, stats]) => ({ tool, ...stats }))
+      .sort((a, b) => b.calls - a.calls)
+      .slice(0, 10);
+
+    // ── Deny reason breakdown ──
+    const denyReasons = Object.entries(usageSummary.denyReasons)
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count);
+
+    // ── Uptime ──
+    const uptimeMs = now - this.startedAt;
+    const uptimeSeconds = Math.floor(uptimeMs / 1000);
+    const uptimeHours = Math.round(uptimeMs / 3_600_000 * 10) / 10;
+
+    // ── Notification summary (counts only) ──
+    const notifRecords = allRecords.filter(r => r.active);
+    let criticalCount = 0;
+    let warningCount = 0;
+    let infoCount = 0;
+    for (const record of notifRecords) {
+      if (record.expiresAt) {
+        const msToExpiry = new Date(record.expiresAt).getTime() - now;
+        if (msToExpiry <= 0) criticalCount++;
+        else if (msToExpiry <= 24 * 3_600_000) criticalCount++;
+        else if (msToExpiry <= 168 * 3_600_000) warningCount++;
+      }
+      if (record.credits <= 0) criticalCount++;
+      if (record.suspended) infoCount++;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      keys: {
+        total: allRecords.length,
+        active: activeCount,
+        suspended: suspendedCount,
+        revoked: revokedCount,
+        expired: expiredCount,
+      },
+      credits: {
+        totalAllocated,
+        totalSpent,
+        totalRemaining,
+      },
+      usage: {
+        totalCalls: usageSummary.totalCalls,
+        totalAllowed: usageSummary.totalCalls - usageSummary.totalDenied,
+        totalDenied: usageSummary.totalDenied,
+        totalCreditsSpent: usageSummary.totalCreditsSpent,
+        denyReasons,
+      },
+      topConsumers: perKeyEntries,
+      topTools: perToolEntries,
+      notifications: {
+        critical: criticalCount,
+        warning: warningCount,
+        info: infoCount,
+      },
+      uptime: {
+        startedAt: new Date(this.startedAt).toISOString(),
+        uptimeSeconds,
+        uptimeHours,
+      },
     }));
   }
 

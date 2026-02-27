@@ -108,6 +108,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Availability** — `GET /tools/available?key=...` returns per-key tool availability with pricing, affordability (canAfford), ACL enforcement (accessible/denyReason), and per-tool + global rate limit status
 - **Key Dashboard** — `GET /keys/dashboard?key=...` consolidated single-endpoint view with metadata, balance, health score, spending velocity, rate limits, quotas, usage summary, and recent activity timeline
 - **Admin Notifications** — `GET /admin/notifications` scans all keys for actionable issues: expired/expiring keys, zero credits, credit depletion velocity, suspended keys, high error rates, and rate limit pressure — with severity filtering and priority sorting
+- **System Dashboard** — `GET /admin/dashboard` system-wide overview with key counts (active/suspended/revoked/expired), credit summary (allocated/spent/remaining), usage breakdown with deny reasons, top consumers, top tools, notification counts, and uptime
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2428,6 +2429,43 @@ curl "http://localhost:3402/admin/notifications?severity=critical" \
 - `rate_limit_pressure` (warning ≥90%) — Rate limit nearly exhausted
 
 Notifications are sorted by severity (critical first). Revoked keys are excluded. A single key can appear in multiple notifications (e.g., zero credits AND expiring soon). Filter with `?severity=critical|warning|info`. Read-only.
+
+### System Dashboard
+
+Get a system-wide overview in a single request:
+
+```bash
+curl http://localhost:3402/admin/dashboard \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "keys": { "total": 15, "active": 10, "suspended": 2, "revoked": 2, "expired": 1 },
+  "credits": { "totalAllocated": 15000, "totalSpent": 4200, "totalRemaining": 10800 },
+  "usage": {
+    "totalCalls": 840,
+    "totalAllowed": 790,
+    "totalDenied": 50,
+    "totalCreditsSpent": 4200,
+    "denyReasons": [{ "reason": "insufficient_credits", "count": 30 }, { "reason": "rate_limited", "count": 20 }]
+  },
+  "topConsumers": [
+    { "name": "production-agent", "calls": 320, "credits": 1600, "denied": 5 },
+    { "name": "batch-worker", "calls": 210, "credits": 1050, "denied": 0 }
+  ],
+  "topTools": [
+    { "tool": "search", "calls": 450, "credits": 2250, "denied": 20 },
+    { "tool": "generate", "calls": 300, "credits": 1500, "denied": 10 }
+  ],
+  "notifications": { "critical": 2, "warning": 3, "info": 2 },
+  "uptime": { "startedAt": "2026-02-27T00:00:00.000Z", "uptimeSeconds": 86400, "uptimeHours": 24 }
+}
+```
+
+Combines key counts by state, credit allocation and spending totals, usage breakdown with deny reasons, top 10 consumers ranked by credits spent, top 10 tools ranked by call count, notification severity counts, and server uptime. Read-only.
 
 ### IP Allowlisting
 
