@@ -147,6 +147,8 @@ export interface PayGateConfig {
   maxConnections?: number;
   /** Admin endpoint rate limit per IP (requests/min). 0 = unlimited. Default: 120. */
   adminRateLimit?: number;
+  /** Session creation rate limit per IP (sessions/min). 0 = unlimited. Default: 60. */
+  sessionRateLimit?: number;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────

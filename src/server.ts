@@ -146,6 +146,18 @@ function sanitizeString(value: string | undefined | null, maxLen = MAX_STRING_FI
   return String(value).slice(0, maxLen);
 }
 
+/**
+ * Sanitize a request URL for safe inclusion in log output.
+ * Strips control characters (newlines, tabs, carriage returns, etc.) that could
+ * be used for log injection attacks (forging log entries, hiding malicious activity).
+ * Truncates to 2048 chars to prevent log bloat from absurdly long URLs.
+ */
+function sanitizeLogUrl(url: string | undefined): string {
+  if (!url) return '/';
+  // eslint-disable-next-line no-control-regex
+  return url.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 2048);
+}
+
 /** Clamp a numeric value to [min, max], returning defaultVal for NaN/undefined. */
 function clampInt(value: number | undefined, min: number, max: number, defaultVal?: number): number {
   if (value === undefined || !Number.isFinite(value)) return defaultVal ?? min;
@@ -295,6 +307,8 @@ export class PayGateServer {
   readonly creditLedger: CreditLedger;
   /** Rate limiter for admin API endpoints (brute-force protection) */
   private readonly adminRateLimiter: RateLimiter;
+  /** Rate limiter for session creation (prevents session slot exhaustion) */
+  private readonly sessionRateLimiter: RateLimiter;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -383,6 +397,8 @@ export class PayGateServer {
 
     // Admin endpoint rate limiter: configurable requests/min per source IP (brute-force protection)
     this.adminRateLimiter = new RateLimiter(this.config.adminRateLimit ?? 120);
+    // Session creation rate limiter: max 60 new sessions/min per IP (prevents session slot exhaustion)
+    this.sessionRateLimiter = new RateLimiter(this.config.sessionRateLimit ?? 60);
 
     this.gate = new Gate(this.config, statePath);
     this.gate.store.logger = this.logger;
@@ -640,7 +656,7 @@ export class PayGateServer {
           } else if (msg.includes('timeout')) {
             this.sendError(res, 408, 'Request timeout');
           } else {
-            this.logger.error('Unhandled request error', { error: msg, url: req.url, method: req.method });
+            this.logger.error('Unhandled request error', { error: msg, url: sanitizeLogUrl(req.url), method: req.method });
             this.sendError(res, 500, 'Internal server error');
           }
         }
@@ -1394,6 +1410,15 @@ export class PayGateServer {
     // Session management: reuse or create
     let sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !this.sessions.getSession(sessionId)) {
+      // Rate limit session creation per IP to prevent session slot exhaustion
+      const sessionIp = resolveClientIp(req, this.config.trustedProxies);
+      const sessionRateResult = this.sessionRateLimiter.check(`sess:${sessionIp}`);
+      if (!sessionRateResult.allowed) {
+        res.setHeader('Retry-After', String(Math.ceil(sessionRateResult.resetInMs / 1000)));
+        this.sendError(res, 429, 'Too many sessions created. Try again later.');
+        return;
+      }
+      this.sessionRateLimiter.record(`sess:${sessionIp}`);
       sessionId = this.sessions.createSession(apiKey);
       this.audit.log('session.created', maskKeyForAudit(apiKey || 'anonymous'), `Session created`, {
         requestId,
@@ -1626,6 +1651,15 @@ export class PayGateServer {
     // Session: reuse or create
     let sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !this.sessions.getSession(sessionId)) {
+      // Rate limit session creation per IP to prevent session slot exhaustion
+      const sessionIp = resolveClientIp(req, this.config.trustedProxies);
+      const sessionRateResult = this.sessionRateLimiter.check(`sess:${sessionIp}`);
+      if (!sessionRateResult.allowed) {
+        res.setHeader('Retry-After', String(Math.ceil(sessionRateResult.resetInMs / 1000)));
+        this.sendError(res, 429, 'Too many sessions created. Try again later.');
+        return;
+      }
+      this.sessionRateLimiter.record(`sess:${sessionIp}`);
       sessionId = this.sessions.createSession(apiKey);
     }
 
@@ -1959,6 +1993,16 @@ export class PayGateServer {
     const namespace = params.get('namespace') || undefined;
 
     const status = this.gate.getStatus(namespace);
+
+    // Cap the keys array to prevent unbounded response sizes with many API keys.
+    // The full paginated listing is available via GET /admin/keys.
+    const MAX_STATUS_KEYS = 1000;
+    if (status.keys && status.keys.length > MAX_STATUS_KEYS) {
+      const totalKeys = status.keys.length;
+      status.keys = status.keys.slice(0, MAX_STATUS_KEYS);
+      (status as any).keysTruncated = true;
+      (status as any).totalKeyCount = totalKeys;
+    }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status, null, 2));
@@ -4774,7 +4818,10 @@ export class PayGateServer {
     const from = params.get('from') || undefined;
     const to = params.get('to') || undefined;
     const granularity = (params.get('granularity') || 'hourly') as 'hourly' | 'daily';
-    const topN = params.get('top') ? parseInt(params.get('top')!, 10) : 10;
+    const topN = clampInt(
+      params.get('top') ? parseInt(params.get('top')!, 10) : undefined,
+      1, 1000, 10 // default 10, max 1000 — prevents memory exhaustion from ?top=999999999
+    );
     const namespace = params.get('namespace') || undefined;
 
     const events = this.gate.meter.getEvents(undefined, namespace);
@@ -11133,8 +11180,8 @@ export class PayGateServer {
     const record = adminKey ? this.adminKeys.validate(adminKey) : null;
 
     if (!record) {
-      this.audit.log('admin.auth_failed', 'unknown', `Admin auth failed on ${req.url}`, {
-        url: req.url,
+      this.audit.log('admin.auth_failed', 'unknown', `Admin auth failed on ${sanitizeLogUrl(req.url)}`, {
+        url: sanitizeLogUrl(req.url),
         method: req.method,
       });
       this.sendError(res, 401, 'Invalid admin key');
@@ -11144,8 +11191,8 @@ export class PayGateServer {
     // Role-based permission check (if a minimum role is specified)
     if (minRole && ROLE_HIERARCHY[record.role] < ROLE_HIERARCHY[minRole]) {
       this.audit.log('admin.auth_failed', adminKey.slice(0, 7) + '...' + adminKey.slice(-4),
-        `Insufficient role for ${req.url} (need ${minRole}, have ${record.role})`, {
-        url: req.url,
+        `Insufficient role for ${sanitizeLogUrl(req.url)} (need ${minRole}, have ${record.role})`, {
+        url: sanitizeLogUrl(req.url),
         method: req.method,
         requiredRole: minRole,
         currentRole: record.role,
@@ -12257,6 +12304,7 @@ export class PayGateServer {
     this.tokens.destroy();
     this.expiryScanner.destroy();
     this.adminRateLimiter.destroy();
+    this.sessionRateLimiter.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }

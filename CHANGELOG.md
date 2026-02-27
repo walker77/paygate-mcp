@@ -1,5 +1,26 @@
 # Changelog
 
+## 8.93.0 (2026-02-27)
+
+### Response & Logging Hardening
+- **Log injection prevention**: Added `sanitizeLogUrl()` utility — strips control characters (newlines, tabs, carriage returns) from request URLs before logging
+  - Prevents forged log entries, hidden malicious activity, and SIEM evasion via `\r\n` injection
+  - Applied to all 3 locations that log `req.url`: unhandled error handler, admin auth failure audit, insufficient role audit
+  - URLs truncated to 2048 chars to prevent log bloat
+- **Status response capping**: `/status` endpoint now caps the `keys` array at 1000 entries
+  - Adds `keysTruncated: true` and `totalKeyCount` when capped
+  - Prevents multi-MB responses with thousands of API keys; use paginated `GET /admin/keys` for full listing
+- **Analytics topN capping**: `?top=` query parameter clamped to [1, 1000] (default 10)
+  - Prevents memory exhaustion from `?top=999999999` — previously unbounded
+- **Session creation rate limiting**: New per-IP rate limiter on MCP session creation (default: 60 sessions/min)
+  - Prevents attackers from exhausting the 1000-session slot pool via rapid unauthenticated requests
+  - Returns 429 with `Retry-After` header when limit exceeded
+  - Existing sessions unaffected — rate limit only applies to new session creation
+  - Configurable via `sessionRateLimit` config option
+- 12 new tests covering log injection, status capping, topN clamping, and session rate limiting
+
+---
+
 ## 8.92.0 (2026-02-27)
 
 ### Request-Level Hardening
