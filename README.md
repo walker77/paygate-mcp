@@ -111,6 +111,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **System Dashboard** — `GET /admin/dashboard` system-wide overview with key counts (active/suspended/revoked/expired), credit summary (allocated/spent/remaining), usage breakdown with deny reasons, top consumers, top tools, notification counts, and uptime
 - **Key Lifecycle Report** — `GET /admin/lifecycle` aggregated lifecycle trends with daily creation/revocation/suspension buckets, average key lifetime, and at-risk keys (expiring, expired, zero credits)
 - **Cost Analysis** — `GET /admin/costs` cost-centric view with per-tool and per-namespace cost breakdowns, hourly spending trends, top spenders, average cost per call, and namespace filtering
+- **Rate Limit Analysis** — `GET /admin/rate-limits` rate limit utilization analysis with per-key and per-tool breakdown, denial trends, most throttled keys, and current window utilization
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2550,6 +2551,46 @@ curl "http://localhost:3402/admin/costs?since=2026-02-01" \
 ```
 
 Returns per-tool cost breakdown (with average cost per call), per-namespace spending, hourly trend buckets (last 24 hours), and top 10 spenders ranked by credits consumed. Supports `?since=` and `?namespace=` query filters. Keys without an explicit namespace appear under `default`. Read-only.
+
+### Rate Limit Analysis
+
+Analyze rate limit utilization across keys and tools:
+
+```bash
+curl http://localhost:3402/admin/rate-limits \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "config": {
+    "globalLimitPerMin": 60,
+    "windowMs": 60000
+  },
+  "summary": {
+    "totalCalls": 450,
+    "totalRateLimited": 12,
+    "rateLimitRate": 0.0267
+  },
+  "perKey": [
+    { "name": "ml-pipeline", "calls": 200, "rateLimited": 8, "currentWindowUsed": 45, "currentWindowRemaining": 15 },
+    { "name": "batch-worker", "calls": 150, "rateLimited": 4, "currentWindowUsed": 12, "currentWindowRemaining": 48 }
+  ],
+  "perTool": [
+    { "tool": "generate_report", "calls": 180, "rateLimited": 10 },
+    { "tool": "query_data", "calls": 270, "rateLimited": 2 }
+  ],
+  "hourlyTrends": [
+    { "hour": "2026-02-26T14", "calls": 52, "rateLimited": 3 },
+    { "hour": "2026-02-26T15", "calls": 48, "rateLimited": 1 }
+  ],
+  "mostThrottled": [
+    { "name": "ml-pipeline", "rateLimited": 8, "calls": 200, "throttleRate": 0.04 }
+  ]
+}
+```
+
+Returns rate limit configuration, denial summary with throttle rate, per-key breakdown with current sliding window utilization, per-tool denial counts, hourly denial trends (last 24 hours), and top 10 most throttled keys ranked by denial count. Handles unlimited rate limits (globalLimitPerMin: 0). Read-only.
 
 ### IP Allowlisting
 

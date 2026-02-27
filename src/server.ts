@@ -837,6 +837,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/rate-limits':
+        if (req.method === 'GET') return this.handleRateLimitAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1416,6 +1421,7 @@ export class PayGateServer {
         systemDashboard: 'GET /admin/dashboard — System-wide overview with key stats, credit summary, usage breakdown, top consumers, and uptime (requires X-Admin-Key)',
         keyLifecycle: 'GET /admin/lifecycle — Key lifecycle report with creation/revocation/expiry trends, average lifetime, and at-risk keys (requires X-Admin-Key)',
         costAnalysis: 'GET /admin/costs — Cost analysis with per-tool, per-namespace breakdown, hourly trends, and top spenders (requires X-Admin-Key)',
+        rateLimitAnalysis: 'GET /admin/rate-limits — Rate limit utilization analysis with per-key and per-tool breakdown, denial trends, and most throttled keys (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5150,6 +5156,121 @@ export class PayGateServer {
       perNamespace,
       hourlyTrends,
       topSpenders,
+    }));
+  }
+
+  // ─── /admin/rate-limits — Rate limit utilization analysis ───────────────
+
+  private handleRateLimitAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const rateLimiter = this.gate.rateLimiter;
+    const globalLimit = rateLimiter.globalLimit;
+
+    // Get all usage events to analyze rate limit denials
+    const events = this.gate.meter.getEvents();
+
+    // ── Summary ──
+    let totalCalls = 0;
+    let totalRateLimited = 0;
+    for (const e of events) {
+      totalCalls++;
+      if (!e.allowed && e.denyReason?.includes('rate_limited')) {
+        totalRateLimited++;
+      }
+    }
+    const rateLimitRate = totalCalls > 0
+      ? Math.round(totalRateLimited / totalCalls * 10000) / 10000
+      : 0;
+
+    // ── Per-key breakdown ──
+    // Build a name→fullKey map from the key store for rate limiter status lookups
+    const allRecords = this.gate.store.getAllRecords();
+    const nameToFullKey = new Map<string, string>();
+    for (const rec of allRecords) {
+      nameToFullKey.set(rec.name, rec.key);
+    }
+
+    const keyMap = new Map<string, { name: string; calls: number; rateLimited: number }>();
+    for (const e of events) {
+      const name = e.keyName || e.apiKey.slice(0, 10);
+      if (!keyMap.has(name)) keyMap.set(name, { name, calls: 0, rateLimited: 0 });
+      const k = keyMap.get(name)!;
+      k.calls++;
+      if (!e.allowed && e.denyReason?.includes('rate_limited')) {
+        k.rateLimited++;
+      }
+    }
+    // Add current window utilization using full key from store
+    const perKey = Array.from(keyMap.values()).map(k => {
+      const fullKey = nameToFullKey.get(k.name) || '';
+      const status = fullKey ? rateLimiter.getStatus(fullKey) : { used: 0, remaining: globalLimit > 0 ? globalLimit : Infinity };
+      return {
+        name: k.name,
+        calls: k.calls,
+        rateLimited: k.rateLimited,
+        currentWindowUsed: status.used,
+        currentWindowRemaining: status.remaining,
+      };
+    }).sort((a, b) => b.calls - a.calls);
+
+    // ── Per-tool breakdown ──
+    const toolMap = new Map<string, { calls: number; rateLimited: number }>();
+    for (const e of events) {
+      if (!toolMap.has(e.tool)) toolMap.set(e.tool, { calls: 0, rateLimited: 0 });
+      const t = toolMap.get(e.tool)!;
+      t.calls++;
+      if (!e.allowed && e.denyReason?.includes('rate_limited')) {
+        t.rateLimited++;
+      }
+    }
+    const perTool = Array.from(toolMap.entries())
+      .map(([tool, stats]) => ({ tool, ...stats }))
+      .sort((a, b) => b.rateLimited - a.rateLimited);
+
+    // ── Hourly trends (rate limit denials) ──
+    const hourBuckets = new Map<string, { calls: number; rateLimited: number }>();
+    for (const e of events) {
+      const hour = e.timestamp.slice(0, 13); // YYYY-MM-DDTHH
+      if (!hourBuckets.has(hour)) hourBuckets.set(hour, { calls: 0, rateLimited: 0 });
+      const h = hourBuckets.get(hour)!;
+      h.calls++;
+      if (!e.allowed && e.denyReason?.includes('rate_limited')) {
+        h.rateLimited++;
+      }
+    }
+    const hourlyTrends = Array.from(hourBuckets.entries())
+      .map(([hour, stats]) => ({ hour, ...stats }))
+      .sort((a, b) => a.hour.localeCompare(b.hour))
+      .slice(-24);
+
+    // ── Most throttled keys (by rate limit denials) ──
+    const mostThrottled = Array.from(keyMap.values())
+      .filter(k => k.rateLimited > 0)
+      .map(k => ({
+        name: k.name,
+        rateLimited: k.rateLimited,
+        calls: k.calls,
+        throttleRate: Math.round(k.rateLimited / k.calls * 10000) / 10000,
+      }))
+      .sort((a, b) => b.rateLimited - a.rateLimited)
+      .slice(0, 10);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      config: {
+        globalLimitPerMin: globalLimit,
+        windowMs: 60000,
+      },
+      summary: {
+        totalCalls,
+        totalRateLimited,
+        rateLimitRate,
+      },
+      perKey,
+      perTool,
+      hourlyTrends,
+      mostThrottled,
     }));
   }
 
