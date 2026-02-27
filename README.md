@@ -164,6 +164,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Consumer Risk Score** — `GET /admin/consumer-risk-score` per-consumer risk scoring based on utilization with risk levels (low/medium/high/critical)
 - **Revenue Forecast** — `GET /admin/revenue-forecast` projected revenue with hourly/daily/weekly/monthly forecasts capped by remaining credits
+- **Group Activity** — `GET /admin/group-activity` per-group activity metrics with key counts, spend, calls, credits remaining for policy-template analytics
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3775,6 +3776,25 @@ curl http://localhost:3000/admin/revenue-forecast -H "X-Admin-Key: YOUR_ADMIN_KE
 ```
 
 Projected revenue based on current spend trends. Forecasts for next hour, day, week, and month are extrapolated from aggregate credits/hour rate and capped by total remaining credits. Includes current totals and active key count. Zero-spend systems show zero forecasts. Excludes revoked/suspended keys. Read-only.
+
+### Group Activity
+
+```bash
+curl http://localhost:3000/admin/group-activity -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "groups": [
+    { "group": "production", "keyCount": 5, "totalSpent": 2500, "totalCalls": 180, "creditsRemaining": 7500 },
+    { "group": "staging", "keyCount": 3, "totalSpent": 400, "totalCalls": 45, "creditsRemaining": 2600 }
+  ],
+  "summary": { "totalGroups": 2, "topGroup": "production" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Activity breakdown by key group. Per-group: key count, total spent, total calls, credits remaining. Ungrouped keys appear under `"ungrouped"`. Group IDs are resolved to human-readable group names. Sorted by totalSpent descending. Summary includes group count and top-spending group. Excludes revoked/suspended keys. Read-only.
 
 ### IP Allowlisting
 
