@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.77.0 (2026-02-27)
+
+### Timing-Safe Admin Key Authentication
+- **Constant-time admin key comparison** — `AdminKeyManager.validate()` now uses `crypto.timingSafeEqual()` to prevent timing attacks that could enumerate valid admin key prefixes
+- Always iterates ALL stored keys (no early exit) to prevent timing leaks from Map.get() hit/miss differences
+- Handles different-length keys with consistent-time padded comparison
+- Aligns with existing timing-safe patterns in stripe webhook signature verification and scoped token validation
+- 13 new tests (correct/incorrect/empty/partial/extended key validation, multi-key validation, revoked key rejection, lastUsedAt updates, HTTP integration, concurrent auth)
+
+---
+
 ## 8.76.0 (2026-02-27)
 
 ### Persistence & Error Response Safety

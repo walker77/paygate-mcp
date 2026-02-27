@@ -10,7 +10,7 @@
  * Supports file-based persistence (separate file from API key state).
  */
 
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { dirname } from 'path';
 
@@ -111,15 +111,41 @@ export class AdminKeyManager {
   // ─── Validation ──────────────────────────────────────────────────────────
 
   /**
-   * Validate an admin key. Returns the record if valid, null otherwise.
+   * Validate an admin key using constant-time comparison.
+   * Returns the record if valid, null otherwise.
    * Updates lastUsedAt on successful validation.
+   *
+   * Uses timingSafeEqual to prevent timing attacks that could
+   * enumerate valid admin key prefixes through response time analysis.
    */
   validate(key: string): AdminKeyRecord | null {
     if (!key) return null;
-    const record = this.keys.get(key);
-    if (!record || !record.active) return null;
-    record.lastUsedAt = new Date().toISOString();
-    return record;
+
+    const keyBuffer = Buffer.from(key, 'utf-8');
+    let match: AdminKeyRecord | null = null;
+
+    // Always iterate ALL keys to prevent timing leaks from early exit
+    for (const [storedKey, record] of this.keys) {
+      const storedBuffer = Buffer.from(storedKey, 'utf-8');
+      // timingSafeEqual requires equal-length buffers; pad shorter one
+      if (keyBuffer.length === storedBuffer.length) {
+        if (timingSafeEqual(keyBuffer, storedBuffer) && record.active) {
+          match = record;
+        }
+      } else {
+        // Different lengths — still do a comparison to keep timing consistent
+        const padded = Buffer.alloc(Math.max(keyBuffer.length, storedBuffer.length));
+        const paddedKey = Buffer.alloc(padded.length);
+        keyBuffer.copy(paddedKey);
+        storedBuffer.copy(padded);
+        timingSafeEqual(paddedKey, padded); // Result discarded — lengths differ, so never a match
+      }
+    }
+
+    if (match) {
+      match.lastUsedAt = new Date().toISOString();
+    }
+    return match;
   }
 
   /**
