@@ -58,6 +58,60 @@ import { KeyTemplateManager } from './key-templates';
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
 
+/**
+ * Validate an HTTP header name: RFC 7230 §3.2 token rule.
+ * Must consist of printable ASCII characters (0x21-0x7E) excluding delimiters.
+ */
+const VALID_HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * Validate an HTTP header value: no CR, LF, or NUL bytes (prevents header injection / response splitting).
+ * Allows all other printable characters plus tabs (RFC 7230 §3.2.6).
+ */
+const HEADER_INJECTION_RE = /[\r\n\0]/;
+
+/**
+ * Sanitize custom response headers — strips entries with invalid names or values
+ * to prevent HTTP header injection (CRLF injection / response splitting).
+ */
+function sanitizeCustomHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const clean: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value !== 'string') continue;
+    if (!VALID_HEADER_NAME_RE.test(name)) continue;
+    if (HEADER_INJECTION_RE.test(value)) continue;
+    // Cap header value length to 8 KB (prevent memory abuse via huge header values)
+    clean[name] = value.slice(0, 8192);
+  }
+  return Object.keys(clean).length > 0 ? clean : undefined;
+}
+
+/**
+ * OAuth state parameter max length — prevents injection of huge payloads into redirect URLs.
+ * RFC 6749 §4.1.1 recommends opaque strings; most implementations use < 256 chars.
+ */
+const MAX_OAUTH_STATE_LENGTH = 512;
+
+/**
+ * OAuth error_description max length in redirect URLs.
+ * Prevents bloated redirect URIs that could cause issues with browsers/proxies.
+ */
+const MAX_OAUTH_ERROR_DESC_LENGTH = 256;
+
+/**
+ * Validate OAuth state parameter: printable ASCII, no control chars, capped length.
+ * Returns sanitized state or undefined if invalid/absent.
+ */
+function sanitizeOAuthState(state: string | undefined): string | undefined {
+  if (!state || typeof state !== 'string') return undefined;
+  // Cap length
+  const trimmed = state.slice(0, MAX_OAUTH_STATE_LENGTH);
+  // Reject if it contains control characters (0x00-0x1F, 0x7F) — only printable ASCII + high bytes allowed
+  if (/[\x00-\x1f\x7f]/.test(trimmed)) return undefined;
+  return trimmed;
+}
+
 /** Dangerous property names that enable prototype pollution attacks. */
 const PROTO_POISON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -361,8 +415,12 @@ export class PayGateServer {
   }> = [];
   /** Next request log entry ID */
   private nextRequestLogId = 1;
-  /** Max request log entries (ring buffer) */
+  /** Max request log entries (ring buffer). Capped at 50,000 to prevent memory exhaustion. */
   private readonly maxRequestLogEntries = 5000;
+  /** Absolute upper bound for maxRequestLogEntries (prevents config-driven memory abuse). */
+  private static readonly MAX_REQUEST_LOG_CAP = 50_000;
+  /** Max length for string fields stored in request log entries. */
+  private static readonly REQUEST_LOG_STRING_CAP = 200;
   /** Number of in-flight /mcp requests */
   private inflight = 0;
   /** Config file path for hot reload (null if not using config file) */
@@ -383,6 +441,8 @@ export class PayGateServer {
     redisUrl?: string,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    // Sanitize custom headers at config time (strip CRLF injection, invalid names)
+    this.config.customHeaders = sanitizeCustomHeaders(this.config.customHeaders);
     this.logger = new Logger({
       level: parseLogLevel(this.config.logLevel),
       format: parseLogFormat(this.config.logFormat),
@@ -1599,16 +1659,17 @@ export class PayGateServer {
       const creditsCharged = isError ? 0 : this.gate.getToolPrice(toolName,
         (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined);
 
+      const cap = PayGateServer.REQUEST_LOG_STRING_CAP;
       const logEntry = {
         id: this.nextRequestLogId++,
         timestamp: new Date().toISOString(),
-        tool: toolName,
+        tool: toolName.slice(0, cap),
         key: maskKeyForAudit(apiKey || 'anonymous'),
         status: (isError ? 'denied' : 'allowed') as 'allowed' | 'denied',
         credits: creditsCharged,
         durationMs,
-        ...(denyReason ? { denyReason } : {}),
-        requestId,
+        ...(denyReason ? { denyReason: denyReason.slice(0, cap) } : {}),
+        requestId: requestId ? requestId.slice(0, cap) : undefined,
       };
       this.requestLog.push(logEntry);
       // Enforce ring buffer size
@@ -4603,7 +4664,7 @@ export class PayGateServer {
     const codeChallenge = params.code_challenge;
     const codeChallengeMethod = params.code_challenge_method;
     const scope = params.scope;
-    const state = params.state;
+    const state = sanitizeOAuthState(params.state);
     const responseType = params.response_type;
 
     // Validate required params
@@ -4645,7 +4706,7 @@ export class PayGateServer {
         try {
           const redirectUrl = new URL(redirectUri);
           redirectUrl.searchParams.set('error', 'server_error');
-          redirectUrl.searchParams.set('error_description', safeMsg);
+          redirectUrl.searchParams.set('error_description', safeMsg.slice(0, MAX_OAUTH_ERROR_DESC_LENGTH));
           if (state) redirectUrl.searchParams.set('state', state);
           res.writeHead(302, { Location: redirectUrl.toString() });
           res.end();

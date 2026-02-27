@@ -1,5 +1,28 @@
 # Changelog
 
+## 8.95.0 (2026-02-27)
+
+### Output & Config Hardening
+- **Metrics cardinality cap**: Each metric now limited to 10,000 unique label-set entries
+  - Prevents unbounded memory growth from high-cardinality labels (e.g., unique request IDs)
+  - Existing entries can still be updated; new entries silently dropped once cap is reached
+- **Metrics output size cap**: `serialize()` output capped at 5 MB
+  - Prevents OOM from gigantic /metrics responses when scraping
+  - Output truncated cleanly at metric boundaries
+- **HTTP header injection prevention**: Custom response headers validated at config time
+  - Rejects header names that don't conform to RFC 7230 token rules
+  - Strips values containing CR, LF, or NUL bytes (prevents CRLF injection / response splitting)
+  - Header values capped at 8 KB to prevent memory abuse
+- **OAuth state parameter sanitization**: Validate and sanitize the `state` param in authorization redirects
+  - Cap length to 512 characters (prevents URL bloat)
+  - Strip control characters (0x00-0x1F, 0x7F) to prevent injection
+  - `error_description` in redirect URLs capped at 256 characters
+- **Request log string truncation**: Tool names, deny reasons, and request IDs capped at 200 characters in the request log ring buffer
+  - Prevents memory bloat from crafted oversized tool names or denial reasons
+- 13 new tests covering cardinality caps, header injection, OAuth state sanitization, and log truncation
+
+---
+
 ## 8.94.0 (2026-02-27)
 
 ### Delivery & Request Hardening

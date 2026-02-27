@@ -37,6 +37,12 @@ interface GaugeEntry {
 
 type MetricEntry = CounterEntry | GaugeEntry;
 
+/** Max label-set entries per metric (prevents unbounded cardinality explosion). */
+const MAX_VALUES_PER_METRIC = 10_000;
+
+/** Max serialized output size in bytes (5 MB). */
+const MAX_SERIALIZE_BYTES = 5 * 1024 * 1024;
+
 // ─── MetricsCollector ─────────────────────────────────────────────────────────
 
 export class MetricsCollector {
@@ -76,6 +82,8 @@ export class MetricsCollector {
     const metric = this.metrics.get(name);
     if (!metric || metric.type !== 'counter') return;
     const key = this.serializeLabels(labels);
+    // Only allow new keys if below cardinality cap (existing keys always update)
+    if (!metric.values.has(key) && metric.values.size >= MAX_VALUES_PER_METRIC) return;
     metric.values.set(key, (metric.values.get(key) || 0) + amount);
   }
 
@@ -85,6 +93,8 @@ export class MetricsCollector {
     const metric = this.metrics.get(name);
     if (!metric || metric.type !== 'gauge') return;
     const key = this.serializeLabels(labels);
+    // Only allow new keys if below cardinality cap (existing keys always update)
+    if (!metric.values.has(key) && metric.values.size >= MAX_VALUES_PER_METRIC) return;
     metric.values.set(key, value);
   }
 
@@ -138,37 +148,49 @@ export class MetricsCollector {
    */
   serialize(): string {
     const lines: string[] = [];
+    let byteEstimate = 0;
 
     for (const [name, metric] of this.metrics) {
       // Handle built-in uptime gauge
       if (name === 'paygate_uptime_seconds') {
-        lines.push(`# HELP ${name} ${metric.help}`);
-        lines.push(`# TYPE ${name} gauge`);
-        lines.push(`${name} ${Math.floor((Date.now() - this.startTime) / 1000)}`);
+        const l1 = `# HELP ${name} ${metric.help}`;
+        const l2 = `# TYPE ${name} gauge`;
+        const l3 = `${name} ${Math.floor((Date.now() - this.startTime) / 1000)}`;
+        byteEstimate += l1.length + l2.length + l3.length + 3;
+        if (byteEstimate > MAX_SERIALIZE_BYTES) break;
+        lines.push(l1, l2, l3);
         continue;
       }
 
       // Handle supplier-based gauges
       if (metric.type === 'gauge' && (metric as GaugeEntry).supplier) {
-        lines.push(`# HELP ${name} ${metric.help}`);
-        lines.push(`# TYPE ${name} gauge`);
-        lines.push(`${name} ${(metric as GaugeEntry).supplier!()}`);
+        const l1 = `# HELP ${name} ${metric.help}`;
+        const l2 = `# TYPE ${name} gauge`;
+        const l3 = `${name} ${(metric as GaugeEntry).supplier!()}`;
+        byteEstimate += l1.length + l2.length + l3.length + 3;
+        if (byteEstimate > MAX_SERIALIZE_BYTES) break;
+        lines.push(l1, l2, l3);
         continue;
       }
 
       // Skip metrics with no data
       if (metric.values.size === 0) continue;
 
-      lines.push(`# HELP ${name} ${metric.help}`);
-      lines.push(`# TYPE ${name} ${metric.type}`);
+      const header1 = `# HELP ${name} ${metric.help}`;
+      const header2 = `# TYPE ${name} ${metric.type}`;
+      byteEstimate += header1.length + header2.length + 2;
+      if (byteEstimate > MAX_SERIALIZE_BYTES) break;
+      lines.push(header1, header2);
 
       for (const [labelKey, value] of metric.values) {
-        if (labelKey === '') {
-          lines.push(`${name} ${value}`);
-        } else {
-          lines.push(`${name}{${labelKey}} ${value}`);
-        }
+        const line = labelKey === ''
+          ? `${name} ${value}`
+          : `${name}{${labelKey}} ${value}`;
+        byteEstimate += line.length + 1;
+        if (byteEstimate > MAX_SERIALIZE_BYTES) break;
+        lines.push(line);
       }
+      if (byteEstimate > MAX_SERIALIZE_BYTES) break;
     }
 
     return lines.join('\n') + '\n';
