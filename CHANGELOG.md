@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.76.0 (2026-02-27)
+
+### Persistence & Error Response Safety
+- **Atomic file writes for groups** — `KeyGroupManager.saveToFile()` now uses write-tmp-then-rename pattern (matching store.ts) to prevent corruption on crash
+- **Atomic file writes for admin keys** — `AdminKeyManager.save()` now uses write-tmp-then-rename pattern to prevent corruption on crash
+- **Enhanced error responses** — top-level request handler returns `413 Request body too large` and `408 Request timeout` instead of generic `500 Internal server error`
+- **Error logging** — unhandled request errors now log URL, method, and error message via structured logger before returning 500
+- 14 new tests (atomic writes, round-trip persistence, oversized body, invalid JSON, error paths, auth errors)
+
+---
+
 ## 8.75.0 (2026-02-27)
 
 ### Input Validation Hardening

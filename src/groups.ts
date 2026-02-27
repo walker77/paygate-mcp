@@ -14,7 +14,8 @@
  */
 
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs';
+import { dirname } from 'path';
 import { QuotaConfig, ToolPricing } from './types';
 
 // ─── Group Types ─────────────────────────────────────────────────────────────
@@ -346,10 +347,18 @@ export class KeyGroupManager {
     } catch { /* ignore corrupted file */ }
   }
 
-  /** Save groups to state file. */
+  /** Save groups to state file (atomic: write tmp, then rename). */
   saveToFile(): void {
     if (!this.filePath) return;
-    writeFileSync(this.filePath, JSON.stringify(this.serialize(), null, 2));
+    const json = JSON.stringify(this.serialize(), null, 2);
+    const tmpPath = this.filePath + '.tmp';
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      writeFileSync(tmpPath, json, 'utf-8');
+      renameSync(tmpPath, this.filePath);
+    } catch {
+      // Best-effort persistence — don't crash the server
+    }
   }
 
   // ─── Serialization (for state file persistence) ──────────────────────────

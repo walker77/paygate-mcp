@@ -11,7 +11,8 @@
  */
 
 import { randomBytes } from 'crypto';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'fs';
+import { dirname } from 'path';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -72,10 +73,18 @@ export class AdminKeyManager {
     } catch { /* ignore corrupted file */ }
   }
 
-  /** Save admin keys to file. */
+  /** Save admin keys to file (atomic: write tmp, then rename). */
   save(): void {
     if (!this.filePath) return;
-    writeFileSync(this.filePath, JSON.stringify(this.toJSON(), null, 2));
+    const json = JSON.stringify(this.toJSON(), null, 2);
+    const tmpPath = this.filePath + '.tmp';
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      writeFileSync(tmpPath, json, 'utf-8');
+      renameSync(tmpPath, this.filePath);
+    } catch {
+      // Best-effort persistence — don't crash the server
+    }
   }
 
   // ─── Bootstrap ───────────────────────────────────────────────────────────

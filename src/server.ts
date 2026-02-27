@@ -533,7 +533,15 @@ export class PayGateServer {
         try {
           await this.handleRequest(req, res);
         } catch (error) {
-          this.sendError(res, 500, 'Internal server error');
+          const msg = (error as Error).message || '';
+          if (msg.includes('too large')) {
+            this.sendError(res, 413, 'Request body too large');
+          } else if (msg.includes('timeout')) {
+            this.sendError(res, 408, 'Request timeout');
+          } else {
+            this.logger.error('Unhandled request error', { error: msg, url: req.url, method: req.method });
+            this.sendError(res, 500, 'Internal server error');
+          }
         }
       });
 
