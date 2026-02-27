@@ -1,5 +1,17 @@
 # Changelog
 
+## 8.75.0 (2026-02-27)
+
+### Input Validation Hardening
+- **NaN credits bypass fixed** — `Number.isFinite()` guard prevents `NaN`, `Infinity`, and non-numeric values from bypassing the `credits <= 0` check in key creation
+- **Invalid date rejection** — `expiresAt` validated with `new Date().getTime()` NaN check; rejects garbage strings like `"not-a-date"` and `"2025-13-45"` with clear ISO 8601 error message
+- **Expiry endpoint date validation** — `POST /keys/expiry` now validates `expiresAt` the same way as key creation, with proper `null` handling for expiry removal
+- **NaN alert threshold fixed** — `Number.isFinite()` replaces `typeof === 'number'` check (which passes for NaN/Infinity) in alert rule configuration
+- **expiresIn validation** — Both key creation and expiry endpoints use `Number.isFinite()` for `expiresIn` to prevent NaN propagation
+- 22 new tests (NaN/Infinity/negative/zero/float credits, invalid date strings, null expiry, valid ISO dates, NaN expiresIn, NaN/Infinity/negative alert thresholds)
+
+---
+
 ## 8.74.0 (2026-02-27)
 
 ### Graceful Shutdown Completeness

@@ -2024,18 +2024,24 @@ export class PayGateServer {
     }
 
     const name = String(params.name || 'unnamed').slice(0, 200);
-    const credits = Math.max(0, Math.floor(Number(params.credits ?? tpl?.credits ?? 100)));
+    const credits = Math.floor(Number(params.credits ?? tpl?.credits ?? 100));
 
-    if (credits <= 0) {
+    if (!Number.isFinite(credits) || credits <= 0) {
       this.sendError(res, 400, 'Credits must be a positive integer');
       return;
     }
 
     // Calculate expiry: expiresIn (seconds) takes priority over expiresAt (ISO date), template TTL is fallback
     let expiresAt: string | null = null;
-    if (params.expiresIn && Number(params.expiresIn) > 0) {
-      expiresAt = new Date(Date.now() + Number(params.expiresIn) * 1000).toISOString();
+    const expiresInNum = Number(params.expiresIn);
+    if (params.expiresIn !== undefined && Number.isFinite(expiresInNum) && expiresInNum > 0) {
+      expiresAt = new Date(Date.now() + expiresInNum * 1000).toISOString();
     } else if (params.expiresAt) {
+      const testDate = new Date(String(params.expiresAt));
+      if (isNaN(testDate.getTime())) {
+        this.sendError(res, 400, 'expiresAt must be a valid ISO 8601 date');
+        return;
+      }
       expiresAt = String(params.expiresAt);
     } else if (tpl && tpl.expiryTtlSeconds > 0) {
       expiresAt = new Date(Date.now() + tpl.expiryTtlSeconds * 1000).toISOString();
@@ -3010,10 +3016,20 @@ export class PayGateServer {
 
     // Calculate expiry: expiresIn (seconds) takes priority over expiresAt (ISO date)
     let expiresAt: string | null = null;
-    if (params.expiresIn && Number(params.expiresIn) > 0) {
-      expiresAt = new Date(Date.now() + Number(params.expiresIn) * 1000).toISOString();
+    const expiresInNum = Number(params.expiresIn);
+    if (params.expiresIn !== undefined && Number.isFinite(expiresInNum) && expiresInNum > 0) {
+      expiresAt = new Date(Date.now() + expiresInNum * 1000).toISOString();
     } else if (params.expiresAt !== undefined) {
-      expiresAt = params.expiresAt;
+      if (params.expiresAt === null) {
+        expiresAt = null; // Remove expiry
+      } else {
+        const testDate = new Date(String(params.expiresAt));
+        if (isNaN(testDate.getTime())) {
+          this.sendError(res, 400, 'expiresAt must be a valid ISO 8601 date');
+          return;
+        }
+        expiresAt = String(params.expiresAt);
+      }
     }
 
     const success = this.gate.store.setExpiry(params.key, expiresAt);
@@ -4617,7 +4633,7 @@ export class PayGateServer {
         res.end(JSON.stringify({ error: `Invalid alert type: ${rule.type}. Valid: ${validTypes.join(', ')}` }));
         return;
       }
-      if (typeof rule.threshold !== 'number' || rule.threshold < 0) {
+      if (!Number.isFinite(rule.threshold) || rule.threshold < 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Invalid threshold for ${rule.type}: must be a non-negative number` }));
         return;
