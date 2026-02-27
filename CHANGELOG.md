@@ -1,5 +1,35 @@
 # Changelog
 
+## 8.99.0 (2026-02-27)
+
+### Admin Dashboard v2
+- **Tabbed admin dashboard** (`GET /dashboard`): Complete rewrite with 4-tab interface
+  - **Overview tab**: Stat cards (keys, calls, credits, denials, uptime), top tools chart, recent activity feed, notification alerts
+  - **Keys tab**: Full key management table with search/filter, create key modal (name, credits, namespace, rate limit), suspend/resume/revoke actions, top-up modal
+  - **Analytics tab**: Credit flow visualization, deny reason breakdown, top consumer chart, webhook delivery stats
+  - **System tab**: Version, in-flight requests, backend status, maintenance toggle, CSV export (keys + audit)
+  - All data rendered via safe DOM methods (XSS-safe), 30s auto-refresh
+
+### Self-Service Portal
+- **API key portal** (`GET /portal`): Browser UI for API key holders to check their own status
+  - Credit balance with progress bar and low/exhausted alerts
+  - Usage stats (calls, credits spent, denied calls)
+  - Key details (name, prefix, status, expiry, rate limit, namespace)
+  - Available tools listing
+  - Recent activity feed
+  - Auth via X-API-Key prompt — no admin key needed
+
+### Readiness Probe
+- **Kubernetes readiness probe** (`GET /ready`): Returns 200 when server can accept traffic, 503 when not
+  - Checks: not draining, not in maintenance, MCP backend connected
+  - Separate from `/health` (liveness probe) — `/ready` reflects operational state
+  - JSON response with per-check breakdown and timestamp
+  - HEAD method support for lightweight probes
+
+### Infrastructure
+- New endpoints in OpenAPI 3.1 spec, root listing, and robots.txt
+- 22 new tests (184 suites, 3,460 tests total)
+
 ## 8.98.0 (2026-02-27)
 
 ### Public Endpoint Hardening

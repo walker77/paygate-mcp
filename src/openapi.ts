@@ -583,6 +583,23 @@ function discoveryPaths() {
         responses: { 200: { description: 'Robots.txt', content: { 'text/plain': {} } } },
       },
     },
+    '/portal': {
+      get: {
+        tags: ['Discovery'], summary: 'Self-service API key portal',
+        description: 'Browser-based portal for API key holders to check credits, usage, rate limits, and available tools. Auth via X-API-Key prompt in the UI.',
+        responses: { 200: { description: 'HTML portal page', content: { 'text/html': {} } } },
+      },
+    },
+    '/ready': {
+      get: {
+        tags: ['Discovery'], summary: 'Readiness probe (k8s)',
+        description: 'Returns 200 when the server is ready to accept traffic. Returns 503 when draining, in maintenance mode, or backend disconnected. Use with Kubernetes readiness probes.',
+        responses: {
+          200: { description: 'Server is ready', content: { 'application/json': { schema: { type: 'object', properties: { ready: { type: 'boolean' }, checks: { type: 'object' }, timestamp: { type: 'string' } } } } } },
+          503: { description: 'Server is not ready' },
+        },
+      },
+    },
   };
 }
 

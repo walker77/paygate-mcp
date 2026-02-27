@@ -41,6 +41,7 @@ import { CreditLedger } from './credit-ledger';
 import { ToolRegistry } from './registry';
 import { MetricsCollector } from './metrics';
 import { getDashboardHtml } from './dashboard';
+import { getPortalHtml } from './portal';
 import { getDocsHtml } from './docs';
 import { generateOpenApiSpec } from './openapi';
 import { AnalyticsEngine } from './analytics';
@@ -893,6 +894,14 @@ export class PayGateServer {
         if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
         if (!this.checkPublicRateLimit(req, res)) return;
         return this.handleRobotsTxt(req, res);
+      case '/ready':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
+        return this.handleReady(req, res);
+      case '/portal':
+        if (req.method === 'HEAD') { res.writeHead(200); res.end(); return; }
+        if (!this.checkPublicRateLimit(req, res)) return;
+        return this.handlePortal(req, res);
       case '/status':
         return this.handleStatus(req, res);
       case '/keys':
@@ -1938,6 +1947,7 @@ export class PayGateServer {
       'Disallow: /mcp',
       'Disallow: /status',
       'Disallow: /dashboard',
+      'Disallow: /portal',
       'Disallow: /audit',
       'Disallow: /tokens',
       'Disallow: /teams',
@@ -1963,7 +1973,9 @@ export class PayGateServer {
         mcp: 'POST /mcp — JSON-RPC (MCP transport). Send X-API-Key header.',
         info: 'GET /info — Server capabilities, features, pricing summary (public)',
         balance: 'GET /balance — Check own credits (requires X-API-Key)',
+        portal: 'GET /portal — Self-service API key portal (browser UI, requires X-API-Key)',
         dashboard: 'GET /dashboard — Admin web dashboard (browser UI)',
+        ready: 'GET /ready — Readiness probe for k8s (returns 503 when draining/maintenance)',
         status: 'GET /status — Usage data JSON (requires X-Admin-Key)',
         createKey: 'POST /keys — Create API key (requires X-Admin-Key)',
         listKeys: 'GET /keys — List API keys with pagination, filtering, sorting (requires X-Admin-Key)',
@@ -4640,6 +4652,39 @@ export class PayGateServer {
       'Cache-Control': 'no-cache',
     });
     res.end(getDashboardHtml(this.config.name));
+  }
+
+  // ─── /portal — Self-service API key portal ───────────────────────────────────
+
+  private handlePortal(_req: IncomingMessage, res: ServerResponse): void {
+    // Portal is public HTML — auth is done client-side via API key prompt.
+    // The portal JS calls /balance, /tools/available which require X-API-Key.
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+      'Cache-Control': 'no-cache',
+    });
+    res.end(getPortalHtml(this.config.name));
+  }
+
+  // ─── /ready — Readiness probe (k8s) ──────────────────────────────────────────
+
+  private handleReady(_req: IncomingMessage, res: ServerResponse): void {
+    // Unlike /health (liveness), /ready checks whether the server can accept traffic:
+    // - Not draining (shutting down)
+    // - Not in maintenance mode
+    // - MCP backend is connected (handler exists)
+    const checks: Record<string, boolean> = {
+      notDraining: !this.draining,
+      notMaintenance: !this.maintenanceMode,
+      backendConnected: !!this.handler,
+    };
+    const ready = Object.values(checks).every(Boolean);
+    this.sendJson(res, ready ? 200 : 503, {
+      ready,
+      checks,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   // ─── OAuth 2.1 Endpoints ────────────────────────────────────────────────────

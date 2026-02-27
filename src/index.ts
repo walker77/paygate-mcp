@@ -41,6 +41,7 @@ export type { MetricLabels } from './metrics';
 export type { ToolPricingInfo, ServerPaymentMetadata, PricingResponse } from './registry';
 export type { McpSession, SessionManagerConfig } from './session';
 export { getDashboardHtml } from './dashboard';
+export { getPortalHtml } from './portal';
 export { AnalyticsEngine } from './analytics';
 export type { AnalyticsReport, TimeBucket, ToolBreakdown, TopConsumer, TrendComparison, BucketGranularity } from './analytics';
 export { AlertEngine } from './alerts';

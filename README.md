@@ -80,6 +80,9 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Team Management** — Group API keys into teams with shared budgets, quotas, and usage tracking
 - **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, persistent usage audit trail, real-time pub/sub notifications, and admin API sync
 - **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring, clearing, and replaying
+- **Admin Dashboard v2** — Tabbed web dashboard at `/dashboard` with overview, keys management (create/suspend/resume/revoke/top-up), analytics (credit flow, deny reasons, top consumers, webhook health), and system status — all data via safe DOM methods, 30s auto-refresh
+- **Self-Service Portal** — API key holder portal at `/portal` — check credits, usage, rate limits, available tools, and recent activity without admin access
+- **Readiness Probe** — `GET /ready` returns 200/503 based on operational state (not draining, not maintenance, backend connected) — separate from `/health` liveness probe, ideal for Kubernetes
 - **Health Check + Graceful Shutdown** — `GET /health` public endpoint with status, uptime, version, in-flight requests, Redis & webhook stats; `gracefulStop()` drains in-flight requests before teardown
 - **Config Validation + Dry Run** — `paygate-mcp validate --config paygate.json` catches misconfigurations before starting; `--dry-run` discovers tools, prints pricing table, then exits
 - **Batch Tool Calls** — `tools/call_batch` method for calling multiple tools in one request with all-or-nothing billing, aggregate credit checks, and parallel execution
@@ -447,6 +450,8 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 130+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
+| `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |
+| `/ready` | GET | None | Readiness probe (200 when ready, 503 when draining/maintenance) |
 | `/metrics` | GET | None | Prometheus metrics (counters, gauges, uptime) |
 | `/analytics` | GET | `X-Admin-Key` | Usage analytics (time-series, tool breakdown, trends) |
 | `/alerts` | GET | `X-Admin-Key` | Consume pending alerts |
