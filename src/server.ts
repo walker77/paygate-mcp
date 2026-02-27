@@ -88,6 +88,20 @@ const MAX_TOPUP_AMOUNT = 100_000_000;       // 100 million credits per auto-topu
 const MAX_TOPUP_THRESHOLD = 100_000_000;    // 100 million credits threshold
 const MAX_RATE_LIMIT = 100_000;             // 100k requests per window
 
+/**
+ * Upper bounds for array-type admin inputs.
+ * Prevents memory exhaustion from unbounded lists and O(n) validation overhead.
+ */
+const MAX_ACL_ITEMS = 1_000;          // Max tools in allowedTools/deniedTools per key/group
+const MAX_IP_ALLOWLIST = 200;         // Max IPs per key/group allowlist
+const MAX_ALERT_RULES = 100;          // Max alert rules
+
+/** Truncate user-supplied arrays to a maximum length, returning the sliced array. */
+function clampArray<T>(arr: T[] | undefined, maxLen: number): T[] | undefined {
+  if (!arr || !Array.isArray(arr)) return arr;
+  return arr.slice(0, maxLen);
+}
+
 /** Truncate user-supplied strings to MAX_STRING_FIELD to prevent log injection and memory abuse. */
 function sanitizeString(value: string | undefined | null, maxLen = MAX_STRING_FIELD): string {
   if (!value) return '';
@@ -2149,12 +2163,12 @@ export class PayGateServer {
     }
 
     const record = this.gate.store.createKey(name, credits, {
-      allowedTools: params.allowedTools || (tpl ? [...tpl.allowedTools] : undefined),
-      deniedTools: params.deniedTools || (tpl ? [...tpl.deniedTools] : undefined),
+      allowedTools: clampArray(params.allowedTools, MAX_ACL_ITEMS) || (tpl ? [...tpl.allowedTools] : undefined),
+      deniedTools: clampArray(params.deniedTools, MAX_ACL_ITEMS) || (tpl ? [...tpl.deniedTools] : undefined),
       expiresAt,
       quota,
       tags: params.tags || (tpl ? { ...tpl.tags } : undefined),
-      ipAllowlist: params.ipAllowlist || (tpl ? [...tpl.ipAllowlist] : undefined),
+      ipAllowlist: clampArray(params.ipAllowlist, MAX_IP_ALLOWLIST) || (tpl ? [...tpl.ipAllowlist] : undefined),
       namespace: params.namespace || tpl?.namespace,
     });
 
@@ -2481,8 +2495,8 @@ export class PayGateServer {
               break;
             }
             const record = this.gate.store.createKey(name, credits, {
-              allowedTools: op.allowedTools as string[] | undefined,
-              deniedTools: op.deniedTools as string[] | undefined,
+              allowedTools: clampArray(op.allowedTools as string[] | undefined, MAX_ACL_ITEMS),
+              deniedTools: clampArray(op.deniedTools as string[] | undefined, MAX_ACL_ITEMS),
               tags: op.tags as Record<string, string> | undefined,
               namespace: op.namespace as string | undefined,
             });
@@ -3082,7 +3096,11 @@ export class PayGateServer {
       return;
     }
 
-    const success = this.gate.store.setAcl(params.key, params.allowedTools, params.deniedTools);
+    const success = this.gate.store.setAcl(
+      params.key,
+      clampArray(params.allowedTools, MAX_ACL_ITEMS),
+      clampArray(params.deniedTools, MAX_ACL_ITEMS),
+    );
     if (!success) {
       this.sendError(res, 404, 'Key not found or inactive');
       return;
@@ -3297,7 +3315,7 @@ export class PayGateServer {
       return;
     }
 
-    const success = this.gate.store.setIpAllowlist(params.key, params.ips);
+    const success = this.gate.store.setIpAllowlist(params.key, params.ips.slice(0, MAX_IP_ALLOWLIST));
     if (!success) {
       this.sendError(res, 404, 'Key not found');
       return;
@@ -11363,17 +11381,18 @@ export class PayGateServer {
 
     const ttl = Math.max(1, Math.min(86400, Math.floor(Number(params.ttl) || 3600)));
 
+    const clampedTokenTools = clampArray(params.allowedTools, MAX_ACL_ITEMS);
     const token = this.tokens.create({
       apiKey: params.key,
       ttlSeconds: ttl,
-      allowedTools: params.allowedTools,
+      allowedTools: clampedTokenTools,
       label: params.label,
     });
 
     this.audit.log('token.created', 'admin', `Scoped token created for key: ${keyRecord.name}`, {
       keyMasked: maskKeyForAudit(params.key),
       ttl,
-      allowedTools: params.allowedTools,
+      allowedTools: clampedTokenTools,
       label: params.label,
     });
 
@@ -11382,7 +11401,7 @@ export class PayGateServer {
       expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
       ttl,
       parentKey: keyRecord.name,
-      allowedTools: params.allowedTools || [],
+      allowedTools: clampedTokenTools || [],
       label: params.label || null,
       message: 'Use this token as X-API-Key or Bearer token. It will expire automatically.',
     });
@@ -11505,8 +11524,8 @@ export class PayGateServer {
       const group = this.groups.createGroup({
         name: sanitizeString(params.name as string) || '',
         description: sanitizeString(params.description as string) || undefined,
-        allowedTools: params.allowedTools as string[] | undefined,
-        deniedTools: params.deniedTools as string[] | undefined,
+        allowedTools: clampArray(params.allowedTools as string[] | undefined, MAX_ACL_ITEMS),
+        deniedTools: clampArray(params.deniedTools as string[] | undefined, MAX_ACL_ITEMS),
         rateLimitPerMin: params.rateLimitPerMin ? clampInt(Number(params.rateLimitPerMin), 0, MAX_RATE_LIMIT) : undefined,
         toolPricing: params.toolPricing as Record<string, { creditsPerCall: number; creditsPerKbInput?: number }> | undefined,
         quota: params.quota ? {
@@ -11515,7 +11534,7 @@ export class PayGateServer {
           dailyCreditLimit: clampInt(Number((params.quota as any).dailyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
           monthlyCreditLimit: clampInt(Number((params.quota as any).monthlyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
         } : undefined,
-        ipAllowlist: params.ipAllowlist as string[] | undefined,
+        ipAllowlist: clampArray(params.ipAllowlist as string[] | undefined, MAX_IP_ALLOWLIST),
         defaultCredits: params.defaultCredits ? clampInt(Number(params.defaultCredits), 0, MAX_CREDITS) : undefined,
         maxSpendingLimit: params.maxSpendingLimit ? clampInt(Number(params.maxSpendingLimit), 0, MAX_SPENDING_LIMIT) : undefined,
         tags: params.tags as Record<string, string> | undefined,
@@ -11555,8 +11574,8 @@ export class PayGateServer {
       const group = this.groups.updateGroup(groupId, {
         name: params.name ? sanitizeString(params.name as string) : undefined,
         description: params.description !== undefined ? (sanitizeString(params.description as string) || undefined) : undefined,
-        allowedTools: params.allowedTools as string[] | undefined,
-        deniedTools: params.deniedTools as string[] | undefined,
+        allowedTools: clampArray(params.allowedTools as string[] | undefined, MAX_ACL_ITEMS),
+        deniedTools: clampArray(params.deniedTools as string[] | undefined, MAX_ACL_ITEMS),
         rateLimitPerMin: params.rateLimitPerMin ? clampInt(Number(params.rateLimitPerMin), 0, MAX_RATE_LIMIT) : undefined,
         toolPricing: params.toolPricing as Record<string, { creditsPerCall: number }> | undefined,
         quota: params.quota === null ? null : params.quota ? {
@@ -11565,7 +11584,7 @@ export class PayGateServer {
           dailyCreditLimit: clampInt(Number((params.quota as any).dailyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
           monthlyCreditLimit: clampInt(Number((params.quota as any).monthlyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
         } : undefined,
-        ipAllowlist: params.ipAllowlist as string[] | undefined,
+        ipAllowlist: clampArray(params.ipAllowlist as string[] | undefined, MAX_IP_ALLOWLIST),
         defaultCredits: params.defaultCredits ? clampInt(Number(params.defaultCredits), 0, MAX_CREDITS) : undefined,
         maxSpendingLimit: params.maxSpendingLimit ? clampInt(Number(params.maxSpendingLimit), 0, MAX_SPENDING_LIMIT) : undefined,
         tags: params.tags as Record<string, string> | undefined,

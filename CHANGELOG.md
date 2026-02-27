@@ -1,5 +1,17 @@
 # Changelog
 
+## 8.90.0 (2026-02-27)
+
+### Array Length Bounds Enforcement
+- **All array-type admin inputs now clamped to sane upper bounds** — prevents memory exhaustion DoS via unbounded lists
+- `allowedTools`/`deniedTools`: capped at 1,000 items per key/group/token (`MAX_ACL_ITEMS`)
+- `ipAllowlist`: capped at 200 items per key/group (`MAX_IP_ALLOWLIST`)
+- Added `clampArray()` utility for consistent enforcement alongside existing `clampInt()` and `sanitizeString()`
+- Applied to all entry points: key creation, ACL updates, IP allowlist updates, scoped token creation, group create/update, bulk operations
+- 9 new tests covering ACL clamping on /keys, /keys/acl, /keys/ip, /tokens, and passthrough for reasonable arrays
+
+---
+
 ## 8.89.0 (2026-02-27)
 
 ### Numeric Input Bounds Enforcement
