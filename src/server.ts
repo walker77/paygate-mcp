@@ -982,6 +982,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/tool-correlation':
+        if (req.method === 'GET') return this.handleToolCorrelation(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1590,6 +1595,7 @@ export class PayGateServer {
         creditEfficiency: 'GET /admin/credit-efficiency — Credit allocation efficiency with burn efficiency, waste ratio, over-provisioned and under-provisioned key detection (requires X-Admin-Key)',
         accessHeatmap: 'GET /admin/access-heatmap — Hourly access patterns with tool breakdown, unique consumers, and peak hour identification for capacity planning (requires X-Admin-Key)',
         keyChurn: 'GET /admin/key-churn — Key churn analysis with creation/revocation rates, churn and retention percentages, and never-used key detection (requires X-Admin-Key)',
+        toolCorrelation: 'GET /admin/tool-correlation — Tool co-occurrence analysis showing which tools are commonly used together by the same consumers (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7719,6 +7725,63 @@ export class PayGateServer {
         churnRate,
         retentionRate,
         avgCreditsPerKey,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/tool-correlation — Tool co-occurrence analysis ────────────────
+
+  private handleToolCorrelation(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    // Build per-consumer tool sets from request log
+    const consumerTools = new Map<string, Set<string>>();
+
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      let tools = consumerTools.get(entry.key);
+      if (!tools) {
+        tools = new Set();
+        consumerTools.set(entry.key, tools);
+      }
+      tools.add(entry.tool);
+    }
+
+    // Count co-occurrence pairs
+    const pairMap = new Map<string, number>();
+    for (const [, tools] of consumerTools) {
+      const toolArr = Array.from(tools).sort();
+      for (let i = 0; i < toolArr.length; i++) {
+        for (let j = i + 1; j < toolArr.length; j++) {
+          const key = `${toolArr[i]}|${toolArr[j]}`;
+          pairMap.set(key, (pairMap.get(key) || 0) + 1);
+        }
+      }
+    }
+
+    // Build pairs array with strength
+    const totalConsumers = consumerTools.size;
+    const pairs = Array.from(pairMap.entries())
+      .map(([key, count]) => {
+        const [toolA, toolB] = key.split('|');
+        return {
+          toolA,
+          toolB,
+          sharedConsumers: count,
+          strength: totalConsumers > 0
+            ? Math.round((count / totalConsumers) * 100)
+            : 0,
+        };
+      })
+      .sort((a, b) => b.sharedConsumers - a.sharedConsumers);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      pairs,
+      summary: {
+        totalPairs: pairs.length,
+        totalConsumers,
       },
       generatedAt: new Date().toISOString(),
     }));

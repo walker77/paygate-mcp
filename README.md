@@ -140,6 +140,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Efficiency** — `GET /admin/credit-efficiency` credit allocation efficiency with burn efficiency, waste ratio, over-provisioned and under-provisioned key detection
 - **Access Heatmap** — `GET /admin/access-heatmap` hourly access patterns with tool breakdown, unique consumers, and peak hour identification
 - **Key Churn Analysis** — `GET /admin/key-churn` key churn metrics with creation/revocation rates, churn and retention percentages, and never-used key detection
+- **Tool Correlation** — `GET /admin/tool-correlation` tool co-occurrence analysis showing which tools are commonly used together by the same consumers
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3276,6 +3277,25 @@ curl http://localhost:3000/admin/key-churn -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Key churn analysis showing the health of your API key base. `churnRate` is the percentage of keys that have been revoked. `retentionRate` is the inverse. `neverUsedKeys` counts active keys with zero total calls. `avgCreditsPerKey` shows average remaining credits across active keys. Read-only.
+
+### Tool Correlation
+
+```bash
+curl http://localhost:3000/admin/tool-correlation -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "pairs": [
+    { "toolA": "search", "toolB": "translate", "sharedConsumers": 5, "strength": 50 },
+    { "toolA": "search", "toolB": "summarize", "sharedConsumers": 3, "strength": 30 }
+  ],
+  "summary": { "totalPairs": 2, "totalConsumers": 10 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Tool co-occurrence analysis showing which tools are commonly used together. `sharedConsumers` counts API keys that used both tools. `strength` is the percentage of all consumers who use the pair. Sorted by shared consumers descending. Helps identify tool bundles and usage patterns. Read-only.
 
 ### IP Allowlisting
 
