@@ -1,5 +1,43 @@
 # Changelog
 
+## 9.2.0 (2026-02-28)
+
+### Response Caching
+- **SHA-256 keyed response cache**: Identical tool calls return cached responses, skipping backend invocation and credit deduction
+  - Cache key = `SHA-256(toolName + sorted JSON args)` — deterministic, order-independent
+  - LRU eviction when `maxCacheEntries` reached (default: 10,000)
+  - `X-Cache: HIT/MISS` header on every tool call response
+  - Per-tool TTL override via `toolPricing[tool].cacheTtlSeconds`
+  - Global TTL via `cacheTtlSeconds` config option
+  - Cache hits bypass both credit deduction and circuit breaker
+- **Admin cache management** (`GET/DELETE /admin/cache`):
+  - GET: Cache stats (entries, hits, misses, hit rate, per-tool breakdown, evictions)
+  - DELETE: Clear all entries or filter by `?tool=` query param
+  - Prometheus gauge: `paygate_cache_entries`
+
+### Circuit Breaker
+- **Three-state circuit breaker** for backend failure detection and fast-fail:
+  - CLOSED → OPEN after N consecutive backend failures (`circuitBreakerThreshold`)
+  - OPEN → HALF_OPEN after cooldown expires (`circuitBreakerCooldownSeconds`)
+  - HALF_OPEN → CLOSED on probe success, OPEN on probe failure
+  - Open circuit returns error code `-32003` (`circuit_breaker_open`)
+  - Tracks: consecutive failures, total failures/successes/rejections, timestamps
+- **Admin circuit management** (`GET/POST /admin/circuit`):
+  - GET: Current state, failure counts, timestamps
+  - POST: Manual reset to closed state
+  - Audit trail for manual resets
+
+### Configurable Timeouts
+- **Per-tool call timeouts** via `toolPricing[tool].timeoutMs`
+- **Global timeout** via `toolTimeoutMs` config option (per-tool overrides global)
+- Timeout returns error code `-32004` (`tool_timeout`) with tool name and duration
+- Timed-out calls trigger circuit breaker failure recording
+
+### Infrastructure
+- All new endpoints in OpenAPI 3.1 spec and root listing
+- 53 new tests (188 suites, 3,590 tests total)
+- Exported: `ResponseCache`, `CacheEntry`, `CacheStats`, `CircuitBreaker`, `CircuitBreakerConfig`, `CircuitState`, `CircuitStatus`
+
 ## 9.1.0 (2026-02-28)
 
 ### Self-Service Key Rotation

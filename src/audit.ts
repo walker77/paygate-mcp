@@ -104,7 +104,9 @@ export type AuditEventType =
   | 'stripe.checkout_created'
   // Backup & Restore
   | 'admin.backup_created'
-  | 'admin.backup_restored';
+  | 'admin.backup_restored'
+  | 'admin.cache_cleared'
+  | 'admin.circuit_reset';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

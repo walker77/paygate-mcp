@@ -704,6 +704,35 @@ function billingPaths() {
         },
       },
     },
+    '/admin/cache': {
+      get: {
+        tags: ['Admin'], summary: 'Response cache statistics',
+        description: 'Returns cache stats: entries, hit/miss counts, hit rate, per-tool breakdown, evictions.',
+        security: [{ AdminKeyAuth: [] }],
+        responses: { 200: jsonResponse('Cache stats') },
+      },
+      delete: {
+        tags: ['Admin'], summary: 'Clear response cache',
+        description: 'Clear all cached responses or entries for a specific tool.',
+        security: [{ AdminKeyAuth: [] }],
+        parameters: [{ name: 'tool', in: 'query' as const, schema: { type: 'string' as const }, description: 'Tool name to clear (optional, clears all if omitted)' }],
+        responses: { 200: jsonResponse('Clear result') },
+      },
+    },
+    '/admin/circuit': {
+      get: {
+        tags: ['Admin'], summary: 'Circuit breaker status',
+        description: 'Returns circuit state (closed/open/half_open), failure counts, and rejection stats.',
+        security: [{ AdminKeyAuth: [] }],
+        responses: { 200: jsonResponse('Circuit breaker status') },
+      },
+      post: {
+        tags: ['Admin'], summary: 'Reset circuit breaker',
+        description: 'Manually reset circuit breaker to closed state.',
+        security: [{ AdminKeyAuth: [] }],
+        responses: { 200: jsonResponse('Reset result') },
+      },
+    },
   };
 }
 

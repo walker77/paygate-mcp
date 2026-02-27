@@ -59,6 +59,8 @@ import { ExpiryScanner } from './expiry-scanner';
 import { KeyTemplateManager } from './key-templates';
 import { StripeCheckout, CreditPackage } from './stripe-checkout';
 import { BackupManager, BackupStateProvider, BackupSnapshot } from './backup';
+import { ResponseCache } from './response-cache';
+import { CircuitBreaker } from './circuit-breaker';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -445,6 +447,10 @@ export class PayGateServer {
   private inflight = 0;
   /** Config file path for hot reload (null if not using config file) */
   private configPath: string | null = null;
+  /** Response cache for tool calls (null if caching disabled) */
+  readonly responseCache: ResponseCache | null = null;
+  /** Circuit breaker for backend failure detection (null if disabled) */
+  readonly circuitBreaker: CircuitBreaker | null = null;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -685,6 +691,24 @@ export class PayGateServer {
       });
     }
 
+    // Response cache for tool calls (if configured)
+    const cacheTtl = this.config.cacheTtlSeconds ?? 0;
+    if (cacheTtl > 0 || Object.values(this.config.toolPricing).some(t => (t as any).cacheTtlSeconds > 0)) {
+      (this as any).responseCache = new ResponseCache(this.config.maxCacheEntries ?? 10_000);
+      this.metrics.registerGauge('paygate_cache_entries', 'Number of cached tool call responses', () => {
+        return this.responseCache?.stats().entries ?? 0;
+      });
+    }
+
+    // Circuit breaker for backend failure detection (if configured)
+    const cbThreshold = this.config.circuitBreakerThreshold ?? 0;
+    if (cbThreshold > 0) {
+      (this as any).circuitBreaker = new CircuitBreaker({
+        threshold: cbThreshold,
+        cooldownSeconds: this.config.circuitBreakerCooldownSeconds ?? 30,
+      });
+    }
+
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
   }
@@ -873,6 +897,9 @@ export class PayGateServer {
     if (this.config.globalQuota) features.push('quotas');
     if (this.config.trustedProxies?.length) features.push('trusted-proxies');
     if (this.config.cors && this.config.cors.origin !== '*') features.push('cors-restricted');
+    if (this.responseCache) features.push('response-cache');
+    if (this.circuitBreaker) features.push('circuit-breaker');
+    if (this.config.toolTimeoutMs) features.push(`timeout(${this.config.toolTimeoutMs}ms)`);
 
     const transport = this.router ? 'multi-server' : (this.proxy instanceof HttpMcpProxy ? 'http' : 'stdio');
     const keys = this.gate.store.getKeyCount?.() ?? 0;
@@ -929,7 +956,7 @@ export class PayGateServer {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization, X-Request-Id');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id, X-PayGate-Version');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id, X-PayGate-Version, X-Cache');
     if (corsConfig?.credentials) {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
     }
@@ -1116,6 +1143,10 @@ export class PayGateServer {
         return this.handleAdminBackup(req, res);
       case '/admin/restore':
         return this.handleAdminRestore(req, res);
+      case '/admin/cache':
+        return this.handleAdminCache(req, res);
+      case '/admin/circuit':
+        return this.handleAdminCircuit(req, res);
       case '/dashboard':
         return this.handleDashboard(req, res);
       case '/audit':
@@ -1713,7 +1744,85 @@ export class PayGateServer {
     }
 
     const toolCallStartTime = Date.now();
-    let response = await this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools);
+    let cacheHit = false;
+    let circuitBroken = false;
+
+    // ─── Response Cache check (before forwarding to backend) ────────
+    // response is guaranteed assigned before use: either via cache hit, circuit breaker, or handler
+    let response: JsonRpcResponse = null as unknown as JsonRpcResponse;
+    if (pluginRequest.method === 'tools/call' && this.responseCache) {
+      const toolName = (pluginRequest.params as Record<string, unknown>)?.name as string || '';
+      const toolArgs = (pluginRequest.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined;
+      const toolPricingConfig = this.config.toolPricing[toolName];
+      const ttl = toolPricingConfig?.cacheTtlSeconds ?? this.config.cacheTtlSeconds ?? 0;
+      if (ttl > 0) {
+        const cached = this.responseCache.get(toolName, toolArgs);
+        if (cached !== undefined) {
+          cacheHit = true;
+          response = cached as JsonRpcResponse;
+        }
+      }
+    }
+
+    // ─── Circuit Breaker check (before forwarding to backend) ────────
+    if (!cacheHit && pluginRequest.method === 'tools/call' && this.circuitBreaker) {
+      if (!this.circuitBreaker.allowRequest()) {
+        const cbStatus = this.circuitBreaker.status();
+        circuitBroken = true;
+        response = {
+          jsonrpc: '2.0',
+          id: pluginRequest.id,
+          error: {
+            code: -32003,
+            message: `circuit_breaker_open: Backend unavailable (${cbStatus.consecutiveFailures} consecutive failures). Retry after cooldown.`,
+          },
+        };
+      }
+    }
+
+    // ─── Forward to backend (with optional timeout) ────────
+    if (!cacheHit && !circuitBroken) {
+      const toolName = pluginRequest.method === 'tools/call'
+        ? ((pluginRequest.params as Record<string, unknown>)?.name as string || '') : '';
+      const toolPricingConfig = toolName ? this.config.toolPricing[toolName] : undefined;
+      const timeoutMs = toolPricingConfig?.timeoutMs ?? this.config.toolTimeoutMs ?? 0;
+
+      if (timeoutMs > 0 && pluginRequest.method === 'tools/call') {
+        const timeoutPromise = new Promise<JsonRpcResponse>((resolve) => {
+          setTimeout(() => {
+            resolve({
+              jsonrpc: '2.0',
+              id: pluginRequest.id,
+              error: { code: -32004, message: `tool_timeout: ${toolName} exceeded ${timeoutMs}ms timeout` },
+            });
+          }, timeoutMs);
+        });
+        response = await Promise.race([
+          this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools),
+          timeoutPromise,
+        ]);
+      } else {
+        response = await this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools);
+      }
+
+      // Record circuit breaker outcome
+      if (pluginRequest.method === 'tools/call' && this.circuitBreaker) {
+        if (response.error && (response.error.code === -32603 || response.error.code === -32004)) {
+          this.circuitBreaker.recordFailure();
+        } else if (!response.error || response.error.code === -32402 || response.error.code === -32001) {
+          this.circuitBreaker.recordSuccess();
+        }
+      }
+
+      // Store successful responses in cache
+      if (pluginRequest.method === 'tools/call' && this.responseCache && !response.error) {
+        const cacheTtl = toolPricingConfig?.cacheTtlSeconds ?? this.config.cacheTtlSeconds ?? 0;
+        if (cacheTtl > 0) {
+          const toolArgs = (pluginRequest.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined;
+          this.responseCache.set(toolName, toolArgs, response, cacheTtl);
+        }
+      }
+    }
 
     // Plugin: afterToolCall — let plugins modify the response
     if (this.plugins.count > 0 && request.method === 'tools/call') {
@@ -1827,6 +1936,11 @@ export class PayGateServer {
     // Build rate limit + credits headers for tools/call responses
     const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
 
+    // Add X-Cache header for tool calls when caching is active
+    if (request.method === 'tools/call' && this.responseCache) {
+      rateLimitHeaders['X-Cache'] = cacheHit ? 'HIT' : 'MISS';
+    }
+
     // Check if client accepts SSE
     const accept = req.headers['accept'] || '';
     const wantsSse = accept.includes('text/event-stream');
@@ -1834,7 +1948,7 @@ export class PayGateServer {
     if (wantsSse) {
       // Return response as SSE stream
       writeSseHeaders(res, { 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
-      writeSseEvent(res, response, 'message');
+      writeSseEvent(res, response!, 'message');
       res.end();
     } else {
       // Standard JSON response
@@ -1843,7 +1957,7 @@ export class PayGateServer {
         'Mcp-Session-Id': sessionId,
         ...rateLimitHeaders,
       });
-      res.end(JSON.stringify(response));
+      res.end(JSON.stringify(response!));
     }
   }
 
@@ -2238,6 +2352,8 @@ export class PayGateServer {
         stripePackages: 'GET /stripe/packages — List available credit packages (public)',
         adminBackup: 'GET /admin/backup — Full state snapshot for disaster recovery (requires X-Admin-Key, admin)',
         adminRestore: 'POST /admin/restore — Restore state from backup snapshot (requires X-Admin-Key, admin)',
+        adminCache: 'GET /admin/cache — Response cache stats; DELETE /admin/cache?tool= — Clear cache (requires X-Admin-Key)',
+        adminCircuit: 'GET /admin/circuit — Circuit breaker status; POST /admin/circuit — Reset circuit breaker (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5137,6 +5253,60 @@ export class PayGateServer {
     );
 
     this.sendJson(res, result.success ? 200 : 207, result);
+  }
+
+  // ─── /admin/cache — Response cache management ─────────────────────────────
+
+  private handleAdminCache(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      if (!this.responseCache) {
+        this.sendJson(res, 200, { enabled: false, message: 'Response caching is not enabled' });
+        return;
+      }
+      this.sendJson(res, 200, { enabled: true, ...this.responseCache.stats() });
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      if (!this.responseCache) {
+        this.sendJson(res, 200, { enabled: false, cleared: 0 });
+        return;
+      }
+      const url = new URL(req.url || '/', `http://localhost`);
+      const tool = url.searchParams.get('tool') || undefined;
+      const cleared = this.responseCache.clear(tool);
+      this.audit.log('admin.cache_cleared', 'admin', `Cache cleared${tool ? ` for tool: ${tool}` : ''}`, { tool, cleared });
+      this.sendJson(res, 200, { cleared, tool: tool || null });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET or DELETE.');
+  }
+
+  // ─── /admin/circuit — Circuit breaker status and management ───────────────
+
+  private handleAdminCircuit(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      if (!this.circuitBreaker) {
+        this.sendJson(res, 200, { enabled: false, message: 'Circuit breaker is not enabled' });
+        return;
+      }
+      this.sendJson(res, 200, { enabled: true, ...this.circuitBreaker.status() });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      if (!this.circuitBreaker) {
+        this.sendJson(res, 200, { enabled: false, message: 'Circuit breaker is not enabled' });
+        return;
+      }
+      this.circuitBreaker.reset();
+      this.audit.log('admin.circuit_reset', 'admin', 'Circuit breaker manually reset to closed state');
+      this.sendJson(res, 200, { reset: true, ...this.circuitBreaker.status() });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
   }
 
   // ─── /dashboard — Admin web dashboard ─────────────────────────────────────

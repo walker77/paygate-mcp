@@ -70,6 +70,10 @@ export { KeyGroupManager } from './groups';
 export type { KeyGroupRecord, KeyGroupInfo, ResolvedPolicy } from './groups';
 export { Logger, parseLogLevel, parseLogFormat, VALID_LOG_LEVELS, VALID_LOG_FORMATS } from './logger';
 export type { LogLevel, LogFormat, LoggerOptions } from './logger';
+export { ResponseCache } from './response-cache';
+export type { CacheEntry, CacheStats } from './response-cache';
+export { CircuitBreaker } from './circuit-breaker';
+export type { CircuitBreakerConfig, CircuitState, CircuitStatus } from './circuit-breaker';
 
 export type {
   PayGateConfig,

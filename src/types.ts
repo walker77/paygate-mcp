@@ -46,6 +46,10 @@ export interface ToolPricing {
   rateLimitPerMin?: number;
   /** Dynamic pricing: extra credits per KB of input arguments. 0 = disabled. */
   creditsPerKbInput?: number;
+  /** Response cache TTL in seconds for this tool. 0 = no caching. */
+  cacheTtlSeconds?: number;
+  /** Per-tool timeout in milliseconds. 0 = use global. */
+  timeoutMs?: number;
 }
 
 // ─── Usage Quotas ──────────────────────────────────────────────────────────
@@ -155,6 +159,16 @@ export interface PayGateConfig {
   publicRateLimit?: number;
   /** Bill task creation (tasks/send) as tool calls. Default: false. When true, tasks/send is not free. */
   billTaskCreation?: boolean;
+  /** Global response cache TTL in seconds. 0 = disabled. Default: 0. Per-tool override via toolPricing. */
+  cacheTtlSeconds?: number;
+  /** Maximum cache entries across all tools. Default: 10000. */
+  maxCacheEntries?: number;
+  /** Circuit breaker: consecutive failures before opening circuit. 0 = disabled. Default: 0. */
+  circuitBreakerThreshold?: number;
+  /** Circuit breaker: cooldown period in seconds before attempting recovery. Default: 30. */
+  circuitBreakerCooldownSeconds?: number;
+  /** Global per-tool call timeout in milliseconds. 0 = no timeout. Default: 0. Per-tool override via toolPricing. */
+  toolTimeoutMs?: number;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────
