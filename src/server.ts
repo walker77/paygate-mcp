@@ -912,6 +912,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/credit-flow':
+        if (req.method === 'GET') return this.handleCreditFlow(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1506,6 +1511,7 @@ export class PayGateServer {
         dependencyMap: 'GET /admin/dependencies — Tool-to-key dependency map with tool usage popularity, unique key counts, per-key tool lists, and used/unused tool identification (requires X-Admin-Key)',
         latencyAnalysis: 'GET /admin/latency — Per-tool response time metrics with avg/p95/min/max, slowest tools ranking, and per-key latency breakdown (requires X-Admin-Key)',
         errorTrends: 'GET /admin/error-trends — Denial rate trends with per-tool error rates, denial reason breakdown, and trend direction (requires X-Admin-Key)',
+        creditFlow: 'GET /admin/credit-flow — Credit inflow/outflow analysis with utilization, top spenders, and per-tool spend breakdown (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6711,6 +6717,77 @@ export class PayGateServer {
       summary: { totalCalls, totalDenials, overallErrorRate, trend },
       byTool,
       denialReasons,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/credit-flow — Credit Flow Analysis ──────────────────────────
+
+  private handleCreditFlow(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const records = this.gate.store.getAllRecords().filter(r => r.active);
+
+    if (records.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        summary: { totalAllocated: 0, totalSpent: 0, totalRemaining: 0, utilizationPct: 0 },
+        topSpenders: [],
+        byTool: [],
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // ── Summary from key records ──
+    let totalAllocated = 0;
+    let totalSpent = 0;
+    let totalRemaining = 0;
+    for (const r of records) {
+      totalAllocated += r.credits + r.totalSpent;
+      totalSpent += r.totalSpent;
+      totalRemaining += r.credits;
+    }
+    const utilizationPct = totalAllocated > 0
+      ? Math.round((totalSpent / totalAllocated) * 100)
+      : 0;
+
+    // ── Top spenders ranked by credits spent (top 10) ──
+    const topSpenders = records
+      .filter(r => r.totalSpent > 0)
+      .map(r => ({
+        keyName: r.name,
+        creditsSpent: r.totalSpent,
+        creditsRemaining: r.credits,
+        callCount: r.totalCalls,
+      }))
+      .sort((a, b) => b.creditsSpent - a.creditsSpent)
+      .slice(0, 10);
+
+    // ── Per-tool spend breakdown from allowed events ──
+    const events = this.gate.meter.getEvents();
+    const toolSpend = new Map<string, { credits: number; calls: number }>();
+    for (const e of events) {
+      if (!e.allowed || !e.tool) continue;
+      if (!toolSpend.has(e.tool)) toolSpend.set(e.tool, { credits: 0, calls: 0 });
+      const t = toolSpend.get(e.tool)!;
+      t.credits += e.creditsCharged;
+      t.calls++;
+    }
+
+    const byTool = Array.from(toolSpend.entries())
+      .map(([tool, stats]) => ({
+        tool,
+        creditsSpent: stats.credits,
+        callCount: stats.calls,
+      }))
+      .sort((a, b) => b.creditsSpent - a.creditsSpent);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: { totalAllocated, totalSpent, totalRemaining, utilizationPct },
+      topSpenders,
+      byTool,
       generatedAt: new Date().toISOString(),
     }));
   }

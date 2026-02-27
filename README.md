@@ -126,6 +126,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Dependency Map** — `GET /admin/dependencies` tool-to-key relationship map with tool usage popularity, unique key counts per tool, per-key tool lists, and used/unused tool identification
 - **Tool Latency Analysis** — `GET /admin/latency` per-tool response time metrics with avg/p95/min/max durations, slowest tools ranking, and per-key latency breakdown
 - **Error Rate Trends** — `GET /admin/error-trends` denial rate trends with per-tool error rates, denial reason breakdown, worst-performing tools, and trend direction
+- **Credit Flow Analysis** — `GET /admin/credit-flow` credit inflow/outflow analysis with utilization percentage, top spenders, and per-tool spend breakdown
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2916,6 +2917,28 @@ curl http://localhost:3000/admin/error-trends -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Denial rate trends: overall error rate, per-tool error rates sorted by worst-performing, denial reason breakdown, and trend direction (improving/degrading/stable based on first-half vs second-half comparison). Read-only.
+
+### Credit Flow Analysis
+
+```bash
+curl http://localhost:3000/admin/credit-flow -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalAllocated": 10000, "totalSpent": 3500, "totalRemaining": 6500, "utilizationPct": 35 },
+  "topSpenders": [
+    { "keyName": "heavy-user", "creditsSpent": 2000, "creditsRemaining": 500, "callCount": 200 }
+  ],
+  "byTool": [
+    { "tool": "search", "creditsSpent": 2000, "callCount": 400 },
+    { "tool": "translate", "creditsSpent": 1500, "callCount": 150 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Credit inflow/outflow analysis: total credits allocated (initial + spent) vs spent vs remaining, utilization percentage, top 10 spenders ranked by credits consumed, and per-tool spend breakdown sorted by revenue. Read-only.
 
 ### IP Allowlisting
 
