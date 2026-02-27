@@ -743,6 +743,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/tools/available':
+        if (req.method === 'GET') return this.handleToolAvailability(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       case '/alerts':
         if (req.method === 'GET') return this.handleGetAlerts(req, res);
         if (req.method === 'POST') return this.handleConfigureAlerts(req, res);
@@ -1380,6 +1385,7 @@ export class PayGateServer {
         requestDryRun: 'POST /requests/dry-run — Simulate a tool call without executing (requires X-Admin-Key)',
         requestDryRunBatch: 'POST /requests/dry-run/batch — Simulate multiple tool calls without executing (requires X-Admin-Key)',
         toolStats: 'GET /tools/stats — Per-tool call counts, success rates, latency, credits, and top consumers (requires X-Admin-Key)',
+        toolAvailability: 'GET /tools/available?key=... — Per-key tool availability with pricing, affordability, and rate limit status (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7458,6 +7464,85 @@ export class PayGateServer {
       });
       res.end(JSON.stringify({ count: sorted.length, requests: sorted }, null, 2));
     }
+  }
+
+  // ─── /tools/available — Per-key tool availability with pricing ──────────────
+
+  private handleToolAvailability(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keyParam = params.get('key');
+
+    if (!keyParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required parameter: key' }));
+      return;
+    }
+
+    // Resolve alias
+    const keyRecord = this.gate.store.resolveKeyRaw(keyParam);
+    if (!keyRecord) {
+      const isExpired = this.gate.store.isExpired(keyParam);
+      const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: reason, tools: [] }));
+      return;
+    }
+
+    // Get all discovered tools with pricing
+    const allToolPricing = this.registry.getFullPricing().tools;
+
+    // Build per-tool availability
+    const effectiveAllowed = keyRecord.allowedTools || [];
+    const effectiveDenied = keyRecord.deniedTools || [];
+
+    const tools = allToolPricing.map(toolInfo => {
+      const toolName = toolInfo.name;
+
+      // ACL check
+      let accessible = true;
+      let denyReason: string | undefined;
+      if (effectiveDenied.includes(toolName)) {
+        accessible = false;
+        denyReason = 'denied_by_acl';
+      } else if (effectiveAllowed.length > 0 && !effectiveAllowed.includes(toolName)) {
+        accessible = false;
+        denyReason = 'not_in_allowed_list';
+      }
+
+      // Affordability
+      const creditsRequired = toolInfo.creditsPerCall;
+      const canAfford = keyRecord.credits >= creditsRequired;
+
+      // Per-tool rate limit status
+      const perToolRateLimit = toolInfo.rateLimitPerMin > 0
+        ? this.gate.rateLimiter.getStatus(`${keyRecord.key}:tool:${toolName}`, toolInfo.rateLimitPerMin)
+        : null;
+
+      return {
+        tool: toolName,
+        accessible,
+        ...(denyReason ? { denyReason } : {}),
+        creditsPerCall: creditsRequired,
+        canAfford,
+        ...(perToolRateLimit ? { rateLimit: perToolRateLimit } : {}),
+      };
+    });
+
+    // Global rate limit
+    const globalRateLimit = this.gate.rateLimiter.getStatus(keyRecord.key);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: keyRecord.key.slice(0, 7) + '...' + keyRecord.key.slice(-4),
+      creditsAvailable: keyRecord.credits,
+      totalTools: tools.length,
+      accessibleTools: tools.filter(t => t.accessible).length,
+      ...(globalRateLimit.limit > 0 ? { globalRateLimit } : {}),
+      tools,
+    }));
   }
 
   /** Calculate percentile from an array of numbers. */

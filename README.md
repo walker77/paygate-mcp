@@ -105,6 +105,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Request Log Export** — `GET /requests/export` exports the full request log as JSON or CSV with Content-Disposition headers — filter by key/tool/status/since/until, combined time-window queries, no pagination limit
 - **Tool Call Dry Run** — `POST /requests/dry-run` simulates a tool call without executing — checks key validity, ACL, rate limits, credits, and spending limits, returns predicted outcome with credits-after calculation and rate limit status
 - **Batch Dry Run** — `POST /requests/dry-run/batch` simulates multiple tool calls at once — aggregate credit check, per-tool ACL validation, spending limit, returns per-tool results with total credits required and credits-after
+- **Tool Availability** — `GET /tools/available?key=...` returns per-key tool availability with pricing, affordability (canAfford), ACL enforcement (accessible/denyReason), and per-tool + global rate limit status
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2300,6 +2301,34 @@ curl -X POST http://localhost:3402/requests/dry-run/batch \
 ```
 
 Performs aggregate credit check (sum of all tool prices vs balance), per-tool ACL validation, spending limit, and rate limit checks. Returns per-tool results so you can see which specific tools would fail. Max 100 tools per batch. Supports alias keys.
+
+### Tool Availability
+
+Check per-key tool availability including pricing, affordability, and rate limit status:
+
+```bash
+curl "http://localhost:3402/tools/available?key=pg_..." \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_c815...09a6",
+  "creditsAvailable": 100,
+  "totalTools": 3,
+  "accessibleTools": 2,
+  "globalRateLimit": { "limit": 60, "used": 5, "remaining": 55, "resetInMs": 45000 },
+  "tools": [
+    { "tool": "tool_a", "accessible": true, "creditsPerCall": 10, "canAfford": true },
+    { "tool": "tool_b", "accessible": false, "denyReason": "denied_by_acl", "creditsPerCall": 5, "canAfford": true },
+    { "tool": "tool_c", "accessible": true, "creditsPerCall": 1, "canAfford": true, "rateLimit": { "limit": 10, "used": 3, "remaining": 7 } }
+  ]
+}
+```
+
+Returns every discovered tool with: `accessible` (ACL check), `denyReason` (if blocked), `creditsPerCall`, `canAfford` (credits vs price), and per-tool `rateLimit` when configured. Includes global rate limit info. Supports alias keys. Works on suspended keys (informational). Read-only — does not deduct credits or increment rate counters.
 
 ### IP Allowlisting
 
