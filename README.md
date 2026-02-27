@@ -110,6 +110,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Admin Notifications** — `GET /admin/notifications` scans all keys for actionable issues: expired/expiring keys, zero credits, credit depletion velocity, suspended keys, high error rates, and rate limit pressure — with severity filtering and priority sorting
 - **System Dashboard** — `GET /admin/dashboard` system-wide overview with key counts (active/suspended/revoked/expired), credit summary (allocated/spent/remaining), usage breakdown with deny reasons, top consumers, top tools, notification counts, and uptime
 - **Key Lifecycle Report** — `GET /admin/lifecycle` aggregated lifecycle trends with daily creation/revocation/suspension buckets, average key lifetime, and at-risk keys (expiring, expired, zero credits)
+- **Cost Analysis** — `GET /admin/costs` cost-centric view with per-tool and per-namespace cost breakdowns, hourly spending trends, top spenders, average cost per call, and namespace filtering
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2501,6 +2502,54 @@ curl "http://localhost:3402/admin/lifecycle?since=2026-02-01&until=2026-02-28" \
 ```
 
 Shows aggregated lifecycle event counts, daily trend buckets (sorted chronologically), average key lifetime in hours (for revoked keys), and at-risk keys with their risk category (`expired`, `expiring_soon`, `zero_credits`). Supports `?since=` and `?until=` date filters. Excludes suspended and revoked keys from at-risk list. Read-only.
+
+### Cost Analysis
+
+Get a cost-centric breakdown of credit usage across tools, namespaces, and time:
+
+```bash
+# Full cost analysis
+curl http://localhost:3402/admin/costs \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by namespace
+curl "http://localhost:3402/admin/costs?namespace=prod" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by time range
+curl "http://localhost:3402/admin/costs?since=2026-02-01" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": {
+    "totalCredits": 4250,
+    "totalCalls": 312,
+    "totalAllowed": 298,
+    "totalDenied": 14,
+    "avgCostPerCall": 13.62
+  },
+  "perTool": [
+    { "tool": "generate_report", "calls": 85, "credits": 1700, "avgCost": 20 },
+    { "tool": "query_data", "calls": 142, "credits": 1420, "avgCost": 10 }
+  ],
+  "perNamespace": [
+    { "namespace": "prod", "calls": 210, "credits": 3150 },
+    { "namespace": "staging", "calls": 102, "credits": 1100 }
+  ],
+  "hourlyTrends": [
+    { "hour": "2026-02-26T14:00:00.000Z", "calls": 23, "credits": 345, "denied": 1 },
+    { "hour": "2026-02-26T15:00:00.000Z", "calls": 31, "credits": 465, "denied": 0 }
+  ],
+  "topSpenders": [
+    { "key": "pg_a1b2...c3d4", "name": "ml-pipeline", "credits": 1800, "calls": 90 },
+    { "key": "pg_e5f6...g7h8", "name": "batch-worker", "credits": 1200, "calls": 120 }
+  ]
+}
+```
+
+Returns per-tool cost breakdown (with average cost per call), per-namespace spending, hourly trend buckets (last 24 hours), and top 10 spenders ranked by credits consumed. Supports `?since=` and `?namespace=` query filters. Keys without an explicit namespace appear under `default`. Read-only.
 
 ### IP Allowlisting
 

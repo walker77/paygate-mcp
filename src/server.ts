@@ -832,6 +832,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/costs':
+        if (req.method === 'GET') return this.handleCostAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1410,6 +1415,7 @@ export class PayGateServer {
         adminNotifications: 'GET /admin/notifications — Actionable notifications for expiring keys, low credits, high error rates, and rate limit pressure (requires X-Admin-Key)',
         systemDashboard: 'GET /admin/dashboard — System-wide overview with key stats, credit summary, usage breakdown, top consumers, and uptime (requires X-Admin-Key)',
         keyLifecycle: 'GET /admin/lifecycle — Key lifecycle report with creation/revocation/expiry trends, average lifetime, and at-risk keys (requires X-Admin-Key)',
+        costAnalysis: 'GET /admin/costs — Cost analysis with per-tool, per-namespace breakdown, hourly trends, and top spenders (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5026,6 +5032,124 @@ export class PayGateServer {
       trends,
       averageLifetimeHours: avgLifetimeHours,
       atRisk: atRiskKeys,
+    }));
+  }
+
+  // ─── /admin/costs — Cost analysis ─────────────────────────────────────────
+
+  private handleCostAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const since = params.get('since') || undefined;
+    const namespace = params.get('namespace') || undefined;
+
+    // Get all usage events
+    const events = this.gate.meter.getEvents(since, namespace);
+
+    // ── Per-tool cost breakdown ──
+    const toolCosts = new Map<string, { calls: number; credits: number; denied: number; avgCost: number }>();
+    for (const e of events) {
+      if (!toolCosts.has(e.tool)) toolCosts.set(e.tool, { calls: 0, credits: 0, denied: 0, avgCost: 0 });
+      const t = toolCosts.get(e.tool)!;
+      t.calls++;
+      if (e.allowed) {
+        t.credits += e.creditsCharged;
+      } else {
+        t.denied++;
+      }
+    }
+    for (const [, t] of toolCosts) {
+      const allowed = t.calls - t.denied;
+      t.avgCost = allowed > 0 ? Math.round(t.credits / allowed * 100) / 100 : 0;
+    }
+    const perTool = Array.from(toolCosts.entries())
+      .map(([tool, stats]) => ({ tool, ...stats }))
+      .sort((a, b) => b.credits - a.credits);
+
+    // ── Per-namespace cost breakdown ──
+    const nsCosts = new Map<string, { calls: number; credits: number; denied: number }>();
+    for (const e of events) {
+      const ns = e.namespace || 'default';
+      if (!nsCosts.has(ns)) nsCosts.set(ns, { calls: 0, credits: 0, denied: 0 });
+      const n = nsCosts.get(ns)!;
+      n.calls++;
+      if (e.allowed) {
+        n.credits += e.creditsCharged;
+      } else {
+        n.denied++;
+      }
+    }
+    const perNamespace = Array.from(nsCosts.entries())
+      .map(([ns, stats]) => ({ namespace: ns, ...stats }))
+      .sort((a, b) => b.credits - a.credits);
+
+    // ── Hourly trends (last 24 buckets) ──
+    const hourBuckets = new Map<string, { calls: number; credits: number; denied: number }>();
+    for (const e of events) {
+      const hour = e.timestamp.slice(0, 13); // YYYY-MM-DDTHH
+      if (!hourBuckets.has(hour)) hourBuckets.set(hour, { calls: 0, credits: 0, denied: 0 });
+      const h = hourBuckets.get(hour)!;
+      h.calls++;
+      if (e.allowed) {
+        h.credits += e.creditsCharged;
+      } else {
+        h.denied++;
+      }
+    }
+    const hourlyTrends = Array.from(hourBuckets.entries())
+      .map(([hour, stats]) => ({ hour, ...stats }))
+      .sort((a, b) => a.hour.localeCompare(b.hour))
+      .slice(-24);
+
+    // ── Top spenders (by credits) ──
+    const keyCosts = new Map<string, { calls: number; credits: number; denied: number }>();
+    for (const e of events) {
+      const name = e.keyName || e.apiKey.slice(0, 10);
+      if (!keyCosts.has(name)) keyCosts.set(name, { calls: 0, credits: 0, denied: 0 });
+      const k = keyCosts.get(name)!;
+      k.calls++;
+      if (e.allowed) {
+        k.credits += e.creditsCharged;
+      } else {
+        k.denied++;
+      }
+    }
+    const topSpenders = Array.from(keyCosts.entries())
+      .map(([name, stats]) => ({ name, ...stats }))
+      .sort((a, b) => b.credits - a.credits)
+      .slice(0, 10);
+
+    // ── Totals ──
+    let totalCredits = 0;
+    let totalCalls = 0;
+    let totalDenied = 0;
+    for (const e of events) {
+      totalCalls++;
+      if (e.allowed) {
+        totalCredits += e.creditsCharged;
+      } else {
+        totalDenied++;
+      }
+    }
+    const avgCostPerCall = totalCalls - totalDenied > 0
+      ? Math.round(totalCredits / (totalCalls - totalDenied) * 100) / 100
+      : 0;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalCredits,
+        totalCalls,
+        totalAllowed: totalCalls - totalDenied,
+        totalDenied,
+        avgCostPerCall,
+      },
+      perTool,
+      perNamespace,
+      hourlyTrends,
+      topSpenders,
     }));
   }
 
