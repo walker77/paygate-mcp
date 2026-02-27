@@ -13,11 +13,11 @@ describe('GET /admin/credit-waste', () => {
     const info = await server.start();
     port = info.port;
     adminKey = info.adminKey;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('returns empty when no active keys', async () => {
     const res = await fetch(`http://localhost:${port}/admin/credit-waste`, {

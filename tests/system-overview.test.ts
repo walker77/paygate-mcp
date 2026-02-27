@@ -13,11 +13,11 @@ describe('GET /admin/system-overview', () => {
     const info = await server.start();
     port = info.port;
     adminKey = info.adminKey;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('returns overview when no keys exist', async () => {
     const res = await fetch(`http://localhost:${port}/admin/system-overview`, {
