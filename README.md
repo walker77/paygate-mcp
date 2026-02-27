@@ -149,6 +149,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Consumer Retention Cohorts** — `GET /admin/consumer-retention` groups consumers by creation date with retention rates and avg spend per cohort
 - **Error Breakdown** — `GET /admin/error-breakdown` categorizes denied requests by reason with counts, percentages, affected consumers, and error rate
 - **Credit Utilization Rate** — `GET /admin/credit-utilization` shows utilization percentage across active keys with utilization bands and over-provisioning detection
+- **Namespace Revenue** — `GET /admin/namespace-revenue` revenue breakdown by namespace with spend, call counts, key counts, and percentage breakdown
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3469,6 +3470,26 @@ curl http://localhost:3000/admin/credit-utilization -H "X-Admin-Key: YOUR_ADMIN_
 ```
 
 Shows what percentage of allocated credits are being used across active keys. Utilization bands: **0%** (unused), **1-25%**, **26-50%**, **51-75%**, **76-99%**, **100%** (fully consumed). `totalAllocated` = remaining credits + spent credits (original allocation). Excludes revoked/suspended keys. Read-only.
+
+### Namespace Revenue
+
+```bash
+curl http://localhost:3000/admin/namespace-revenue -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "namespaces": [
+    { "namespace": "team-alpha", "totalSpent": 1500, "totalCalls": 300, "keyCount": 5, "percentage": 60 },
+    { "namespace": "team-beta", "totalSpent": 750, "totalCalls": 150, "keyCount": 3, "percentage": 30 },
+    { "namespace": "default", "totalSpent": 250, "totalCalls": 50, "keyCount": 2, "percentage": 10 }
+  ],
+  "summary": { "totalNamespaces": 3, "totalRevenue": 2500, "topNamespace": "team-alpha" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Revenue breakdown by namespace. Keys without a namespace are grouped as "default". Per-namespace: total credits spent, call count, key count, and revenue percentage. `topNamespace` is the highest revenue generator. Excludes revoked/suspended keys. Sorted by spend descending. Read-only.
 
 ### IP Allowlisting
 

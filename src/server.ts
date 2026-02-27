@@ -1027,6 +1027,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/namespace-revenue':
+        if (req.method === 'GET') return this.handleNamespaceRevenue(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1644,6 +1649,7 @@ export class PayGateServer {
         consumerRetention: 'GET /admin/consumer-retention — Consumer retention cohorts grouped by creation date with retention rates and avg spend per cohort (requires X-Admin-Key)',
         errorBreakdown: 'GET /admin/error-breakdown — Denied request breakdown by reason with counts, percentages, affected consumers, and overall error rate (requires X-Admin-Key)',
         creditUtilization: 'GET /admin/credit-utilization — Credit utilization rate across active keys with utilization bands and over/under-provisioning detection (requires X-Admin-Key)',
+        namespaceRevenue: 'GET /admin/namespace-revenue — Revenue breakdown by namespace with spend, call counts, key counts, and percentage breakdown (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8360,6 +8366,62 @@ export class PayGateServer {
         totalSpent,
         overallUtilization: totalAllocated > 0 ? Math.round((totalSpent / totalAllocated) * 100) : 0,
         totalKeys: activeRecords.length,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/namespace-revenue — Revenue by namespace ─────────────────────
+
+  private handleNamespaceRevenue(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        namespaces: [],
+        summary: { totalNamespaces: 0, totalRevenue: 0, topNamespace: null },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const nsMap = new Map<string, { totalSpent: number; totalCalls: number; keyCount: number }>();
+
+    for (const rec of activeRecords) {
+      const ns = rec.namespace || 'default';
+      let data = nsMap.get(ns);
+      if (!data) {
+        data = { totalSpent: 0, totalCalls: 0, keyCount: 0 };
+        nsMap.set(ns, data);
+      }
+      data.totalSpent += rec.totalSpent || 0;
+      data.totalCalls += rec.totalCalls || 0;
+      data.keyCount += 1;
+    }
+
+    const totalRevenue = Array.from(nsMap.values()).reduce((s, d) => s + d.totalSpent, 0);
+
+    const namespaces = Array.from(nsMap.entries())
+      .map(([namespace, data]) => ({
+        namespace,
+        totalSpent: data.totalSpent,
+        totalCalls: data.totalCalls,
+        keyCount: data.keyCount,
+        percentage: totalRevenue > 0 ? Math.round((data.totalSpent / totalRevenue) * 100) : 0,
+      }))
+      .sort((a, b) => b.totalSpent - a.totalSpent);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      namespaces,
+      summary: {
+        totalNamespaces: namespaces.length,
+        totalRevenue,
+        topNamespace: namespaces[0]?.namespace || null,
       },
       generatedAt: new Date().toISOString(),
     }));
