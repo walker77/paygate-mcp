@@ -932,6 +932,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/group-performance':
+        if (req.method === 'GET') return this.handleGroupPerformance(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1530,6 +1535,7 @@ export class PayGateServer {
         keyAge: 'GET /admin/key-age — Key age distribution with oldest/newest keys, age buckets, and recently created list (requires X-Admin-Key)',
         namespaceUsage: 'GET /admin/namespace-usage — Per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison (requires X-Admin-Key)',
         auditSummary: 'GET /admin/audit-summary — Audit event analytics with type breakdown, top actors, recent events, and activity summary (requires X-Admin-Key)',
+        groupPerformance: 'GET /admin/group-performance — Per-group analytics with key counts, credit allocation/spending, call volume, and utilization (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6974,6 +6980,74 @@ export class PayGateServer {
       eventsByType,
       topActors,
       recentEvents,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/group-performance — Per-group analytics ─────────────────────
+
+  private handleGroupPerformance(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const groupList = this.groups.listGroups();
+    const records = this.gate.store.getAllRecords().filter(r => r.active);
+
+    // Count ungrouped keys
+    const groupedKeys = new Set<string>();
+    const groupRecords = new Map<string, typeof records>();
+
+    for (const g of groupList) {
+      const members = this.groups.getGroupMembers(g.id);
+      const memberSet = new Set(members);
+      const memberRecords: typeof records = [];
+      for (const r of records) {
+        if (memberSet.has(r.key)) {
+          groupedKeys.add(r.key);
+          memberRecords.push(r);
+        }
+      }
+      groupRecords.set(g.id, memberRecords);
+    }
+
+    const ungroupedKeys = records.filter(r => !groupedKeys.has(r.key)).length;
+
+    const groups = groupList.map(g => {
+      const members = groupRecords.get(g.id) || [];
+      let totalAllocated = 0;
+      let totalSpent = 0;
+      let totalCalls = 0;
+      for (const r of members) {
+        totalAllocated += r.credits + r.totalSpent;
+        totalSpent += r.totalSpent;
+        totalCalls += r.totalCalls;
+      }
+      return {
+        groupId: g.id,
+        groupName: g.name,
+        description: g.description,
+        keyCount: members.length,
+        totalAllocated,
+        totalSpent,
+        totalRemaining: totalAllocated - totalSpent,
+        totalCalls,
+        utilizationPct: totalAllocated > 0
+          ? Math.round((totalSpent / totalAllocated) * 100)
+          : 0,
+        policy: {
+          allowedTools: g.allowedTools,
+          deniedTools: g.deniedTools,
+          rateLimitPerMin: g.rateLimitPerMin,
+        },
+      };
+    }).sort((a, b) => b.totalSpent - a.totalSpent);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalGroups: groupList.length,
+        ungroupedKeys,
+      },
+      groups,
       generatedAt: new Date().toISOString(),
     }));
   }

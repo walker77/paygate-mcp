@@ -130,6 +130,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Age Analysis** — `GET /admin/key-age` key age distribution with oldest/newest keys, age buckets (24h/7d/30d/older), and recently created list
 - **Namespace Usage Summary** — `GET /admin/namespace-usage` per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison
 - **Audit Summary** — `GET /admin/audit-summary` audit event analytics with type breakdown, top actors, recent events, and activity summary
+- **Group Performance** — `GET /admin/group-performance` per-group analytics with key counts, credit allocation/spending, call volume, utilization, and policy summary
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3011,6 +3012,29 @@ curl http://localhost:3000/admin/audit-summary -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Audit event analytics: total events with hourly/daily counts, event type breakdown sorted by frequency, top 10 most active actors, and the 20 most recent events (newest first). Read-only.
+
+### Group Performance
+
+```bash
+curl http://localhost:3000/admin/group-performance -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalGroups": 2, "ungroupedKeys": 3 },
+  "groups": [
+    {
+      "groupId": "grp_abc123", "groupName": "prod-team", "description": "Production",
+      "keyCount": 5, "totalAllocated": 5000, "totalSpent": 2000, "totalRemaining": 3000,
+      "totalCalls": 400, "utilizationPct": 40,
+      "policy": { "allowedTools": ["tool_a"], "deniedTools": [], "rateLimitPerMin": 60 }
+    }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-group analytics: key counts, credit allocation/spending/remaining, call volume, and utilization percentages. Includes group policy summary (allowed/denied tools, rate limits). Sorted by spending (highest first). Also reports ungrouped key count. Read-only.
 
 ### IP Allowlisting
 
