@@ -862,6 +862,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/revenue':
+        if (req.method === 'GET') return this.handleRevenueAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1446,6 +1451,7 @@ export class PayGateServer {
         denialAnalysis: 'GET /admin/denials — Comprehensive denial breakdown by reason type with per-key and per-tool stats, hourly trends, and most denied keys (requires X-Admin-Key)',
         trafficAnalysis: 'GET /admin/traffic — Traffic volume analysis with tool popularity, hourly volume, top consumers, namespace breakdown, and peak hour identification (requires X-Admin-Key)',
         securityAudit: 'GET /admin/security — Security posture analysis with findings for missing IP allowlists, quotas, ACLs, spending limits, expiry, high-credit keys, and composite score (requires X-Admin-Key)',
+        revenueAnalysis: 'GET /admin/revenue — Revenue metrics with per-tool revenue, per-key spending, hourly revenue trends, credit flow summary, and average revenue per call (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5784,6 +5790,87 @@ export class PayGateServer {
         totalFindings,
       },
       findings,
+    }));
+  }
+
+  // ─── /admin/revenue — Revenue analysis ──────────────────────────────────
+
+  private handleRevenueAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+    const allRecords = this.gate.store.getAllRecords();
+
+    // ── Summary ──
+    const allowedEvents = events.filter(e => e.allowed);
+    const totalRevenue = allowedEvents.reduce((sum, e) => sum + e.creditsCharged, 0);
+    const totalCalls = allowedEvents.length;
+    const averageRevenuePerCall = totalCalls > 0 ? Math.round(totalRevenue / totalCalls * 100) / 100 : 0;
+
+    // ── By tool ──
+    const toolMap = new Map<string, { revenue: number; calls: number }>();
+    for (const e of allowedEvents) {
+      if (!toolMap.has(e.tool)) toolMap.set(e.tool, { revenue: 0, calls: 0 });
+      const t = toolMap.get(e.tool)!;
+      t.revenue += e.creditsCharged;
+      t.calls++;
+    }
+    const byTool = Array.from(toolMap.entries())
+      .map(([tool, stats]) => ({ tool, ...stats, averagePerCall: stats.calls > 0 ? Math.round(stats.revenue / stats.calls * 100) / 100 : 0 }))
+      .sort((a, b) => b.revenue - a.revenue);
+
+    // ── By key ──
+    const keyMap = new Map<string, { name: string; revenue: number; calls: number }>();
+    for (const e of allowedEvents) {
+      const name = e.keyName || e.apiKey;
+      if (!keyMap.has(name)) keyMap.set(name, { name, revenue: 0, calls: 0 });
+      const k = keyMap.get(name)!;
+      k.revenue += e.creditsCharged;
+      k.calls++;
+    }
+    const byKey = Array.from(keyMap.values())
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 10);
+
+    // ── Hourly revenue ──
+    const hourMap = new Map<string, { revenue: number; calls: number }>();
+    for (const e of allowedEvents) {
+      const hour = new Date(e.timestamp).toISOString().slice(0, 13);
+      if (!hourMap.has(hour)) hourMap.set(hour, { revenue: 0, calls: 0 });
+      const h = hourMap.get(hour)!;
+      h.revenue += e.creditsCharged;
+      h.calls++;
+    }
+    const hourlyRevenue = Array.from(hourMap.entries())
+      .map(([hour, stats]) => ({ hour, ...stats }))
+      .sort((a, b) => a.hour.localeCompare(b.hour));
+
+    // ── Credit flow ──
+    let totalAllocated = 0;
+    let totalSpent = 0;
+    let totalRemaining = 0;
+    for (const record of allRecords) {
+      if (!record.active) continue;
+      totalAllocated += record.credits + (record.totalSpent || 0);
+      totalSpent += record.totalSpent || 0;
+      totalRemaining += record.credits;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalRevenue,
+        totalCalls,
+        averageRevenuePerCall,
+      },
+      byTool,
+      byKey,
+      hourlyRevenue,
+      creditFlow: {
+        totalAllocated,
+        totalSpent,
+        totalRemaining,
+      },
     }));
   }
 

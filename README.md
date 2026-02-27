@@ -116,6 +116,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Denial Analysis** — `GET /admin/denials` comprehensive denial breakdown by reason type (insufficient_credits, rate_limited, quota_exceeded, key_suspended, etc.) with per-key and per-tool stats, hourly trends, and most denied keys
 - **Traffic Analysis** — `GET /admin/traffic` request volume analysis with tool popularity, hourly volume, top consumers by call count, namespace breakdown, peak hour identification, and success rates
 - **Security Audit** — `GET /admin/security` security posture analysis identifying keys without IP allowlists, quotas, ACL restrictions, spending limits, or expiry dates, flagging high-credit keys, and computing a composite security score
+- **Revenue Analysis** — `GET /admin/revenue` revenue metrics with per-tool revenue breakdown, per-key spending, hourly revenue trends, credit flow summary (allocated/spent/remaining), and average revenue per call
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2675,6 +2676,24 @@ curl http://localhost:3000/admin/security -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Returns a composite security score (0-100) with per-finding breakdown. Scans all active keys for: missing IP allowlists (warning), missing quotas (info), unrestricted ACLs (info), no spending limits (info), no expiry dates (info), and high credit balances (warning). Well-configured keys with IP restrictions, tool ACLs, quotas, spending limits, and expiry dates will not appear in any findings. Read-only — does not modify system state.
+
+### Revenue Analysis
+
+```bash
+curl http://localhost:3000/admin/revenue -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalRevenue": 5000, "totalCalls": 250, "averageRevenuePerCall": 20 },
+  "byTool": [{ "tool": "summarize", "revenue": 3000, "calls": 150, "averagePerCall": 20 }],
+  "byKey": [{ "name": "heavy-user", "revenue": 2000, "calls": 80 }],
+  "hourlyRevenue": [{ "hour": "2025-01-15T14", "revenue": 500, "calls": 25 }],
+  "creditFlow": { "totalAllocated": 50000, "totalSpent": 5000, "totalRemaining": 45000 }
+}
+```
+
+Returns revenue summary with total credits earned, per-tool revenue ranked by earnings with average per-call, top 10 per-key spending, hourly revenue trends (last 24 hours), and credit flow showing total allocated vs spent vs remaining across all active keys. Only counts successful (allowed) calls. Read-only.
 
 ### IP Allowlisting
 
