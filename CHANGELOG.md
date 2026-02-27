@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.67.0 (2026-02-27)
+
+### Load Testing
+- **k6 load test script** (`load-test.js`) — 3 scenarios: MCP tool calls (50 VUs), admin reads, health probes
+- Thresholds: p95 < 200ms, p99 < 500ms, error rate < 5%, 100+ req/s
+- Setup/teardown creates and revokes test API keys automatically
+- README load testing section with usage examples
+- `npm run test:load` script
+
+---
+
 ## 8.66.0 (2026-02-27)
 
 ### Refactoring

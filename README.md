@@ -14,6 +14,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [API Reference](#api-reference) — All 150+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
+- [Load Testing](#load-testing) — k6 benchmarking for production
 - [Error Codes](#error-codes) — Complete error code reference
 - [Feature Reference](#persistent-storage) — Detailed docs for every feature
   - [Storage & Billing](#persistent-storage) · [Stripe](#stripe-integration) · [ACL](#per-tool-acl-access-control) · [Rate Limits](#per-tool-rate-limits)
@@ -5033,6 +5034,40 @@ pm2 start ecosystem.config.js
 - [ ] Monitor `/health` endpoint with your uptime checker
 - [ ] Scrape `/metrics` with Prometheus for observability
 - [ ] Back up state file regularly (or use Redis persistence)
+
+## Load Testing
+
+A [k6](https://k6.io) load test script is included for production benchmarking:
+
+```bash
+# Install k6
+brew install k6            # macOS
+# or: https://k6.io/docs/getting-started/installation
+
+# Start server (example: echo backend)
+npx paygate-mcp wrap -- echo '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}' \
+  --port 3000 --credits-per-call 1
+
+# Run with admin key (from server startup output)
+K6_ADMIN_KEY=admin_xxxx k6 run load-test.js
+
+# Custom VUs and duration
+K6_ADMIN_KEY=admin_xxxx k6 run --vus 100 --duration 60s load-test.js
+
+# Against remote deployment
+K6_PAYGATE_URL=https://paygate.example.com K6_ADMIN_KEY=admin_xxxx k6 run load-test.js
+```
+
+**Scenarios:**
+- **mcp_traffic** — Simulates agent tool calls (ramp 0→50 VUs over 10s, sustain 30s)
+- **admin_reads** — Dashboard/analytics reads (5 constant VUs)
+- **health_checks** — Load balancer probes (10 req/s constant rate)
+
+**Thresholds:**
+- p(95) response time < 200ms
+- p(99) response time < 500ms
+- Error rate < 5%
+- Request rate > 100 req/s
 
 ## Error Codes
 

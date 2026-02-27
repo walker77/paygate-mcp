@@ -1,6 +1,6 @@
 {
   "name": "paygate-mcp",
-  "version": "8.66.0",
+  "version": "8.67.0",
   "description": "Pay-per-tool-call gating proxy for MCP servers. Wrap any MCP server with API key auth, per-tool pricing, rate limiting, and usage metering.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -30,6 +30,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "jest --verbose --forceExit",
     "test:coverage": "jest --verbose --forceExit --coverage",
+    "test:load": "echo 'Run: k6 run load-test.js (requires k6: brew install k6)'",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {},
