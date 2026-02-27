@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 135+ endpoints
+- [API Reference](#api-reference) — All 138+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
@@ -23,6 +23,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
   - [Plugins](#plugin-system) · [Groups](#key-groups-policy-templates) · [Namespaces](#multi-tenant-namespaces)
 - [Programmatic API](#programmatic-api)
 - [Security](#security)
+- [Tested With](#tested-with) — Verified against popular MCP servers
 - [Current Limitations](#current-limitations)
 - [Roadmap](#roadmap)
 - [Requirements](#requirements)
@@ -65,7 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
-- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 135+ endpoints documented
+- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 138+ endpoints documented
 - **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
 - **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
@@ -454,7 +455,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/.well-known/mcp.json` | GET | None | MCP Server Identity card (discovery) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
-| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 135+ endpoints) |
+| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 138+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |
@@ -5237,6 +5238,24 @@ const result = await client.callTool('search', { query: 'hello' });
 - Pub/sub self-message filtering via unique instance IDs (no echo loops)
 - Pub/sub subscriber uses a dedicated Redis connection (required by Redis protocol)
 - Red-teamed with 101 adversarial security tests across 14 passes
+
+## Tested With
+
+PayGate is integration-tested against popular MCP servers from the official `@modelcontextprotocol` npm scope. These tests wrap real MCP servers via `npx`, execute tool calls through the PayGate proxy, and verify that auth gating, credit billing, and rate limiting work correctly end-to-end.
+
+| MCP Server | Type | Tests | What's Verified |
+|---|---|---|---|
+| `@modelcontextprotocol/server-everything` | stdio | 4 | Tool discovery, math tool execution, credit deduction, credit blocking |
+| `@modelcontextprotocol/server-filesystem` | stdio | 4 | File write/read through gate, credit deduction, credit blocking |
+| `@modelcontextprotocol/server-memory` | stdio | 4 | Entity CRUD, knowledge graph search, credit deduction, credit blocking |
+| `@modelcontextprotocol/server-sequential-thinking` | stdio | 4 | Sequential thinking flow, credit deduction, credit blocking |
+
+**Cross-server tests** verify admin endpoints (`/health`, `/keys`, `/balance`) work identically regardless of the wrapped backend. All 16 integration tests pass.
+
+```bash
+# Run integration tests (requires internet — downloads MCP servers via npx)
+npx vitest run tests/real-mcp-servers.test.ts
+```
 
 ## Current Limitations
 
