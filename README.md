@@ -113,6 +113,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Cost Analysis** — `GET /admin/costs` cost-centric view with per-tool and per-namespace cost breakdowns, hourly spending trends, top spenders, average cost per call, and namespace filtering
 - **Rate Limit Analysis** — `GET /admin/rate-limits` rate limit utilization analysis with per-key and per-tool breakdown, denial trends, most throttled keys, and current window utilization
 - **Quota Analysis** — `GET /admin/quotas` quota utilization analysis with per-key daily/monthly usage vs limits, per-tool denial breakdown, most constrained keys, and global/per-key quota source tracking
+- **Denial Analysis** — `GET /admin/denials` comprehensive denial breakdown by reason type (insufficient_credits, rate_limited, quota_exceeded, key_suspended, etc.) with per-key and per-tool stats, hourly trends, and most denied keys
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2613,6 +2614,27 @@ curl http://localhost:3000/admin/quotas -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Returns quota configuration (global or null), key counts with/without quotas, denial summary with denial rate, per-key daily/monthly call and credit usage vs limits with utilization percentages, quota source (per-key/global/none), per-tool quota denial counts, hourly denial trends (last 24 hours), and top 10 most constrained keys ranked by daily call utilization. Read-only.
+
+### Denial Analysis
+
+```bash
+curl http://localhost:3000/admin/denials -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalCalls": 150, "totalDenials": 12, "denialRate": 0.08 },
+  "byReason": { "insufficient_credits": 5, "rate_limited": 4, "quota_exceeded": 2, "key_suspended": 1 },
+  "perKey": [
+    { "name": "heavy-user", "calls": 50, "denials": 8, "denialRate": 0.16, "topReason": "rate_limited" }
+  ],
+  "perTool": [{ "tool": "summarize", "calls": 80, "denials": 6, "denialRate": 0.075, "topReason": "insufficient_credits" }],
+  "hourlyTrends": [{ "hour": "2025-01-15T14", "calls": 20, "denials": 3 }],
+  "mostDenied": [{ "name": "heavy-user", "denials": 8, "calls": 50, "denialRate": 0.16, "topReason": "rate_limited" }]
+}
+```
+
+Returns denial summary with denial rate, breakdown by canonical reason type (insufficient_credits, rate_limited, tool_rate_limited, quota_exceeded, key_suspended, api_key_expired, invalid_api_key, missing_api_key, tool_not_allowed, ip_not_allowed, spending_limit_exceeded, etc.), per-key denial counts with top reason, per-tool denial counts, hourly denial trends (last 24 hours), and top 10 most denied keys. Read-only.
 
 ### IP Allowlisting
 

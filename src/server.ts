@@ -847,6 +847,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/denials':
+        if (req.method === 'GET') return this.handleDenialAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1428,6 +1433,7 @@ export class PayGateServer {
         costAnalysis: 'GET /admin/costs — Cost analysis with per-tool, per-namespace breakdown, hourly trends, and top spenders (requires X-Admin-Key)',
         rateLimitAnalysis: 'GET /admin/rate-limits — Rate limit utilization analysis with per-key and per-tool breakdown, denial trends, and most throttled keys (requires X-Admin-Key)',
         quotaAnalysis: 'GET /admin/quotas — Quota utilization analysis with per-key and per-tool breakdown, denial trends, most constrained keys, and configuration display (requires X-Admin-Key)',
+        denialAnalysis: 'GET /admin/denials — Comprehensive denial breakdown by reason type with per-key and per-tool stats, hourly trends, and most denied keys (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5390,6 +5396,131 @@ export class PayGateServer {
       perTool,
       hourlyTrends,
       mostConstrained,
+    }));
+  }
+
+  // ─── /admin/denials — Comprehensive denial analysis ───────────────────────
+
+  private handleDenialAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+
+    // ── Categorize deny reasons into canonical types ──
+    function categorize(reason: string): string {
+      if (reason.includes('rate_limited') && !reason.includes('tool_rate_limited')) return 'rate_limited';
+      if (reason.includes('tool_rate_limited')) return 'tool_rate_limited';
+      if (reason.includes('insufficient_credits')) return 'insufficient_credits';
+      if (reason.includes('key_suspended')) return 'key_suspended';
+      if (reason.includes('api_key_expired')) return 'api_key_expired';
+      if (reason.includes('invalid_api_key')) return 'invalid_api_key';
+      if (reason.includes('missing_api_key')) return 'missing_api_key';
+      if (reason.includes('tool_not_allowed') && !reason.includes('token_tool_not_allowed')) return 'tool_not_allowed';
+      if (reason.includes('token_tool_not_allowed')) return 'token_tool_not_allowed';
+      if (reason.includes('ip_not_allowed')) return 'ip_not_allowed';
+      if (reason.includes('spending_limit_exceeded')) return 'spending_limit_exceeded';
+      if (reason.includes('quota_exceeded')) return 'quota_exceeded';
+      if (reason.includes('team_budget')) return 'team_budget_exceeded';
+      return 'other';
+    }
+
+    // ── Summary ──
+    let totalCalls = 0;
+    let totalDenials = 0;
+    const byReason: Record<string, number> = {};
+
+    for (const e of events) {
+      totalCalls++;
+      if (!e.allowed && e.denyReason) {
+        totalDenials++;
+        const cat = categorize(e.denyReason);
+        byReason[cat] = (byReason[cat] || 0) + 1;
+      }
+    }
+    const denialRate = totalCalls > 0
+      ? Math.round(totalDenials / totalCalls * 10000) / 10000
+      : 0;
+
+    // ── Per-key breakdown ──
+    const keyMap = new Map<string, { name: string; calls: number; denials: number; reasons: Record<string, number> }>();
+    for (const e of events) {
+      const name = e.keyName || e.apiKey.slice(0, 10);
+      if (!keyMap.has(name)) keyMap.set(name, { name, calls: 0, denials: 0, reasons: {} });
+      const k = keyMap.get(name)!;
+      k.calls++;
+      if (!e.allowed && e.denyReason) {
+        k.denials++;
+        const cat = categorize(e.denyReason);
+        k.reasons[cat] = (k.reasons[cat] || 0) + 1;
+      }
+    }
+    const perKey = Array.from(keyMap.values()).map(k => ({
+      name: k.name,
+      calls: k.calls,
+      denials: k.denials,
+      denialRate: k.calls > 0 ? Math.round(k.denials / k.calls * 10000) / 10000 : 0,
+      topReason: Object.entries(k.reasons).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+    })).sort((a, b) => b.denials - a.denials);
+
+    // ── Per-tool breakdown ──
+    const toolMap = new Map<string, { calls: number; denials: number; reasons: Record<string, number> }>();
+    for (const e of events) {
+      if (!toolMap.has(e.tool)) toolMap.set(e.tool, { calls: 0, denials: 0, reasons: {} });
+      const t = toolMap.get(e.tool)!;
+      t.calls++;
+      if (!e.allowed && e.denyReason) {
+        t.denials++;
+        const cat = categorize(e.denyReason);
+        t.reasons[cat] = (t.reasons[cat] || 0) + 1;
+      }
+    }
+    const perTool = Array.from(toolMap.entries())
+      .map(([tool, stats]) => ({
+        tool,
+        calls: stats.calls,
+        denials: stats.denials,
+        denialRate: stats.calls > 0 ? Math.round(stats.denials / stats.calls * 10000) / 10000 : 0,
+        topReason: Object.entries(stats.reasons).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+      }))
+      .sort((a, b) => b.denials - a.denials);
+
+    // ── Hourly trends ──
+    const hourBuckets = new Map<string, { calls: number; denials: number }>();
+    for (const e of events) {
+      const hour = e.timestamp.slice(0, 13);
+      if (!hourBuckets.has(hour)) hourBuckets.set(hour, { calls: 0, denials: 0 });
+      const h = hourBuckets.get(hour)!;
+      h.calls++;
+      if (!e.allowed && e.denyReason) {
+        h.denials++;
+      }
+    }
+    const hourlyTrends = Array.from(hourBuckets.entries())
+      .map(([hour, stats]) => ({ hour, ...stats }))
+      .sort((a, b) => a.hour.localeCompare(b.hour))
+      .slice(-24);
+
+    // ── Most denied keys ──
+    const mostDenied = Array.from(keyMap.values())
+      .filter(k => k.denials > 0)
+      .map(k => ({
+        name: k.name,
+        denials: k.denials,
+        calls: k.calls,
+        denialRate: k.calls > 0 ? Math.round(k.denials / k.calls * 10000) / 10000 : 0,
+        topReason: Object.entries(k.reasons).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+      }))
+      .sort((a, b) => b.denials - a.denials)
+      .slice(0, 10);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: { totalCalls, totalDenials, denialRate },
+      byReason,
+      perKey,
+      perTool,
+      hourlyTrends,
+      mostDenied,
     }));
   }
 
