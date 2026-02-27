@@ -887,6 +887,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/sla':
+        if (req.method === 'GET') return this.handleSlaMonitoring(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1476,6 +1481,7 @@ export class PayGateServer {
         anomalyDetection: 'GET /admin/anomalies — Anomaly detection identifying high denial rates, rapid credit depletion, low credit balances, and other unusual patterns (requires X-Admin-Key)',
         usageForecasting: 'GET /admin/forecast — Usage forecasting with per-key depletion estimates, system-wide consumption trends, per-tool breakdown, and at-risk key identification (requires X-Admin-Key)',
         complianceReport: 'GET /admin/compliance — Compliance report with key governance, access control coverage, audit trail completeness, recommendations, and overall compliance score (requires X-Admin-Key)',
+        slaMonitoring: 'GET /admin/sla — SLA monitoring with success rates, denial breakdowns, per-tool availability, uptime tracking, and denial reason aggregation (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6279,6 +6285,85 @@ export class PayGateServer {
       },
       overallScore: score,
       recommendations,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/sla — SLA Monitoring ─────────────────────────────────────────
+
+  private handleSlaMonitoring(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+
+    // ── Summary metrics ──
+    let allowedCalls = 0;
+    let deniedCalls = 0;
+    const denialReasons: Record<string, number> = {};
+
+    for (const e of events) {
+      if (e.allowed) {
+        allowedCalls++;
+      } else {
+        deniedCalls++;
+        // Normalize deny reason to canonical type
+        const reason = e.denyReason || 'unknown';
+        let canonical = 'unknown';
+        if (reason.includes('insufficient_credits')) canonical = 'insufficient_credits';
+        else if (reason.includes('rate_limited')) canonical = 'rate_limited';
+        else if (reason.includes('quota')) canonical = 'quota_exceeded';
+        else if (reason.includes('acl') || reason.includes('not allowed')) canonical = 'acl_denied';
+        else if (reason.includes('spending_limit')) canonical = 'spending_limit';
+        else if (reason.includes('suspended')) canonical = 'key_suspended';
+        else if (reason.includes('expired')) canonical = 'key_expired';
+        else canonical = reason.split(':')[0] || 'unknown';
+        denialReasons[canonical] = (denialReasons[canonical] || 0) + 1;
+      }
+    }
+
+    const totalCalls = allowedCalls + deniedCalls;
+    const successRate = totalCalls > 0 ? Math.round(allowedCalls / totalCalls * 10000) / 100 : 100;
+
+    // ── Per-tool breakdown ──
+    const toolMap = new Map<string, { allowed: number; denied: number }>();
+    for (const e of events) {
+      const tool = e.tool || 'unknown';
+      if (!toolMap.has(tool)) toolMap.set(tool, { allowed: 0, denied: 0 });
+      const t = toolMap.get(tool)!;
+      if (e.allowed) t.allowed++;
+      else t.denied++;
+    }
+
+    const byTool = Array.from(toolMap.entries())
+      .map(([tool, stats]) => {
+        const total = stats.allowed + stats.denied;
+        return {
+          tool,
+          totalCalls: total,
+          allowedCalls: stats.allowed,
+          deniedCalls: stats.denied,
+          successRate: total > 0 ? Math.round(stats.allowed / total * 10000) / 100 : 100,
+        };
+      })
+      .sort((a, b) => b.totalCalls - a.totalCalls);
+
+    // ── Uptime ──
+    const uptimeMs = Date.now() - this.startedAt;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalCalls,
+        allowedCalls,
+        deniedCalls,
+        successRate,
+        denialReasons,
+      },
+      byTool,
+      uptime: {
+        startedAt: new Date(this.startedAt).toISOString(),
+        uptimeSeconds: Math.floor(uptimeMs / 1000),
+      },
       generatedAt: new Date().toISOString(),
     }));
   }

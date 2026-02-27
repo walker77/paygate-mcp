@@ -121,6 +121,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
 - **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
 - **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
+- **SLA Monitoring** — `GET /admin/sla` tracks service level metrics: success rates, denial breakdowns by reason, per-tool availability and error rates, uptime tracking, sorted by call volume
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2790,6 +2791,30 @@ curl http://localhost:3000/admin/compliance -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Compliance-ready report scoring key governance (expiry 25%), access control (ACL 25%, IP 20%, spending limits 15%), and audit trail (15%). Actionable recommendations for each gap. Read-only.
+
+### SLA Monitoring
+
+```bash
+curl http://localhost:3000/admin/sla -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": {
+    "totalCalls": 150, "allowedCalls": 140, "deniedCalls": 10,
+    "successRate": 93.33,
+    "denialReasons": { "insufficient_credits": 6, "rate_limited": 3, "acl_denied": 1 }
+  },
+  "byTool": [
+    { "tool": "tool_a", "totalCalls": 100, "allowedCalls": 95, "deniedCalls": 5, "successRate": 95 },
+    { "tool": "tool_b", "totalCalls": 50, "allowedCalls": 45, "deniedCalls": 5, "successRate": 90 }
+  ],
+  "uptime": { "startedAt": "2025-01-15T10:00:00Z", "uptimeSeconds": 16200 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Service level metrics: overall success rate, denial breakdown by canonical reason (insufficient_credits, rate_limited, quota_exceeded, acl_denied, spending_limit, key_suspended, key_expired), per-tool availability sorted by call volume, and server uptime tracking. Read-only.
 
 ### IP Allowlisting
 
