@@ -842,6 +842,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/quotas':
+        if (req.method === 'GET') return this.handleQuotaAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1422,6 +1427,7 @@ export class PayGateServer {
         keyLifecycle: 'GET /admin/lifecycle — Key lifecycle report with creation/revocation/expiry trends, average lifetime, and at-risk keys (requires X-Admin-Key)',
         costAnalysis: 'GET /admin/costs — Cost analysis with per-tool, per-namespace breakdown, hourly trends, and top spenders (requires X-Admin-Key)',
         rateLimitAnalysis: 'GET /admin/rate-limits — Rate limit utilization analysis with per-key and per-tool breakdown, denial trends, and most throttled keys (requires X-Admin-Key)',
+        quotaAnalysis: 'GET /admin/quotas — Quota utilization analysis with per-key and per-tool breakdown, denial trends, most constrained keys, and configuration display (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5271,6 +5277,119 @@ export class PayGateServer {
       perTool,
       hourlyTrends,
       mostThrottled,
+    }));
+  }
+
+  // ─── /admin/quotas — Quota utilization analysis ───────────────────────────
+
+  private handleQuotaAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const globalQuota = this.config.globalQuota || null;
+    const allRecords = this.gate.store.getAllRecords();
+    const events = this.gate.meter.getEvents();
+
+    // ── Summary ──
+    const totalKeys = allRecords.length;
+    let keysWithQuotas = 0;
+    for (const rec of allRecords) {
+      if (rec.quota || globalQuota) keysWithQuotas++;
+    }
+
+    let totalCalls = 0;
+    let totalQuotaDenials = 0;
+    for (const e of events) {
+      totalCalls++;
+      if (!e.allowed && e.denyReason?.includes('quota_exceeded')) {
+        totalQuotaDenials++;
+      }
+    }
+    const quotaDenialRate = totalCalls > 0
+      ? Math.round(totalQuotaDenials / totalCalls * 10000) / 10000
+      : 0;
+
+    // ── Per-key breakdown with current quota counters ──
+    const perKey = allRecords.map(rec => {
+      const quota = rec.quota || globalQuota;
+      const dailyCallLimit = quota?.dailyCallLimit || 0;
+      const monthlyCallLimit = quota?.monthlyCallLimit || 0;
+      const dailyCreditLimit = quota?.dailyCreditLimit || 0;
+      const monthlyCreditLimit = quota?.monthlyCreditLimit || 0;
+      const dailyCallUtilization = dailyCallLimit > 0
+        ? Math.round(rec.quotaDailyCalls / dailyCallLimit * 10000) / 10000
+        : 0;
+      const monthlyCallUtilization = monthlyCallLimit > 0
+        ? Math.round(rec.quotaMonthlyCalls / monthlyCallLimit * 10000) / 10000
+        : 0;
+      return {
+        name: rec.name,
+        dailyCalls: rec.quotaDailyCalls,
+        monthlyCalls: rec.quotaMonthlyCalls,
+        dailyCredits: rec.quotaDailyCredits,
+        monthlyCredits: rec.quotaMonthlyCredits,
+        dailyCallLimit,
+        monthlyCallLimit,
+        dailyCreditLimit,
+        monthlyCreditLimit,
+        dailyCallUtilization,
+        monthlyCallUtilization,
+        source: rec.quota ? 'per-key' : (globalQuota ? 'global' : 'none'),
+      };
+    }).sort((a, b) => b.dailyCallUtilization - a.dailyCallUtilization);
+
+    // ── Per-tool breakdown ──
+    const toolMap = new Map<string, { calls: number; quotaDenied: number }>();
+    for (const e of events) {
+      if (!toolMap.has(e.tool)) toolMap.set(e.tool, { calls: 0, quotaDenied: 0 });
+      const t = toolMap.get(e.tool)!;
+      t.calls++;
+      if (!e.allowed && e.denyReason?.includes('quota_exceeded')) {
+        t.quotaDenied++;
+      }
+    }
+    const perTool = Array.from(toolMap.entries())
+      .map(([tool, stats]) => ({ tool, ...stats }))
+      .sort((a, b) => b.quotaDenied - a.quotaDenied);
+
+    // ── Hourly trends (quota denials) ──
+    const hourBuckets = new Map<string, { calls: number; quotaDenied: number }>();
+    for (const e of events) {
+      const hour = e.timestamp.slice(0, 13); // YYYY-MM-DDTHH
+      if (!hourBuckets.has(hour)) hourBuckets.set(hour, { calls: 0, quotaDenied: 0 });
+      const h = hourBuckets.get(hour)!;
+      h.calls++;
+      if (!e.allowed && e.denyReason?.includes('quota_exceeded')) {
+        h.quotaDenied++;
+      }
+    }
+    const hourlyTrends = Array.from(hourBuckets.entries())
+      .map(([hour, stats]) => ({ hour, ...stats }))
+      .sort((a, b) => a.hour.localeCompare(b.hour))
+      .slice(-24);
+
+    // ── Most constrained keys (by daily call utilization) ──
+    const mostConstrained = perKey
+      .filter(k => k.dailyCallLimit > 0 || k.monthlyCallLimit > 0)
+      .map(k => ({
+        name: k.name,
+        dailyCalls: k.dailyCalls,
+        dailyCallLimit: k.dailyCallLimit,
+        dailyCallUtilization: k.dailyCallUtilization,
+        monthlyCalls: k.monthlyCalls,
+        monthlyCallLimit: k.monthlyCallLimit,
+        monthlyCallUtilization: k.monthlyCallUtilization,
+      }))
+      .sort((a, b) => b.dailyCallUtilization - a.dailyCallUtilization)
+      .slice(0, 10);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      config: { globalQuota },
+      summary: { totalKeys, keysWithQuotas, totalQuotaDenials, quotaDenialRate },
+      perKey,
+      perTool,
+      hourlyTrends,
+      mostConstrained,
     }));
   }
 

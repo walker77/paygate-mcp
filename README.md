@@ -112,6 +112,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Lifecycle Report** — `GET /admin/lifecycle` aggregated lifecycle trends with daily creation/revocation/suspension buckets, average key lifetime, and at-risk keys (expiring, expired, zero credits)
 - **Cost Analysis** — `GET /admin/costs` cost-centric view with per-tool and per-namespace cost breakdowns, hourly spending trends, top spenders, average cost per call, and namespace filtering
 - **Rate Limit Analysis** — `GET /admin/rate-limits` rate limit utilization analysis with per-key and per-tool breakdown, denial trends, most throttled keys, and current window utilization
+- **Quota Analysis** — `GET /admin/quotas` quota utilization analysis with per-key daily/monthly usage vs limits, per-tool denial breakdown, most constrained keys, and global/per-key quota source tracking
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2591,6 +2592,27 @@ curl http://localhost:3402/admin/rate-limits \
 ```
 
 Returns rate limit configuration, denial summary with throttle rate, per-key breakdown with current sliding window utilization, per-tool denial counts, hourly denial trends (last 24 hours), and top 10 most throttled keys ranked by denial count. Handles unlimited rate limits (globalLimitPerMin: 0). Read-only.
+
+### Quota Analysis
+
+```bash
+curl http://localhost:3000/admin/quotas -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "config": { "globalQuota": { "dailyCallLimit": 100, "monthlyCallLimit": 1000, "dailyCreditLimit": 500, "monthlyCreditLimit": 5000 } },
+  "summary": { "totalKeys": 5, "keysWithQuotas": 4, "totalQuotaDenials": 3, "quotaDenialRate": 0.02 },
+  "perKey": [
+    { "name": "heavy-user", "dailyCalls": 95, "monthlyCalls": 450, "dailyCredits": 475, "monthlyCredits": 2250, "dailyCallLimit": 100, "monthlyCallLimit": 1000, "dailyCreditLimit": 500, "monthlyCreditLimit": 5000, "dailyCallUtilization": 0.95, "monthlyCallUtilization": 0.45, "source": "global" }
+  ],
+  "perTool": [{ "tool": "summarize", "calls": 120, "quotaDenied": 2 }],
+  "hourlyTrends": [{ "hour": "2025-01-15T14", "calls": 15, "quotaDenied": 1 }],
+  "mostConstrained": [{ "name": "heavy-user", "dailyCalls": 95, "dailyCallLimit": 100, "dailyCallUtilization": 0.95, "monthlyCalls": 450, "monthlyCallLimit": 1000, "monthlyCallUtilization": 0.45 }]
+}
+```
+
+Returns quota configuration (global or null), key counts with/without quotas, denial summary with denial rate, per-key daily/monthly call and credit usage vs limits with utilization percentages, quota source (per-key/global/none), per-tool quota denial counts, hourly denial trends (last 24 hours), and top 10 most constrained keys ranked by daily call utilization. Read-only.
 
 ### IP Allowlisting
 
