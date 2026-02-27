@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.71.0 (2026-02-27)
+
+### Security Headers
+- **7 security headers** on every response: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 0`, `Referrer-Policy: strict-origin-when-cross-origin`, `Cache-Control: no-store`, `Content-Security-Policy: default-src 'none'`, `X-Powered-By` removed
+- **Dashboard CSP override**: `/dashboard` gets relaxed CSP for inline scripts/styles while keeping `frame-ancestors 'none'`
+- Headers apply to all responses: API, admin, errors, OPTIONS preflight, metrics, CSV exports
+- Compatible with existing `customHeaders` config — security headers apply first, custom headers can extend
+- 16 new tests
+
+---
+
 ## 8.70.0 (2026-02-27)
 
 ### Server Hardening

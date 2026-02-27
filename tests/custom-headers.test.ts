@@ -159,10 +159,12 @@ describe('Custom Headers — Not configured', () => {
     await server.stop();
   });
 
-  test('no custom headers when not configured', async () => {
+  test('no custom headers when not configured (security headers still present)', async () => {
     const res = await request(port, 'GET', '/health');
-    expect(res.headers['x-frame-options']).toBeUndefined();
-    expect(res.headers['x-content-type-options']).toBeUndefined();
+    // Security headers are always present (since v8.71.0)
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    // But arbitrary custom headers are not set
     expect(res.headers['x-custom-tag']).toBeUndefined();
   });
 
@@ -192,9 +194,12 @@ describe('Custom Headers — Empty object', () => {
     await server.stop();
   });
 
-  test('empty customHeaders object does not add headers', async () => {
+  test('empty customHeaders object does not add custom headers (security headers still present)', async () => {
     const res = await request(port, 'GET', '/health');
-    expect(res.headers['x-frame-options']).toBeUndefined();
+    // Security headers are always present even with empty customHeaders
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    // But no arbitrary custom headers are added
+    expect(res.headers['x-custom-tag']).toBeUndefined();
   });
 });
 

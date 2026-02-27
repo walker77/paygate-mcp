@@ -572,6 +572,15 @@ export class PayGateServer {
     // Stash on request for downstream access
     (req as any)._requestId = requestId;
 
+    // Security headers — prevent MIME sniffing, clickjacking, XSS, and info leakage
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '0');                    // Disabled; modern browsers use CSP instead
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Cache-Control', 'no-store');                 // API responses should not be cached
+    res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+    res.removeHeader('X-Powered-By');                           // Hide server technology
+
     // CORS headers
     const corsConfig = this.config.cors;
     const allowedOrigin = this.resolveCorsOrigin(req, corsConfig);
@@ -4185,8 +4194,10 @@ export class PayGateServer {
   private handleDashboard(_req: IncomingMessage, res: ServerResponse): void {
     // Dashboard is public HTML — auth is done client-side via admin key prompt.
     // The dashboard JS calls /status, /usage, /keys which all require X-Admin-Key.
+    // Override restrictive CSP: dashboard needs inline scripts/styles.
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'",
       'Cache-Control': 'no-cache',
     });
     res.end(getDashboardHtml(this.config.name));
