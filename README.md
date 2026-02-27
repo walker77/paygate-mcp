@@ -115,6 +115,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Quota Analysis** — `GET /admin/quotas` quota utilization analysis with per-key daily/monthly usage vs limits, per-tool denial breakdown, most constrained keys, and global/per-key quota source tracking
 - **Denial Analysis** — `GET /admin/denials` comprehensive denial breakdown by reason type (insufficient_credits, rate_limited, quota_exceeded, key_suspended, etc.) with per-key and per-tool stats, hourly trends, and most denied keys
 - **Traffic Analysis** — `GET /admin/traffic` request volume analysis with tool popularity, hourly volume, top consumers by call count, namespace breakdown, peak hour identification, and success rates
+- **Security Audit** — `GET /admin/security` security posture analysis identifying keys without IP allowlists, quotas, ACL restrictions, spending limits, or expiry dates, flagging high-credit keys, and computing a composite security score
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2654,6 +2655,26 @@ curl http://localhost:3000/admin/traffic -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Returns traffic summary with success rate and peak hour, tool popularity ranked by call count with success rates and credit totals, hourly volume (last 24 hours) with allowed/denied/credit breakdowns, top 10 consumers by call count, and namespace breakdown with per-namespace stats. Read-only.
+
+### Security Audit
+
+```bash
+curl http://localhost:3000/admin/security -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "score": 72,
+  "summary": { "totalKeys": 5, "totalFindings": 12 },
+  "findings": [
+    { "type": "no_ip_allowlist", "severity": "warning", "keys": ["prod-key", "dev-key"], "description": "Keys without IP allowlists can be used from any IP address" },
+    { "type": "no_acl_restriction", "severity": "info", "keys": ["dev-key"], "description": "Keys without ACL restrictions can access all tools" },
+    { "type": "high_credit_balance", "severity": "warning", "keys": ["whale-key"], "description": "Keys with 10000+ credits are high-value targets if compromised" }
+  ]
+}
+```
+
+Returns a composite security score (0-100) with per-finding breakdown. Scans all active keys for: missing IP allowlists (warning), missing quotas (info), unrestricted ACLs (info), no spending limits (info), no expiry dates (info), and high credit balances (warning). Well-configured keys with IP restrictions, tool ACLs, quotas, spending limits, and expiry dates will not appear in any findings. Read-only — does not modify system state.
 
 ### IP Allowlisting
 

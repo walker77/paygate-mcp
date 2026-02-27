@@ -857,6 +857,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/security':
+        if (req.method === 'GET') return this.handleSecurityAudit(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1440,6 +1445,7 @@ export class PayGateServer {
         quotaAnalysis: 'GET /admin/quotas — Quota utilization analysis with per-key and per-tool breakdown, denial trends, most constrained keys, and configuration display (requires X-Admin-Key)',
         denialAnalysis: 'GET /admin/denials — Comprehensive denial breakdown by reason type with per-key and per-tool stats, hourly trends, and most denied keys (requires X-Admin-Key)',
         trafficAnalysis: 'GET /admin/traffic — Traffic volume analysis with tool popularity, hourly volume, top consumers, namespace breakdown, and peak hour identification (requires X-Admin-Key)',
+        securityAudit: 'GET /admin/security — Security posture analysis with findings for missing IP allowlists, quotas, ACLs, spending limits, expiry, high-credit keys, and composite score (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5658,6 +5664,126 @@ export class PayGateServer {
       hourlyVolume,
       topConsumers,
       byNamespace,
+    }));
+  }
+
+  // ─── /admin/security — Security posture audit ───────────────────────────
+
+  private handleSecurityAudit(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const HIGH_CREDIT_THRESHOLD = 10000;
+
+    interface Finding {
+      type: string;
+      severity: 'warning' | 'info' | 'critical';
+      keys: string[];
+      description: string;
+    }
+
+    const findings: Finding[] = [];
+
+    // ── no_ip_allowlist (warning) ──
+    const noIp = allRecords.filter(r => r.active && (!r.ipAllowlist || r.ipAllowlist.length === 0));
+    if (noIp.length > 0) {
+      findings.push({
+        type: 'no_ip_allowlist',
+        severity: 'warning',
+        keys: noIp.map(r => r.name),
+        description: 'Keys without IP allowlists can be used from any IP address',
+      });
+    }
+
+    // ── no_quota (info) ──
+    const noQuota = allRecords.filter(r => {
+      if (!r.active) return false;
+      // Has per-key quota?
+      if (r.quota) {
+        const q = r.quota;
+        if (q.dailyCallLimit > 0 || q.monthlyCallLimit > 0 || q.dailyCreditLimit > 0 || q.monthlyCreditLimit > 0) return false;
+      }
+      // Has global quota?
+      if (this.config.globalQuota) {
+        const gq = this.config.globalQuota;
+        if (gq.dailyCallLimit > 0 || gq.monthlyCallLimit > 0 || gq.dailyCreditLimit > 0 || gq.monthlyCreditLimit > 0) return false;
+      }
+      return true;
+    });
+    if (noQuota.length > 0) {
+      findings.push({
+        type: 'no_quota',
+        severity: 'info',
+        keys: noQuota.map(r => r.name),
+        description: 'Keys without quotas have no daily/monthly usage limits',
+      });
+    }
+
+    // ── no_acl_restriction (info) ──
+    const noAcl = allRecords.filter(r => r.active && (!r.allowedTools || r.allowedTools.length === 0));
+    if (noAcl.length > 0) {
+      findings.push({
+        type: 'no_acl_restriction',
+        severity: 'info',
+        keys: noAcl.map(r => r.name),
+        description: 'Keys without ACL restrictions can access all tools',
+      });
+    }
+
+    // ── no_spending_limit (info) ──
+    const noSpend = allRecords.filter(r => r.active && (!r.spendingLimit || r.spendingLimit === 0));
+    if (noSpend.length > 0) {
+      findings.push({
+        type: 'no_spending_limit',
+        severity: 'info',
+        keys: noSpend.map(r => r.name),
+        description: 'Keys without spending limits have no cap on total credit consumption',
+      });
+    }
+
+    // ── no_expiry (info) ──
+    const noExpiry = allRecords.filter(r => r.active && !r.expiresAt);
+    if (noExpiry.length > 0) {
+      findings.push({
+        type: 'no_expiry',
+        severity: 'info',
+        keys: noExpiry.map(r => r.name),
+        description: 'Keys without expiry dates remain valid indefinitely',
+      });
+    }
+
+    // ── high_credit_balance (warning) ──
+    const highCredit = allRecords.filter(r => r.active && r.credits >= HIGH_CREDIT_THRESHOLD);
+    if (highCredit.length > 0) {
+      findings.push({
+        type: 'high_credit_balance',
+        severity: 'warning',
+        keys: highCredit.map(r => r.name),
+        description: `Keys with ${HIGH_CREDIT_THRESHOLD}+ credits are high-value targets if compromised`,
+      });
+    }
+
+    // ── Compute score ──
+    const totalKeys = allRecords.filter(r => r.active).length;
+    const totalFindings = findings.reduce((sum, f) => sum + f.keys.length, 0);
+    let score = 100;
+    if (totalKeys > 0) {
+      // Each warning finding per key deducts more than info
+      for (const f of findings) {
+        const weight = f.severity === 'warning' ? 5 : f.severity === 'critical' ? 10 : 2;
+        score -= f.keys.length * weight;
+      }
+      score = Math.max(0, Math.min(100, score));
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      score,
+      summary: {
+        totalKeys,
+        totalFindings,
+      },
+      findings,
     }));
   }
 
