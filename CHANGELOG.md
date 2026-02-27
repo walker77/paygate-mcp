@@ -1,5 +1,14 @@
 # Changelog
 
+## 8.66.0 (2026-02-27)
+
+### Refactoring
+- **Response helpers** — `sendJson()` and `sendError()` private methods replace 588 instances of boilerplate `res.writeHead()`/`res.end(JSON.stringify())` patterns
+- **server.ts reduced by 572 lines** (12,995 → 12,423) with zero behavior changes
+- All 2,920 tests pass with identical output
+
+---
+
 ## 8.65.0 (2026-02-27)
 
 ### Production Readiness

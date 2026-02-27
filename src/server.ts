@@ -515,8 +515,7 @@ export class PayGateServer {
         try {
           await this.handleRequest(req, res);
         } catch (error) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Internal server error' }));
+          this.sendError(res, 500, 'Internal server error');
         }
       });
 
@@ -529,6 +528,22 @@ export class PayGateServer {
       this.server.on('error', reject);
     });
   }
+
+  // ─── Response Helpers ──────────────────────────────────────────────────────
+
+  /** Send a JSON response with the given status code. */
+  private sendJson(res: ServerResponse, status: number, data: unknown): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+  }
+
+  /** Send a JSON error response: { error: message }. */
+  private sendError(res: ServerResponse, status: number, message: string): void {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: message }));
+  }
+
+  // ─── Request Handling ──────────────────────────────────────────────────────
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // Request ID: propagate from incoming header or generate new one
@@ -578,8 +593,7 @@ export class PayGateServer {
     switch (url) {
       case '/mcp':
         if (this.draining) {
-          res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Server is shutting down' }));
+          this.sendError(res, 503, 'Server is shutting down');
           return;
         }
         if (this.maintenanceMode) {
@@ -612,36 +626,30 @@ export class PayGateServer {
         if (req.method === 'GET') return this.handleGetNotes(req, res);
         if (req.method === 'POST') return this.handleAddNote(req, res);
         if (req.method === 'DELETE') return this.handleDeleteNote(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        this.sendError(res, 405, 'Method not allowed');
         return;
       case '/keys/schedule':
         if (req.method === 'GET') return this.handleGetSchedules(req, res);
         if (req.method === 'POST') return this.handleCreateSchedule(req, res);
         if (req.method === 'DELETE') return this.handleCancelSchedule(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        this.sendError(res, 405, 'Method not allowed');
         return;
       case '/keys/activity':
         if (req.method === 'GET') return this.handleKeyActivity(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/keys/reserve':
         if (req.method === 'GET') return this.handleListReservations(req, res);
         if (req.method === 'POST') return this.handleCreateReservation(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        this.sendError(res, 405, 'Method not allowed');
         return;
       case '/keys/reserve/commit':
         if (req.method === 'POST') return this.handleCommitReservation(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+        this.sendError(res, 405, 'Method not allowed. Use POST.');
         return;
       case '/keys/reserve/release':
         if (req.method === 'POST') return this.handleReleaseReservation(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+        this.sendError(res, 405, 'Method not allowed. Use POST.');
         return;
       case '/keys/rotate':
         return this.handleRotateKey(req, res);
@@ -679,8 +687,7 @@ export class PayGateServer {
         return this.handleKeyHealth(req, res);
       case '/keys/dashboard':
         if (req.method === 'GET') return this.handleKeyDashboard(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
@@ -716,23 +723,19 @@ export class PayGateServer {
         return this.handleAuditStats(req, res);
       case '/requests':
         if (req.method === 'GET') return this.handleRequestLog(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/requests/export':
         if (req.method === 'GET') return this.handleRequestLogExport(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/requests/dry-run':
         if (req.method === 'POST') return this.handleRequestDryRun(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+        this.sendError(res, 405, 'Method not allowed. Use POST.');
         return;
       case '/requests/dry-run/batch':
         if (req.method === 'POST') return this.handleRequestDryRunBatch(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+        this.sendError(res, 405, 'Method not allowed. Use POST.');
         return;
       // ─── Registry / Discovery endpoints ──────────────────────────────
       case '/.well-known/mcp-payment':
@@ -745,13 +748,11 @@ export class PayGateServer {
         return this.handleAnalytics(req, res);
       case '/tools/stats':
         if (req.method === 'GET') return this.handleToolStats(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/tools/available':
         if (req.method === 'GET') return this.handleToolAvailability(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/alerts':
         if (req.method === 'GET') return this.handleGetAlerts(req, res);
@@ -819,323 +820,259 @@ export class PayGateServer {
         return this.handleAdminEventStream(req, res);
       case '/admin/notifications':
         if (req.method === 'GET') return this.handleAdminNotifications(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/dashboard':
         if (req.method === 'GET') return this.handleSystemDashboard(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/lifecycle':
         if (req.method === 'GET') return this.handleKeyLifecycleReport(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/costs':
         if (req.method === 'GET') return this.handleCostAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/rate-limits':
         if (req.method === 'GET') return this.handleRateLimitAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/quotas':
         if (req.method === 'GET') return this.handleQuotaAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/denials':
         if (req.method === 'GET') return this.handleDenialAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/traffic':
         if (req.method === 'GET') return this.handleTrafficAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/security':
         if (req.method === 'GET') return this.handleSecurityAudit(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/revenue':
         if (req.method === 'GET') return this.handleRevenueAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/key-portfolio':
         if (req.method === 'GET') return this.handleLifecycleAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/anomalies':
         if (req.method === 'GET') return this.handleAnomalyDetection(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/forecast':
         if (req.method === 'GET') return this.handleUsageForecasting(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/compliance':
         if (req.method === 'GET') return this.handleComplianceReport(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/sla':
         if (req.method === 'GET') return this.handleSlaMonitoring(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/capacity':
         if (req.method === 'GET') return this.handleCapacityPlanning(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/dependencies':
         if (req.method === 'GET') return this.handleDependencyMap(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/latency':
         if (req.method === 'GET') return this.handleLatencyAnalysis(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/error-trends':
         if (req.method === 'GET') return this.handleErrorTrends(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/credit-flow':
         if (req.method === 'GET') return this.handleCreditFlow(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/key-age':
         if (req.method === 'GET') return this.handleKeyAge(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/namespace-usage':
         if (req.method === 'GET') return this.handleNamespaceUsage(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/audit-summary':
         if (req.method === 'GET') return this.handleAuditSummary(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/group-performance':
         if (req.method === 'GET') return this.handleGroupPerformance(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/request-trends':
         if (req.method === 'GET') return this.handleRequestTrends(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/key-status':
         if (req.method === 'GET') return this.handleKeyStatus(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/webhook-health':
         if (req.method === 'GET') return this.handleWebhookHealth(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-insights':
         if (req.method === 'GET') return this.handleConsumerInsights(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/system-health':
         if (req.method === 'GET') return this.handleSystemHealth(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/tool-adoption':
         if (req.method === 'GET') return this.handleToolAdoption(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/credit-efficiency':
         if (req.method === 'GET') return this.handleCreditEfficiency(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/access-heatmap':
         if (req.method === 'GET') return this.handleAccessHeatmap(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/key-churn':
         if (req.method === 'GET') return this.handleKeyChurn(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/tool-correlation':
         if (req.method === 'GET') return this.handleToolCorrelation(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-segmentation':
         if (req.method === 'GET') return this.handleConsumerSegmentation(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/credit-distribution':
         if (req.method === 'GET') return this.handleCreditDistribution(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/response-time-distribution':
         if (req.method === 'GET') return this.handleResponseTimeDistribution(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-lifetime-value':
         if (req.method === 'GET') return this.handleConsumerLifetimeValue(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/tool-revenue':
         if (req.method === 'GET') return this.handleToolRevenue(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-retention':
         if (req.method === 'GET') return this.handleConsumerRetention(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/error-breakdown':
         if (req.method === 'GET') return this.handleErrorBreakdown(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/credit-utilization':
         if (req.method === 'GET') return this.handleCreditUtilization(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/namespace-revenue':
         if (req.method === 'GET') return this.handleNamespaceRevenue(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/group-revenue':
         if (req.method === 'GET') return this.handleGroupRevenue(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/peak-usage':
         if (req.method === 'GET') return this.handlePeakUsage(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-activity':
         if (req.method === 'GET') return this.handleConsumerActivity(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/tool-popularity':
         if (req.method === 'GET') return this.handleToolPopularity(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/credit-allocation':
         if (req.method === 'GET') return this.handleCreditAllocation(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/daily-summary':
         if (req.method === 'GET') return this.handleDailySummary(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/key-ranking':
         if (req.method === 'GET') return this.handleKeyRanking(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/hourly-traffic':
         if (req.method === 'GET') return this.handleHourlyTraffic(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/tool-error-rate':
         if (req.method === 'GET') return this.handleToolErrorRate(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-spend-velocity':
         if (req.method === 'GET') return this.handleConsumerSpendVelocity(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/namespace-activity':
         if (req.method === 'GET') return this.handleNamespaceActivity(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/credit-burn-rate':
         if (req.method === 'GET') return this.handleCreditBurnRate(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-risk-score':
         if (req.method === 'GET') return this.handleConsumerRiskScore(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/revenue-forecast':
         if (req.method === 'GET') return this.handleRevenueForecast(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/group-activity':
         if (req.method === 'GET') return this.handleGroupActivity(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/credit-waste':
         if (req.method === 'GET') return this.handleCreditWaste(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/tool-profitability':
         if (req.method === 'GET') return this.handleToolProfitability(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/consumer-growth':
         if (req.method === 'GET') return this.handleConsumerGrowth(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/namespace-comparison':
         if (req.method === 'GET') return this.handleNamespaceComparison(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/key-health-overview':
         if (req.method === 'GET') return this.handleKeyHealthOverview(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/system-overview':
         if (req.method === 'GET') return this.handleSystemOverview(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
@@ -1156,8 +1093,7 @@ export class PayGateServer {
       case '/maintenance':
         if (req.method === 'GET') return this.handleGetMaintenance(req, res);
         if (req.method === 'POST') return this.handleSetMaintenance(req, res);
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        this.sendError(res, 405, 'Method not allowed');
         return;
       // ─── Config endpoints ──────────────────────────────────────────
       case '/config/reload':
@@ -1182,8 +1118,7 @@ export class PayGateServer {
         if (url === '/' || url === '') {
           return this.handleRoot(req, res);
         }
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Not found' }));
+        this.sendError(res, 404, 'Not found');
     }
   }
 
@@ -1211,8 +1146,7 @@ export class PayGateServer {
 
     // POST /mcp — JSON-RPC request/response (may return SSE or JSON)
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
@@ -1455,8 +1389,7 @@ export class PayGateServer {
   private handleMcpSseStream(req: IncomingMessage, res: ServerResponse, apiKey: string | null): void {
     const accept = req.headers['accept'] || '';
     if (!accept.includes('text/event-stream')) {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'GET /mcp requires Accept: text/event-stream' }));
+      this.sendError(res, 405, 'GET /mcp requires Accept: text/event-stream');
       return;
     }
 
@@ -1469,8 +1402,7 @@ export class PayGateServer {
     // Register this SSE connection
     const added = this.sessions.addSseConnection(sessionId, res);
     if (!added) {
-      res.writeHead(429, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Too many SSE connections for this session' }));
+      this.sendError(res, 429, 'Too many SSE connections for this session');
       return;
     }
 
@@ -1506,16 +1438,14 @@ export class PayGateServer {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     if (!sessionId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing Mcp-Session-Id header' }));
+      this.sendError(res, 400, 'Missing Mcp-Session-Id header');
       return;
     }
 
     const destroyed = this.sessions.destroySession(sessionId);
     if (!destroyed) {
       // Per MCP spec, 404 if session doesn't exist
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session not found' }));
+      this.sendError(res, 404, 'Session not found');
       return;
     }
 
@@ -1523,8 +1453,7 @@ export class PayGateServer {
       sessionId: sessionId.slice(0, 16) + '...',
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Session terminated' }));
+    this.sendJson(res, 200, { message: 'Session terminated' });
   }
 
   /**
@@ -1617,8 +1546,7 @@ export class PayGateServer {
   // ─── / — Root info ──────────────────────────────────────────────────────────
 
   private handleRoot(_req: IncomingMessage, res: ServerResponse): void {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       name: this.config.name,
       version: PKG_VERSION,
       endpoints: {
@@ -1788,7 +1716,7 @@ export class PayGateServer {
       shadowMode: this.config.shadowMode,
       oauth: !!this.oauth,
       redis: !!this.redisSync,
-    }));
+    });
   }
 
   // ─── /status — Dashboard ────────────────────────────────────────────────────
@@ -1810,8 +1738,7 @@ export class PayGateServer {
 
   private handleHealth(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
@@ -1851,8 +1778,7 @@ export class PayGateServer {
 
   private handleInfo(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
@@ -1922,8 +1848,7 @@ export class PayGateServer {
 
   private handleConfigExport(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'viewer')) return;
@@ -1974,8 +1899,7 @@ export class PayGateServer {
 
     this.audit.log('config.export', 'admin', 'Config exported', { requestId });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ config: sanitized }));
+    this.sendJson(res, 200, { config: sanitized });
   }
 
   /** Mask a URL by hiding the path portion (keeps scheme + host) */
@@ -1998,8 +1922,7 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
@@ -2018,8 +1941,7 @@ export class PayGateServer {
     const credits = Math.max(0, Math.floor(Number(params.credits ?? tpl?.credits ?? 100)));
 
     if (credits <= 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Credits must be a positive integer' }));
+      this.sendError(res, 400, 'Credits must be a positive integer');
       return;
     }
 
@@ -2090,8 +2012,7 @@ export class PayGateServer {
       keyMasked: maskKeyForAudit(record.key), name, credits,
     });
 
-    res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 201, {
       key: record.key,
       name: record.name,
       credits: record.credits,
@@ -2102,7 +2023,7 @@ export class PayGateServer {
       ipAllowlist: record.ipAllowlist,
       namespace: record.namespace,
       message: 'Save this key — it cannot be retrieved later.',
-    }));
+    });
   }
 
   // ─── /keys — List ───────────────────────────────────────────────────────────
@@ -2151,8 +2072,7 @@ export class PayGateServer {
 
   private async handleTopUp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2162,21 +2082,18 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key || !params.credits) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key or credits' }));
+      this.sendError(res, 400, 'Missing key or credits');
       return;
     }
 
     const credits = Math.floor(Number(params.credits));
     if (!Number.isFinite(credits) || credits <= 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Credits must be a positive integer' }));
+      this.sendError(res, 400, 'Credits must be a positive integer');
       return;
     }
 
@@ -2194,8 +2111,7 @@ export class PayGateServer {
       success = this.gate.store.addCredits(actualKey, credits);
     }
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      this.sendError(res, 404, 'Key not found or inactive');
       return;
     }
 
@@ -2214,16 +2130,14 @@ export class PayGateServer {
       keyMasked: maskKeyForAudit(params.key), creditsAdded: credits, newBalance: record?.credits,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ credits: record?.credits, message: `Added ${credits} credits` }));
+    this.sendJson(res, 200, { credits: record?.credits, message: `Added ${credits} credits` });
   }
 
   // ─── /keys/transfer — Transfer credits between keys ─────────────────────
 
   private async handleCreditTransfer(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2233,35 +2147,30 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.from || !params.to) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing "from" and "to" API keys' }));
+      this.sendError(res, 400, 'Missing "from" and "to" API keys');
       return;
     }
 
     if (params.from === params.to) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot transfer credits to the same key' }));
+      this.sendError(res, 400, 'Cannot transfer credits to the same key');
       return;
     }
 
     const credits = Math.floor(Number(params.credits));
     if (!Number.isFinite(credits) || credits <= 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Credits must be a positive integer' }));
+      this.sendError(res, 400, 'Credits must be a positive integer');
       return;
     }
 
     // Validate source key exists and has enough credits
     const sourceRecord = this.gate.store.resolveKey(params.from);
     if (!sourceRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Source key not found' }));
+      this.sendError(res, 404, 'Source key not found');
       return;
     }
     if (sourceRecord.credits < credits) {
@@ -2275,8 +2184,7 @@ export class PayGateServer {
     // Validate destination key exists (getKey returns null for revoked/expired keys)
     const destRecord = this.gate.store.resolveKey(params.to);
     if (!destRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Destination key not found' }));
+      this.sendError(res, 404, 'Destination key not found');
       return;
     }
 
@@ -2288,8 +2196,7 @@ export class PayGateServer {
       // Redis atomic transfer: deduct first, then add
       const deducted = await this.redisSync.atomicDeduct(sourceRecord.key, credits);
       if (!deducted) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Redis deduction failed (insufficient credits or key not found)' }));
+        this.sendError(res, 400, 'Redis deduction failed (insufficient credits or key not found)');
         return;
       }
       await this.redisSync.atomicTopup(destRecord.key, credits);
@@ -2328,22 +2235,20 @@ export class PayGateServer {
       memo,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       transferred: credits,
       from: { keyMasked: maskKeyForAudit(sourceRecord.key), balance: fromBalance, credits: fromBalance },
       to: { keyMasked: maskKeyForAudit(destRecord.key), balance: toBalance, credits: toBalance },
       memo: memo || undefined,
       message: `Transferred ${credits} credits`,
-    }));
+    });
   }
 
   // ─── /keys/bulk — Bulk key operations ──────────────────────────────────────
 
   private async handleBulkOperations(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2353,20 +2258,17 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.operations || !Array.isArray(params.operations) || params.operations.length === 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing or empty "operations" array' }));
+      this.sendError(res, 400, 'Missing or empty "operations" array');
       return;
     }
 
     if (params.operations.length > 100) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Maximum 100 operations per request' }));
+      this.sendError(res, 400, 'Maximum 100 operations per request');
       return;
     }
 
@@ -2469,21 +2371,19 @@ export class PayGateServer {
     const succeeded = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success).length;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       total: results.length,
       succeeded,
       failed,
       results,
-    }));
+    });
   }
 
   // ─── /keys/export — Export all API keys for backup ────────────────────────
 
   private handleKeyExport(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2534,8 +2434,7 @@ export class PayGateServer {
 
   private async handleKeyImport(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2545,20 +2444,17 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.keys || !Array.isArray(params.keys) || params.keys.length === 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing or empty "keys" array' }));
+      this.sendError(res, 400, 'Missing or empty "keys" array');
       return;
     }
 
     if (params.keys.length > 1000) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Maximum 1000 keys per import request' }));
+      this.sendError(res, 400, 'Maximum 1000 keys per import request');
       return;
     }
 
@@ -2588,8 +2484,7 @@ export class PayGateServer {
       imported, overwritten, skipped, errors, mode,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       total: results.length,
       imported,
       overwritten,
@@ -2597,15 +2492,14 @@ export class PayGateServer {
       errors,
       mode,
       results,
-    }));
+    });
   }
 
   // ─── /keys/revoke — Revoke a key ──────────────────────────────────────────
 
   private async handleRevokeKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2615,14 +2509,12 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
@@ -2638,8 +2530,7 @@ export class PayGateServer {
       success = this.gate.store.revokeKey(actualKey);
     }
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -2650,16 +2541,14 @@ export class PayGateServer {
       keyMasked: maskKeyForAudit(actualKey),
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Key revoked', revoked: true }));
+    this.sendJson(res, 200, { message: 'Key revoked', revoked: true });
   }
 
   // ─── /keys/suspend — Temporarily suspend a key ─────────────────────────────
 
   private async handleSuspendKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2669,40 +2558,34 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     const record = this.gate.store.resolveKeyRaw(params.key);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
     if (!record.active) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot suspend a revoked key' }));
+      this.sendError(res, 400, 'Cannot suspend a revoked key');
       return;
     }
 
     if (record.suspended) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key is already suspended' }));
+      this.sendError(res, 400, 'Key is already suspended');
       return;
     }
 
     const success = this.gate.store.suspendKey(record.key);
     if (!success) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to suspend key' }));
+      this.sendError(res, 500, 'Failed to suspend key');
       return;
     }
     this.syncKeyMutation(record.key);
@@ -2716,16 +2599,14 @@ export class PayGateServer {
       reason: params.reason || null,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Key suspended', suspended: true }));
+    this.sendJson(res, 200, { message: 'Key suspended', suspended: true });
   }
 
   // ─── /keys/resume — Resume a suspended key ────────────────────────────────
 
   private async handleResumeKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2735,40 +2616,34 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     const record = this.gate.store.resolveKeyRaw(params.key);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
     if (!record.active) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot resume a revoked key' }));
+      this.sendError(res, 400, 'Cannot resume a revoked key');
       return;
     }
 
     if (!record.suspended) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key is not suspended' }));
+      this.sendError(res, 400, 'Key is not suspended');
       return;
     }
 
     const success = this.gate.store.resumeKey(record.key);
     if (!success) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to resume key' }));
+      this.sendError(res, 500, 'Failed to resume key');
       return;
     }
     this.syncKeyMutation(record.key);
@@ -2780,16 +2655,14 @@ export class PayGateServer {
       keyMasked: maskKeyForAudit(record.key),
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Key resumed', suspended: false }));
+    this.sendJson(res, 200, { message: 'Key resumed', suspended: false });
   }
 
   // ─── /keys/clone — Clone API key ─────────────────────────────────────────
 
   private async handleCloneKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2799,27 +2672,23 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     // Use getKeyRaw to allow cloning suspended/expired keys (but not revoked)
     const source = this.gate.store.resolveKeyRaw(params.key);
     if (!source) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Source key not found' }));
+      this.sendError(res, 404, 'Source key not found');
       return;
     }
     if (!source.active) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot clone a revoked key' }));
+      this.sendError(res, 400, 'Cannot clone a revoked key');
       return;
     }
 
@@ -2830,8 +2699,7 @@ export class PayGateServer {
       namespace: params.namespace,
     });
     if (!cloned) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Clone failed' }));
+      this.sendError(res, 500, 'Clone failed');
       return;
     }
 
@@ -2851,8 +2719,7 @@ export class PayGateServer {
       credits: cloned.credits,
     });
 
-    res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 201, {
       message: 'Key cloned',
       key: cloned.key,
       name: cloned.name,
@@ -2868,15 +2735,14 @@ export class PayGateServer {
       namespace: cloned.namespace,
       group: cloned.group,
       spendingLimit: cloned.spendingLimit,
-    }));
+    });
   }
 
   // ─── /keys/alias — Set or clear key alias ──────────────────────────────────
 
   private async handleSetAlias(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -2884,23 +2750,20 @@ export class PayGateServer {
     const raw = await this.readBody(req);
     const params = JSON.parse(raw);
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing "key" parameter' }));
+      this.sendError(res, 400, 'Missing "key" parameter');
       return;
     }
 
     // Resolve the key (support existing aliases for the source key)
     const record = this.gate.store.resolveKeyRaw(params.key);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
     const alias = params.alias !== undefined ? (params.alias === null || params.alias === '' ? null : String(params.alias)) : undefined;
     if (alias === undefined) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing "alias" parameter (string to set, null to clear)' }));
+      this.sendError(res, 400, 'Missing "alias" parameter (string to set, null to clear)');
       return;
     }
 
@@ -2931,20 +2794,18 @@ export class PayGateServer {
       });
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: record.key.slice(0, 10) + '...',
       alias: record.alias || null,
       message: `Alias ${action}`,
-    }));
+    });
   }
 
   // ─── /keys/rotate — Rotate API key ─────────────────────────────────────────
 
   private async handleRotateKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -2954,21 +2815,18 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     const rotated = this.gate.store.rotateKey(params.key);
     if (!rotated) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      this.sendError(res, 404, 'Key not found or inactive');
       return;
     }
 
@@ -2988,21 +2846,19 @@ export class PayGateServer {
       newKeyMasked: maskKeyForAudit(rotated.key),
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       message: 'Key rotated',
       newKey: rotated.key,
       name: rotated.name,
       credits: rotated.credits,
-    }));
+    });
   }
 
   // ─── /keys/acl — Set tool ACL ──────────────────────────────────────────────
 
   private async handleSetAcl(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -3012,21 +2868,18 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     const success = this.gate.store.setAcl(params.key, params.allowedTools, params.deniedTools);
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      this.sendError(res, 404, 'Key not found or inactive');
       return;
     }
     this.syncKeyMutation(params.key);
@@ -3039,20 +2892,18 @@ export class PayGateServer {
       deniedTools: record?.deniedTools || [],
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       allowedTools: record?.allowedTools || [],
       deniedTools: record?.deniedTools || [],
       message: 'ACL updated',
-    }));
+    });
   }
 
   // ─── /keys/expiry — Set key expiry ─────────────────────────────────────────
 
   private async handleSetExpiry(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -3062,14 +2913,12 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
@@ -3083,8 +2932,7 @@ export class PayGateServer {
 
     const success = this.gate.store.setExpiry(params.key, expiresAt);
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
     this.syncKeyMutation(params.key);
@@ -3096,19 +2944,17 @@ export class PayGateServer {
       expiresAt: record?.expiresAt || null,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       expiresAt: record?.expiresAt || null,
       message: expiresAt ? `Key expires at ${expiresAt}` : 'Expiry removed (key never expires)',
-    }));
+    });
   }
 
   // ─── /keys/quota — Set usage quota ────────────────────────────────────────
 
   private async handleSetQuota(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -3118,27 +2964,23 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     if (params.remove) {
       const success = this.gate.store.setQuota(params.key, null);
       if (!success) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key not found' }));
+        this.sendError(res, 404, 'Key not found');
         return;
       }
       this.syncKeyMutation(params.key);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ message: 'Quota removed (using global defaults)' }));
+      this.sendJson(res, 200, { message: 'Quota removed (using global defaults)' });
       return;
     }
 
@@ -3151,8 +2993,7 @@ export class PayGateServer {
 
     const success = this.gate.store.setQuota(params.key, quota);
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
     this.syncKeyMutation(params.key);
@@ -3162,16 +3003,14 @@ export class PayGateServer {
       quota,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ quota, message: 'Quota set' }));
+    this.sendJson(res, 200, { quota, message: 'Quota set' });
   }
 
   // ─── /keys/tags — Set key tags ──────────────────────────────────────────────
 
   private async handleSetTags(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -3181,27 +3020,23 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     if (!params.tags || typeof params.tags !== 'object') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing or invalid tags object' }));
+      this.sendError(res, 400, 'Missing or invalid tags object');
       return;
     }
 
     const success = this.gate.store.setTags(params.key, params.tags);
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3213,19 +3048,17 @@ export class PayGateServer {
       tags: record?.tags || {},
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       tags: record?.tags || {},
       message: 'Tags updated',
-    }));
+    });
   }
 
   // ─── /keys/ip — Set IP allowlist ───────────────────────────────────────────
 
   private async handleSetIpAllowlist(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -3235,27 +3068,23 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     if (!Array.isArray(params.ips)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing or invalid ips array' }));
+      this.sendError(res, 400, 'Missing or invalid ips array');
       return;
     }
 
     const success = this.gate.store.setIpAllowlist(params.key, params.ips);
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3267,19 +3096,17 @@ export class PayGateServer {
       ipAllowlist: record?.ipAllowlist || [],
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       ipAllowlist: record?.ipAllowlist || [],
       message: 'IP allowlist updated',
-    }));
+    });
   }
 
   // ─── /keys/search — Search keys by tags ────────────────────────────────────
 
   private async handleSearchKeysByTag(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3289,29 +3116,25 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.tags || typeof params.tags !== 'object') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing or invalid tags object' }));
+      this.sendError(res, 400, 'Missing or invalid tags object');
       return;
     }
 
     const results = this.gate.store.listKeysByTag(params.tags, params.namespace);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ keys: results, count: results.length }));
+    this.sendJson(res, 200, { keys: results, count: results.length });
   }
 
   // ─── /keys/usage — Per-key usage breakdown ──────────────────────────────────
 
   private handleKeyUsage(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3322,16 +3145,14 @@ export class PayGateServer {
     const since = params.get('since') || undefined;
 
     if (!key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key query parameter' }));
+      this.sendError(res, 400, 'Missing key query parameter');
       return;
     }
 
     // Verify key exists (use resolveKeyRaw to allow querying by alias and expired/suspended keys)
     const record = this.gate.store.resolveKeyRaw(key);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3353,8 +3174,7 @@ export class PayGateServer {
 
   private handleKeysExpiring(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3365,8 +3185,7 @@ export class PayGateServer {
     const within = withinStr ? parseInt(withinStr, 10) : 86400; // Default: 24 hours
 
     if (isNaN(within) || within <= 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid within parameter — must be a positive number of seconds' }));
+      this.sendError(res, 400, 'Invalid within parameter — must be a positive number of seconds');
       return;
     }
 
@@ -3386,8 +3205,7 @@ export class PayGateServer {
 
   private handleKeyStats(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3438,8 +3256,7 @@ export class PayGateServer {
       }
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       total,
       active,
       suspended,
@@ -3452,15 +3269,14 @@ export class PayGateServer {
       byNamespace,
       byGroup,
       ...(namespace ? { filteredByNamespace: namespace } : {}),
-    }));
+    });
   }
 
   // ─── /keys/rate-limit-status — Current rate limit window state ────────────────
 
   private handleRateLimitStatus(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3470,15 +3286,13 @@ export class PayGateServer {
     const key = params.get('key');
 
     if (!key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
 
     const keyRecord = this.gate.store.getKey(key);
     if (!keyRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3494,8 +3308,7 @@ export class PayGateServer {
       }
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: key.slice(0, 10) + '...',
       name: keyRecord.name,
       global: {
@@ -3506,15 +3319,14 @@ export class PayGateServer {
         windowMs: 60000,
       },
       perTool: Object.keys(perTool).length > 0 ? perTool : undefined,
-    }));
+    });
   }
 
   // ─── /keys/quota-status — Current daily/monthly quota usage ──────────────────
 
   private handleQuotaStatus(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3524,15 +3336,13 @@ export class PayGateServer {
     const key = params.get('key');
 
     if (!key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
 
     const keyRecord = this.gate.store.getKey(key);
     if (!keyRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3570,22 +3380,20 @@ export class PayGateServer {
       resetMonth: keyRecord.quotaLastResetMonth,
     };
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: key.slice(0, 10) + '...',
       name: keyRecord.name,
       quotaSource: keyRecord.quota ? 'per-key' : (this.config.globalQuota ? 'global' : 'none'),
       daily,
       monthly,
-    }));
+    });
   }
 
   // ─── /keys/credit-history — Per-key credit mutation history ──────────────────
 
   private handleCreditHistory(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3595,8 +3403,7 @@ export class PayGateServer {
     const key = params.get('key');
 
     if (!key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
 
@@ -3605,8 +3412,7 @@ export class PayGateServer {
     const actualKey = resolved ? resolved.key : key;
     const keyRecord = this.gate.store.getKey(actualKey);
     if (!keyRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3616,22 +3422,20 @@ export class PayGateServer {
 
     const entries = this.creditLedger.getHistory(actualKey, { type, limit, since });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: actualKey.slice(0, 10) + '...',
       name: keyRecord.name,
       currentBalance: keyRecord.credits,
       totalEntries: this.creditLedger.count(actualKey),
       entries,
-    }));
+    });
   }
 
   // ─── /keys/spending-velocity — Spending rate + depletion forecast ────────────
 
   private handleSpendingVelocity(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3641,8 +3445,7 @@ export class PayGateServer {
     const key = params.get('key');
 
     if (!key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
 
@@ -3651,8 +3454,7 @@ export class PayGateServer {
     const actualKey = resolved ? resolved.key : key;
     const keyRecord = this.gate.store.getKey(actualKey);
     if (!keyRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3672,22 +3474,20 @@ export class PayGateServer {
       topTools.push(...toolEntries);
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: actualKey.slice(0, 10) + '...',
       name: keyRecord.name,
       currentBalance: keyRecord.credits,
       velocity,
       topTools,
-    }));
+    });
   }
 
   // ─── /keys/compare — Side-by-side key comparison ────────────────────────────
 
   private handleKeyComparison(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3697,20 +3497,17 @@ export class PayGateServer {
     const keysParam = params.get('keys');
 
     if (!keysParam) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: keys (comma-separated)' }));
+      this.sendError(res, 400, 'Missing required query parameter: keys (comma-separated)');
       return;
     }
 
     const keyIds = keysParam.split(',').map(k => k.trim()).filter(Boolean);
     if (keyIds.length < 2) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'At least 2 keys required for comparison' }));
+      this.sendError(res, 400, 'At least 2 keys required for comparison');
       return;
     }
     if (keyIds.length > 10) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Maximum 10 keys per comparison' }));
+      this.sendError(res, 400, 'Maximum 10 keys per comparison');
       return;
     }
 
@@ -3774,20 +3571,18 @@ export class PayGateServer {
       });
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       compared: comparisons.length,
       notFound: notFound.length > 0 ? notFound : undefined,
       keys: comparisons,
-    }));
+    });
   }
 
   // ─── /keys/health — Composite health score ──────────────────────────────────
 
   private handleKeyHealth(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -3797,16 +3592,14 @@ export class PayGateServer {
     const key = params.get('key');
 
     if (!key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
 
     // Use resolveKeyRaw to include expired/suspended/revoked keys in health check
     const record = this.gate.store.resolveKeyRaw(key);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -3911,8 +3704,7 @@ export class PayGateServer {
     if (record.credits <= 0) issues.push('Zero credits remaining');
     if (balanceRisk === 'critical') issues.push('Credits depleting rapidly');
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: actualKey.slice(0, 10) + '...',
       name: record.name,
       score: overallScore,
@@ -3924,7 +3716,7 @@ export class PayGateServer {
         rateLimit: { score: rateLimitScore, risk: rateLimitRisk, weight: 0.20 },
         errorRate: { score: errorScore, risk: errorRisk, weight: 0.25 },
       },
-    }));
+    });
   }
 
   // ─── /keys/dashboard — Consolidated key overview ──────────────────────────────
@@ -3937,15 +3729,13 @@ export class PayGateServer {
     const keyParam = params.get('key');
 
     if (!keyParam) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required parameter: key' }));
+      this.sendError(res, 400, 'Missing required parameter: key');
       return;
     }
 
     const record = this.gate.store.resolveKeyRaw(keyParam);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -4102,8 +3892,7 @@ export class PayGateServer {
         ...(e.metadata?.credits ? { credits: e.metadata.credits } : {}),
       }));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       ...metadata,
       balance,
       health: { score: healthScore, status: healthStatus },
@@ -4112,15 +3901,14 @@ export class PayGateServer {
       ...(quotas ? { quotas } : {}),
       usage,
       recentActivity: recentActivity.length > 0 ? recentActivity : [],
-    }));
+    });
   }
 
   // ─── /keys/auto-topup — Configure auto-topup ────────────────────────────────
 
   private async handleSetAutoTopup(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -4130,21 +3918,18 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     const record = this.gate.store.resolveKey(params.key);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      this.sendError(res, 404, 'Key not found or inactive');
       return;
     }
 
@@ -4158,8 +3943,7 @@ export class PayGateServer {
         keyMasked: maskKeyForAudit(params.key),
       });
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ autoTopup: null, message: 'Auto-topup disabled' }));
+      this.sendJson(res, 200, { autoTopup: null, message: 'Auto-topup disabled' });
       return;
     }
 
@@ -4169,13 +3953,11 @@ export class PayGateServer {
     const maxDaily = Math.max(0, Math.floor(Number(params.maxDaily) || 0));
 
     if (threshold <= 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'threshold must be a positive integer' }));
+      this.sendError(res, 400, 'threshold must be a positive integer');
       return;
     }
     if (amount <= 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'amount must be a positive integer' }));
+      this.sendError(res, 400, 'amount must be a positive integer');
       return;
     }
 
@@ -4191,34 +3973,30 @@ export class PayGateServer {
       keyMasked: maskKeyForAudit(params.key), threshold, amount, maxDaily,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       autoTopup: record.autoTopup,
       message: `Auto-topup enabled: add ${amount} credits when balance drops below ${threshold}` +
         (maxDaily > 0 ? ` (max ${maxDaily}/day)` : ' (unlimited daily)'),
-    }));
+    });
   }
 
   // ─── /balance — Client self-service ────────────────────────────────────────
 
   private handleBalance(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
     const apiKey = (req.headers['x-api-key'] as string) || null;
     if (!apiKey) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing X-API-Key header' }));
+      this.sendError(res, 401, 'Missing X-API-Key header');
       return;
     }
 
     const record = this.gate.store.getKey(apiKey);
     if (!record || !record.active) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid or inactive API key' }));
+      this.sendError(res, 404, 'Invalid or inactive API key');
       return;
     }
 
@@ -4230,8 +4008,7 @@ export class PayGateServer {
     // Reset quotas if needed before reporting
     this.gate.quotaTracker.resetIfNeeded(record);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       name: record.name,
       credits: record.credits,
       totalSpent: record.totalSpent,
@@ -4251,15 +4028,14 @@ export class PayGateServer {
         dailyCredits: record.quotaDailyCredits,
         monthlyCredits: record.quotaMonthlyCredits,
       },
-    }));
+    });
   }
 
   // ─── /limits — Set spending limit ────────────────────────────────────────
 
   private async handleLimits(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -4269,21 +4045,18 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key' }));
+      this.sendError(res, 400, 'Missing key');
       return;
     }
 
     const record = this.gate.store.resolveKey(params.key);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found or inactive' }));
+      this.sendError(res, 404, 'Key not found or inactive');
       return;
     }
 
@@ -4297,19 +4070,17 @@ export class PayGateServer {
       spendingLimit: limit,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       spendingLimit: record.spendingLimit,
       message: limit > 0 ? `Spending limit set to ${limit}` : 'Spending limit removed (unlimited)',
-    }));
+    });
   }
 
   // ─── /usage — Admin usage export ──────────────────────────────────────────
 
   private handleUsage(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -4355,14 +4126,12 @@ export class PayGateServer {
 
   private async handleStripeWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
     if (!this.stripeHandler) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Stripe integration not configured' }));
+      this.sendError(res, 404, 'Stripe integration not configured');
       return;
     }
 
@@ -4370,8 +4139,7 @@ export class PayGateServer {
     const signature = req.headers['stripe-signature'] as string;
 
     if (!signature) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing Stripe-Signature header' }));
+      this.sendError(res, 400, 'Missing Stripe-Signature header');
       return;
     }
 
@@ -4403,8 +4171,7 @@ export class PayGateServer {
   /** GET /.well-known/oauth-authorization-server — Server metadata (RFC 8414) */
   private handleOAuthMetadata(_req: IncomingMessage, res: ServerResponse): void {
     if (!this.oauth) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      this.sendError(res, 404, 'OAuth not enabled');
       return;
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4414,13 +4181,11 @@ export class PayGateServer {
   /** POST /oauth/register — Dynamic Client Registration (RFC 7591) */
   private async handleOAuthRegister(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.oauth) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      this.sendError(res, 404, 'OAuth not enabled');
       return;
     }
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
@@ -4435,8 +4200,7 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'invalid_client_metadata' }));
+      this.sendError(res, 400, 'invalid_client_metadata');
       return;
     }
 
@@ -4456,8 +4220,7 @@ export class PayGateServer {
       });
 
       // RFC 7591 response format
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 201, {
         client_id: client.clientId,
         client_secret: client.clientSecret,
         client_name: client.clientName,
@@ -4465,7 +4228,7 @@ export class PayGateServer {
         grant_types: client.grantTypes,
         scope: client.scope,
         client_id_issued_at: Math.floor(new Date(client.createdAt).getTime() / 1000),
-      }));
+      });
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'invalid_client_metadata', error_description: (err as Error).message }));
@@ -4475,8 +4238,7 @@ export class PayGateServer {
   /** GET/POST /oauth/authorize — Authorization endpoint */
   private async handleOAuthAuthorize(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.oauth) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      this.sendError(res, 404, 'OAuth not enabled');
       return;
     }
 
@@ -4497,8 +4259,7 @@ export class PayGateServer {
         for (const [k, v] of query) params[k] = v;
       }
     } else {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
@@ -4512,8 +4273,7 @@ export class PayGateServer {
 
     // Validate required params
     if (responseType !== 'code') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'unsupported_response_type' }));
+      this.sendError(res, 400, 'unsupported_response_type');
       return;
     }
 
@@ -4563,13 +4323,11 @@ export class PayGateServer {
   /** POST /oauth/token — Token endpoint */
   private async handleOAuthToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.oauth) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      this.sendError(res, 404, 'OAuth not enabled');
       return;
     }
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
@@ -4628,8 +4386,7 @@ export class PayGateServer {
           scope: result.scope,
         }));
       } else {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
+        this.sendError(res, 400, 'unsupported_grant_type');
       }
     } catch (err) {
       const errorMsg = (err as Error).message;
@@ -4642,13 +4399,11 @@ export class PayGateServer {
   /** POST /oauth/revoke — Token revocation (RFC 7009) */
   private async handleOAuthRevoke(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.oauth) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      this.sendError(res, 404, 'OAuth not enabled');
       return;
     }
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
 
@@ -4669,20 +4424,17 @@ export class PayGateServer {
 
     // RFC 7009: always return 200, even if token doesn't exist
     this.oauth.revokeToken(params.token);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ revoked: true }));
+    this.sendJson(res, 200, { revoked: true });
   }
 
   /** GET /oauth/clients — List registered OAuth clients (admin only) */
   private handleOAuthClients(req: IncomingMessage, res: ServerResponse): void {
     if (!this.oauth) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'OAuth not enabled' }));
+      this.sendError(res, 404, 'OAuth not enabled');
       return;
     }
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -4718,8 +4470,7 @@ export class PayGateServer {
 
   private handleAnalytics(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -4746,12 +4497,11 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const alerts = this.alerts.consumeAlerts();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       alerts,
       count: alerts.length,
       rules: this.alerts.configuredRules,
-    }));
+    });
   }
 
   private async handleConfigureAlerts(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -4762,14 +4512,12 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.rules || !Array.isArray(params.rules)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing or invalid rules array' }));
+      this.sendError(res, 400, 'Missing or invalid rules array');
       return;
     }
 
@@ -4796,11 +4544,10 @@ export class PayGateServer {
       rules: params.rules,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       rules: params.rules,
       message: `${params.rules.length} alert rule(s) configured`,
-    }));
+    });
   }
 
   // ─── /webhooks/dead-letter — View/clear dead letter queue ────────────────
@@ -4809,25 +4556,22 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ deadLetters: [], count: 0, message: 'No webhook configured' }));
+      this.sendJson(res, 200, { deadLetters: [], count: 0, message: 'No webhook configured' });
       return;
     }
 
     const deadLetters = this.gate.webhook.getDeadLetters();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       deadLetters,
       count: deadLetters.length,
-    }));
+    });
   }
 
   private handleClearDeadLetters(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(req, res, 'admin')) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ cleared: 0, message: 'No webhook configured' }));
+      this.sendJson(res, 200, { cleared: 0, message: 'No webhook configured' });
       return;
     }
 
@@ -4837,26 +4581,23 @@ export class PayGateServer {
       cleared,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       cleared,
       message: `Cleared ${cleared} dead letter entries`,
-    }));
+    });
   }
 
   // ─── /webhooks/replay — Replay dead letter events ───────────────────────
 
   private async handleWebhookReplay(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ replayed: 0, message: 'No webhook configured' }));
+      this.sendJson(res, 200, { replayed: 0, message: 'No webhook configured' });
       return;
     }
 
@@ -4866,8 +4607,7 @@ export class PayGateServer {
       try {
         params = JSON.parse(body);
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        this.sendError(res, 400, 'Invalid JSON');
         return;
       }
     }
@@ -4876,8 +4616,7 @@ export class PayGateServer {
     const deadLetterCount = this.gate.webhook.getDeadLetters().length;
 
     if (deadLetterCount === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ replayed: 0, remaining: 0, message: 'Dead letter queue is empty' }));
+      this.sendJson(res, 200, { replayed: 0, remaining: 0, message: 'Dead letter queue is empty' });
       return;
     }
 
@@ -4888,36 +4627,32 @@ export class PayGateServer {
       replayed, remaining, indices: indices || 'all',
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       replayed,
       remaining,
       message: `Replayed ${replayed} dead letter entries`,
-    }));
+    });
   }
 
   // ─── /maintenance — Maintenance mode (503 on /mcp while admin stays up) ──
 
   private handleGetMaintenance(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       enabled: this.maintenanceMode,
       message: this.maintenanceMode ? this.maintenanceMessage : undefined,
       since: this.maintenanceSince,
-    }));
+    });
   }
 
   private handleSetMaintenance(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -4929,14 +4664,12 @@ export class PayGateServer {
       try {
         params = JSON.parse(body);
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
         return;
       }
 
       if (typeof params.enabled !== 'boolean') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: enabled (boolean)' }));
+        this.sendError(res, 400, 'Missing required field: enabled (boolean)');
         return;
       }
 
@@ -4961,12 +4694,11 @@ export class PayGateServer {
         this.maintenanceSince = null;
       }
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         enabled: this.maintenanceMode,
         message: this.maintenanceMode ? this.maintenanceMessage : undefined,
         since: this.maintenanceSince,
-      }));
+      });
     });
   }
 
@@ -4974,16 +4706,14 @@ export class PayGateServer {
 
   private handleAdminEventStream(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     const accept = req.headers['accept'] || '';
     if (!accept.includes('text/event-stream')) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Requires Accept: text/event-stream header' }));
+      this.sendError(res, 400, 'Requires Accept: text/event-stream header');
       return;
     }
 
@@ -5171,14 +4901,13 @@ export class PayGateServer {
     const severityOrder = { critical: 0, warning: 1, info: 2 };
     filtered.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       total: filtered.length,
       critical: filtered.filter(n => n.severity === 'critical').length,
       warning: filtered.filter(n => n.severity === 'warning').length,
       info: filtered.filter(n => n.severity === 'info').length,
       notifications: filtered,
-    }));
+    });
   }
 
   // ─── /admin/dashboard — System-wide overview ──────────────────────────────
@@ -5255,8 +4984,7 @@ export class PayGateServer {
       if (record.suspended) infoCount++;
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       keys: {
         total: allRecords.length,
         active: activeCount,
@@ -5288,7 +5016,7 @@ export class PayGateServer {
         uptimeSeconds,
         uptimeHours,
       },
-    }));
+    });
   }
 
   // ─── /admin/lifecycle — Key lifecycle report ──────────────────────────────
@@ -5379,8 +5107,7 @@ export class PayGateServer {
       }
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       events: {
         created: createdEvents.length,
         revoked: revokedEvents.length,
@@ -5392,7 +5119,7 @@ export class PayGateServer {
       trends,
       averageLifetimeHours: avgLifetimeHours,
       atRisk: atRiskKeys,
-    }));
+    });
   }
 
   // ─── /admin/costs — Cost analysis ─────────────────────────────────────────
@@ -5497,8 +5224,7 @@ export class PayGateServer {
       ? Math.round(totalCredits / (totalCalls - totalDenied) * 100) / 100
       : 0;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalCredits,
         totalCalls,
@@ -5510,7 +5236,7 @@ export class PayGateServer {
       perNamespace,
       hourlyTrends,
       topSpenders,
-    }));
+    });
   }
 
   // ─── /admin/rate-limits — Rate limit utilization analysis ───────────────
@@ -5610,8 +5336,7 @@ export class PayGateServer {
       .sort((a, b) => b.rateLimited - a.rateLimited)
       .slice(0, 10);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       config: {
         globalLimitPerMin: globalLimit,
         windowMs: 60000,
@@ -5625,7 +5350,7 @@ export class PayGateServer {
       perTool,
       hourlyTrends,
       mostThrottled,
-    }));
+    });
   }
 
   // ─── /admin/quotas — Quota utilization analysis ───────────────────────────
@@ -5730,15 +5455,14 @@ export class PayGateServer {
       .sort((a, b) => b.dailyCallUtilization - a.dailyCallUtilization)
       .slice(0, 10);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       config: { globalQuota },
       summary: { totalKeys, keysWithQuotas, totalQuotaDenials, quotaDenialRate },
       perKey,
       perTool,
       hourlyTrends,
       mostConstrained,
-    }));
+    });
   }
 
   // ─── /admin/denials — Comprehensive denial analysis ───────────────────────
@@ -5855,15 +5579,14 @@ export class PayGateServer {
       .sort((a, b) => b.denials - a.denials)
       .slice(0, 10);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: { totalCalls, totalDenials, denialRate },
       byReason,
       perKey,
       perTool,
       hourlyTrends,
       mostDenied,
-    }));
+    });
   }
 
   // ─── /admin/traffic — Traffic volume analysis ─────────────────────────────
@@ -5978,8 +5701,7 @@ export class PayGateServer {
       .map(([namespace, stats]) => ({ namespace, ...stats }))
       .sort((a, b) => b.calls - a.calls);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalCalls,
         totalAllowed,
@@ -5994,7 +5716,7 @@ export class PayGateServer {
       hourlyVolume,
       topConsumers,
       byNamespace,
-    }));
+    });
   }
 
   // ─── /admin/security — Security posture audit ───────────────────────────
@@ -6106,15 +5828,14 @@ export class PayGateServer {
       score = Math.max(0, Math.min(100, score));
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       score,
       summary: {
         totalKeys,
         totalFindings,
       },
       findings,
-    }));
+    });
   }
 
   // ─── /admin/revenue — Revenue analysis ──────────────────────────────────
@@ -6180,8 +5901,7 @@ export class PayGateServer {
       totalRemaining += record.credits;
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalRevenue,
         totalCalls,
@@ -6195,7 +5915,7 @@ export class PayGateServer {
         totalSpent,
         totalRemaining,
       },
-    }));
+    });
   }
 
   // ─── /admin/lifecycle — Key lifecycle analysis ─────────────────────────
@@ -6266,8 +5986,7 @@ export class PayGateServer {
       .map(([namespace, stats]) => ({ namespace, ...stats }))
       .sort((a, b) => b.total - a.total);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalKeys: allRecords.length,
         activeKeys: activeKeys.length,
@@ -6283,7 +6002,7 @@ export class PayGateServer {
         newestAgeDays,
       },
       byNamespace,
-    }));
+    });
   }
 
   // ─── /admin/anomalies — Anomaly detection ──────────────────────────────
@@ -6377,15 +6096,14 @@ export class PayGateServer {
       }
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalAnomalies: anomalies.length,
         byType: anomalies.reduce((acc, a) => { acc[a.type] = (acc[a.type] || 0) + 1; return acc; }, {} as Record<string, number>),
       },
       anomalies,
       analyzedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/forecast — Usage Forecasting ─────────────────────────────────
@@ -6458,8 +6176,7 @@ export class PayGateServer {
 
     const keysAtRisk = keyForecasts.filter(f => f.atRisk).length;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalActiveKeys: activeRecords.length,
         keysAtRisk,
@@ -6472,7 +6189,7 @@ export class PayGateServer {
         byTool,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/compliance — Compliance Report ──────────────────────────────
@@ -6557,8 +6274,7 @@ export class PayGateServer {
       recommendations.push('No usage events recorded — ensure audit trail is capturing tool calls');
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       keyGovernance: {
         totalKeys,
         keysWithExpiry,
@@ -6580,7 +6296,7 @@ export class PayGateServer {
       overallScore: score,
       recommendations,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/sla — SLA Monitoring ─────────────────────────────────────────
@@ -6644,8 +6360,7 @@ export class PayGateServer {
     // ── Uptime ──
     const uptimeMs = Date.now() - this.startedAt;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalCalls,
         allowedCalls,
@@ -6659,7 +6374,7 @@ export class PayGateServer {
         uptimeSeconds: Math.floor(uptimeMs / 1000),
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/capacity — Capacity Planning ─────────────────────────────────
@@ -6737,8 +6452,7 @@ export class PayGateServer {
       recommendations.push(`${lowCredit.length} key(s) have less than 10% credits remaining`);
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalCreditsAllocated,
         totalCreditsSpent,
@@ -6753,7 +6467,7 @@ export class PayGateServer {
       byNamespace,
       recommendations,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/dependencies — Key Dependency Map ───────────────────────────
@@ -6811,8 +6525,7 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.toolCount - a.toolCount);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalTools,
         usedTools,
@@ -6821,7 +6534,7 @@ export class PayGateServer {
       toolUsage,
       keyToolMap,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/latency — Tool Latency Analysis ─────────────────────────────
@@ -6833,14 +6546,13 @@ export class PayGateServer {
     const allowed = this.requestLog.filter(e => e.status === 'allowed');
 
     if (allowed.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         summary: { totalCalls: 0, avgDurationMs: 0, minDurationMs: 0, maxDurationMs: 0, p95DurationMs: 0 },
         byTool: [],
         slowestTools: [],
         byKey: [],
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -6901,14 +6613,13 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.avgDurationMs - a.avgDurationMs);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: { totalCalls, avgDurationMs, minDurationMs, maxDurationMs, p95DurationMs },
       byTool,
       slowestTools,
       byKey,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/error-trends — Error Rate Trends ─────────────────────────────
@@ -6919,13 +6630,12 @@ export class PayGateServer {
     const entries = this.requestLog;
 
     if (entries.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         summary: { totalCalls: 0, totalDenials: 0, overallErrorRate: 0, trend: 'stable' },
         byTool: [],
         denialReasons: [],
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -6976,13 +6686,12 @@ export class PayGateServer {
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: { totalCalls, totalDenials, overallErrorRate, trend },
       byTool,
       denialReasons,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/credit-flow — Credit Flow Analysis ──────────────────────────
@@ -6993,13 +6702,12 @@ export class PayGateServer {
     const records = this.gate.store.getAllRecords().filter(r => r.active);
 
     if (records.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         summary: { totalAllocated: 0, totalSpent: 0, totalRemaining: 0, utilizationPct: 0 },
         topSpenders: [],
         byTool: [],
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -7047,13 +6755,12 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.creditsSpent - a.creditsSpent);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: { totalAllocated, totalSpent, totalRemaining, utilizationPct },
       topSpenders,
       byTool,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/key-age — Key Age Analysis ──────────────────────────────────
@@ -7065,13 +6772,12 @@ export class PayGateServer {
     const now = Date.now();
 
     if (records.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         summary: { totalKeys: 0, avgAgeHours: 0 },
         distribution: { last24h: 0, last7d: 0, last30d: 0, older: 0 },
         recentlyCreated: [],
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -7114,13 +6820,12 @@ export class PayGateServer {
       .slice(0, 10)
       .map(k => ({ keyName: k.keyName, ageHours: k.ageHours, createdAt: k.createdAt }));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: { totalKeys, avgAgeHours, oldestKey, newestKey },
       distribution: { last24h, last7d, last30d, older },
       recentlyCreated,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/namespace-usage — Namespace Usage Summary ────────────────────
@@ -7131,12 +6836,11 @@ export class PayGateServer {
     const records = this.gate.store.getAllRecords().filter(r => r.active);
 
     if (records.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         summary: { totalNamespaces: 0 },
         namespaces: [],
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -7166,12 +6870,11 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.totalSpent - a.totalSpent);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: { totalNamespaces: nsMap.size },
       namespaces,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/audit-summary — Audit event analytics ───────────────────────
@@ -7208,8 +6911,7 @@ export class PayGateServer {
         }))
       : [];
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalEvents: stats.totalEvents,
         eventsLastHour: stats.eventsLastHour,
@@ -7221,7 +6923,7 @@ export class PayGateServer {
       topActors,
       recentEvents,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/group-performance — Per-group analytics ─────────────────────
@@ -7281,15 +6983,14 @@ export class PayGateServer {
       };
     }).sort((a, b) => b.totalSpent - a.totalSpent);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalGroups: groupList.length,
         ungroupedKeys,
       },
       groups,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/request-trends — Hourly request volume time-series ──────────
@@ -7300,15 +7001,14 @@ export class PayGateServer {
     const entries = this.requestLog;
 
     if (entries.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         summary: {
           totalRequests: 0, totalAllowed: 0, totalDenied: 0,
           totalCredits: 0, avgDurationMs: 0, peakHour: null,
         },
         hourly: [],
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -7359,8 +7059,7 @@ export class PayGateServer {
       if (h.total > peakHour.total) peakHour = h;
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalRequests: entries.length,
         totalAllowed,
@@ -7371,7 +7070,7 @@ export class PayGateServer {
       },
       hourly,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/key-status — Key status dashboard ──────────────────────────
@@ -7426,8 +7125,7 @@ export class PayGateServer {
       }
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       counts: {
         total: allRecords.length,
         active,
@@ -7437,7 +7135,7 @@ export class PayGateServer {
       },
       needsAttention,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/webhook-health — Webhook delivery health overview ─────────────
@@ -7448,12 +7146,11 @@ export class PayGateServer {
     const webhookConfigured = !!(this.config as any).webhookUrl || !!this.gate.webhookRouter;
 
     if (!webhookConfigured || !this.gate.webhook) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         configured: false,
         status: 'not_configured',
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -7475,8 +7172,7 @@ export class PayGateServer {
       ? Math.round((stats.totalDelivered / totalAttempts) * 10000) / 100
       : 100;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       configured: true,
       status,
       delivery: {
@@ -7491,7 +7187,7 @@ export class PayGateServer {
         successRate,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/consumer-insights — Per-key behavioral analytics ──────────────
@@ -7557,8 +7253,7 @@ export class PayGateServer {
     const totalCalls = allRecords.reduce((sum, r) => sum + (r.totalCalls || 0), 0);
     const activeConsumers = allRecords.filter(r => (r.totalCalls || 0) > 0).length;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalConsumers: allRecords.length,
         activeConsumers,
@@ -7568,7 +7263,7 @@ export class PayGateServer {
       topSpenders,
       mostActive,
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/system-health — Composite system health score ─────────────────
@@ -7643,8 +7338,7 @@ export class PayGateServer {
     else if (compositeScore >= 40) level = 'warning';
     else level = 'critical';
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       score: compositeScore,
       level,
       components: {
@@ -7653,7 +7347,7 @@ export class PayGateServer {
         creditUtilization: { score: creditScore, weight: 0.25, detail: creditDetail },
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/tool-adoption — Per-tool adoption metrics ─────────────────────
@@ -7703,8 +7397,7 @@ export class PayGateServer {
     // Count total known tools from request log (we don't have access to the child process tool list)
     const totalTools = usedTools;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       tools,
       summary: {
         totalTools,
@@ -7712,7 +7405,7 @@ export class PayGateServer {
         unusedTools: totalTools - usedTools,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/credit-efficiency — Credit allocation efficiency ──────────────
@@ -7779,8 +7472,7 @@ export class PayGateServer {
       ? Math.round((totalRemaining / totalAllocated) * 100)
       : 0;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalAllocated,
         totalSpent,
@@ -7792,7 +7484,7 @@ export class PayGateServer {
       overProvisioned: overProvisioned.slice(0, 10),
       underProvisioned: underProvisioned.slice(0, 10),
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/access-heatmap — Hourly access patterns ───────────────────────
@@ -7843,8 +7535,7 @@ export class PayGateServer {
 
     const totalRequests = hourly.reduce((s, h) => s + h.total, 0);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       hourly,
       summary: {
         totalRequests,
@@ -7852,7 +7543,7 @@ export class PayGateServer {
         ...(peakHour ? { peakHour } : {}),
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/key-churn — Key churn analysis ────────────────────────────────
@@ -7863,8 +7554,7 @@ export class PayGateServer {
     const allRecords = this.gate.store.getAllRecords();
 
     if (allRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         summary: {
           totalKeys: 0,
           activeKeys: 0,
@@ -7876,7 +7566,7 @@ export class PayGateServer {
           avgCreditsPerKey: 0,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -7894,8 +7584,7 @@ export class PayGateServer {
     const churnRate = Math.round((revoked.length / allRecords.length) * 100);
     const retentionRate = 100 - churnRate;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       summary: {
         totalKeys: allRecords.length,
         activeKeys: active.length,
@@ -7907,7 +7596,7 @@ export class PayGateServer {
         avgCreditsPerKey,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/tool-correlation — Tool co-occurrence analysis ────────────────
@@ -7956,15 +7645,14 @@ export class PayGateServer {
       })
       .sort((a, b) => b.sharedConsumers - a.sharedConsumers);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       pairs,
       summary: {
         totalPairs: pairs.length,
         totalConsumers,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/consumer-segmentation — Consumer classification ──────────────
@@ -7976,12 +7664,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         segments: [],
         summary: { totalConsumers: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8022,14 +7709,13 @@ export class PayGateServer {
         };
       });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       segments,
       summary: {
         totalConsumers: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/credit-distribution — Credit balance histogram ───────────────
@@ -8041,12 +7727,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         buckets: [],
         summary: { totalKeys: 0, medianCredits: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8096,15 +7781,14 @@ export class PayGateServer {
       .filter(b => b.count > 0)
       .map(({ range, count, totalCredits }) => ({ range, count, totalCredits }));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       buckets,
       summary: {
         totalKeys: activeRecords.length,
         medianCredits,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/response-time-distribution — Latency histogram ───────────────
@@ -8122,12 +7806,11 @@ export class PayGateServer {
     }
 
     if (durations.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         buckets: [],
         summary: { totalRequests: 0, avgResponseTime: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8176,8 +7859,7 @@ export class PayGateServer {
         percentage: Math.round((count / total) * 100),
       }));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       buckets,
       summary: {
         totalRequests: total,
@@ -8187,7 +7869,7 @@ export class PayGateServer {
         p99: percentile(99),
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/consumer-lifetime-value — Per-consumer value analysis ────────
@@ -8199,12 +7881,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         consumers: [],
         summary: { totalConsumers: 0, totalLifetimeValue: 0, avgLifetimeValue: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8248,8 +7929,7 @@ export class PayGateServer {
     const totalLifetimeValue = consumers.reduce((s, c) => s + c.lifetimeValue, 0);
     const top20 = consumers.slice(0, 20);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       consumers: top20,
       summary: {
         totalConsumers: activeRecords.length,
@@ -8259,7 +7939,7 @@ export class PayGateServer {
           : 0,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/tool-revenue — Tool revenue ranking ──────────────────────────
@@ -8283,12 +7963,11 @@ export class PayGateServer {
     }
 
     if (toolMap.size === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         tools: [],
         summary: { totalTools: 0, totalRevenue: 0, topTool: null },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8305,8 +7984,7 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.totalCredits - a.totalCredits);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       tools,
       summary: {
         totalTools: tools.length,
@@ -8314,7 +7992,7 @@ export class PayGateServer {
         topTool: tools[0]?.tool || null,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/consumer-retention — Retention cohorts ───────────────────────
@@ -8326,12 +8004,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         cohorts: [],
         summary: { totalKeys: 0, retainedKeys: 0, overallRetentionRate: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8367,8 +8044,7 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.period.localeCompare(a.period));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       cohorts,
       summary: {
         totalKeys,
@@ -8376,7 +8052,7 @@ export class PayGateServer {
         overallRetentionRate: totalKeys > 0 ? Math.round((retainedKeys / totalKeys) * 100) : 0,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/error-breakdown — Denied request analysis ────────────────────
@@ -8415,8 +8091,7 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.count - a.count);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       errors,
       summary: {
         totalDenied,
@@ -8424,7 +8099,7 @@ export class PayGateServer {
         errorRate: totalRequests > 0 ? Math.round((totalDenied / totalRequests) * 100) : 0,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/credit-utilization — Credit utilization rate ─────────────────
@@ -8436,12 +8111,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         bands: [],
         summary: { totalAllocated: 0, totalSpent: 0, overallUtilization: 0, totalKeys: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8484,8 +8158,7 @@ export class PayGateServer {
       }))
       .filter(b => b.count > 0);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       bands,
       summary: {
         totalAllocated,
@@ -8494,7 +8167,7 @@ export class PayGateServer {
         totalKeys: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/namespace-revenue — Revenue by namespace ─────────────────────
@@ -8506,12 +8179,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         namespaces: [],
         summary: { totalNamespaces: 0, totalRevenue: 0, topNamespace: null },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8541,8 +8213,7 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.totalSpent - a.totalSpent);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       namespaces,
       summary: {
         totalNamespaces: namespaces.length,
@@ -8550,7 +8221,7 @@ export class PayGateServer {
         topNamespace: namespaces[0]?.namespace || null,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/group-revenue — Revenue by key group ─────────────────────────
@@ -8562,12 +8233,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         groups: [],
         summary: { totalGroups: 0, totalRevenue: 0, topGroup: null },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8604,8 +8274,7 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.totalSpent - a.totalSpent);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       groups,
       summary: {
         totalGroups: groups.length,
@@ -8613,7 +8282,7 @@ export class PayGateServer {
         topGroup: groups[0]?.group || null,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/peak-usage — Traffic patterns by hour of day ─────────────────
@@ -8622,12 +8291,11 @@ export class PayGateServer {
     if (!this.checkAdmin(_req, res)) return;
 
     if (this.requestLog.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         hours: [],
         summary: { totalRequests: 0, peakHour: null, peakRequests: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8666,8 +8334,7 @@ export class PayGateServer {
 
     const peak = hours.reduce((max, h) => h.requests > max.requests ? h : max, hours[0]);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       hours,
       summary: {
         totalRequests,
@@ -8675,7 +8342,7 @@ export class PayGateServer {
         peakRequests: peak.requests,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/consumer-activity — Per-consumer activity metrics ─────────────
@@ -8687,12 +8354,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         consumers: [],
         summary: { totalConsumers: 0, activeConsumers: 0, inactiveConsumers: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8730,8 +8396,7 @@ export class PayGateServer {
       };
     }).sort((a, b) => b.totalSpent - a.totalSpent);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       consumers,
       summary: {
         totalConsumers: consumers.length,
@@ -8739,7 +8404,7 @@ export class PayGateServer {
         inactiveConsumers: inactiveCount,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/tool-popularity — Tool usage popularity ──────────────────────
@@ -8762,12 +8427,11 @@ export class PayGateServer {
     }
 
     if (toolMap.size === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         tools: [],
         summary: { totalTools: 0, totalCalls: 0, mostPopular: null },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8783,8 +8447,7 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.totalCalls - a.totalCalls);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       tools,
       summary: {
         totalTools: tools.length,
@@ -8792,7 +8455,7 @@ export class PayGateServer {
         mostPopular: tools[0]?.tool || null,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/group-activity — Per-group activity metrics ──────────────────
@@ -8829,8 +8492,7 @@ export class PayGateServer {
       ? Math.round((totalSpent / totalAllocated) * 100)
       : 0;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       keys: {
         total: allRecords.length,
         active: activeRecords.length,
@@ -8848,7 +8510,7 @@ export class PayGateServer {
         uniqueTools: toolSet.size,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   private handleKeyHealthOverview(_req: IncomingMessage, res: ServerResponse): void {
@@ -8858,12 +8520,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         keys: [],
         summary: { totalKeys: 0, healthDistribution: { healthy: 0, warning: 0, critical: 0 } },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8900,15 +8561,14 @@ export class PayGateServer {
       healthDistribution[k.status as keyof typeof healthDistribution] += 1;
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       keys,
       summary: {
         totalKeys: keys.length,
         healthDistribution,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   private handleNamespaceComparison(_req: IncomingMessage, res: ServerResponse): void {
@@ -8918,12 +8578,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         namespaces: [],
         summary: { totalNamespaces: 0, leader: null },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -8957,15 +8616,14 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.totalAllocated - a.totalAllocated);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       namespaces,
       summary: {
         totalNamespaces: namespaces.length,
         leader: namespaces[0].namespace,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   private handleConsumerGrowth(_req: IncomingMessage, res: ServerResponse): void {
@@ -8975,12 +8633,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         consumers: [],
         summary: { totalConsumers: 0, newConsumers24h: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9012,15 +8669,14 @@ export class PayGateServer {
       return (now - createdAt) < oneDayMs;
     }).length;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       consumers,
       summary: {
         totalConsumers: consumers.length,
         newConsumers24h,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   private handleToolProfitability(_req: IncomingMessage, res: ServerResponse): void {
@@ -9041,12 +8697,11 @@ export class PayGateServer {
     }
 
     if (toolMap.size === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         tools: [],
         summary: { totalRevenue: 0, mostProfitable: null, leastProfitable: null },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9064,8 +8719,7 @@ export class PayGateServer {
 
     const totalRevenue = tools.reduce((s, t) => s + t.totalRevenue, 0);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       tools,
       summary: {
         totalRevenue,
@@ -9073,7 +8727,7 @@ export class PayGateServer {
         leastProfitable: tools[tools.length - 1].tool,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   private handleCreditWaste(_req: IncomingMessage, res: ServerResponse): void {
@@ -9083,12 +8737,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         keys: [],
         summary: { totalAllocated: 0, totalWasted: 0, averageWastePercent: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9117,12 +8770,11 @@ export class PayGateServer {
       ? Math.round(keys.reduce((s, k) => s + k.wastePercent, 0) / keys.length)
       : 0;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       keys,
       summary: { totalAllocated, totalWasted, averageWastePercent },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   private handleGroupActivity(_req: IncomingMessage, res: ServerResponse): void {
@@ -9132,15 +8784,14 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         groups: [],
         summary: {
           totalGroups: 0,
           topGroup: null,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9176,15 +8827,14 @@ export class PayGateServer {
 
     const topGroup = groups.length > 0 ? groups[0].group : null;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       groups,
       summary: {
         totalGroups: groups.length,
         topGroup,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/revenue-forecast — Projected revenue ────────────────────────
@@ -9196,12 +8846,11 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         forecast: { nextHour: 0, nextDay: 0, nextWeek: 0, nextMonth: 0 },
         current: { totalSpent: 0, totalRemaining: 0, creditsPerHour: 0, activeKeys: 0 },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9229,8 +8878,7 @@ export class PayGateServer {
       return Math.min(projected, totalRemaining);
     };
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       forecast: {
         nextHour: capForecast(1),
         nextDay: capForecast(24),
@@ -9244,7 +8892,7 @@ export class PayGateServer {
         activeKeys: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/consumer-risk-score — Per-consumer risk scoring ──────────────
@@ -9256,15 +8904,14 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         consumers: [],
         summary: {
           totalConsumers: 0,
           riskDistribution: { low: 0, medium: 0, high: 0, critical: 0 },
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9304,15 +8951,14 @@ export class PayGateServer {
       riskDistribution[c.riskLevel as keyof typeof riskDistribution]++;
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       consumers,
       summary: {
         totalConsumers: consumers.length,
         riskDistribution,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/credit-burn-rate — System-wide credit burn rate ──────────────
@@ -9324,8 +8970,7 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         burnRate: {
           creditsPerHour: 0,
           hoursUntilDepleted: null,
@@ -9338,7 +8983,7 @@ export class PayGateServer {
           activeKeys: 0,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9368,8 +9013,7 @@ export class PayGateServer {
       ? Math.round((totalSpent / totalAllocated) * 100)
       : 0;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       burnRate: {
         creditsPerHour,
         hoursUntilDepleted,
@@ -9382,7 +9026,7 @@ export class PayGateServer {
         activeKeys: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/namespace-activity — Per-namespace activity metrics ───────────
@@ -9394,15 +9038,14 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         namespaces: [],
         summary: {
           totalNamespaces: 0,
           topNamespace: null,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9432,15 +9075,14 @@ export class PayGateServer {
 
     const topNamespace = namespaces.length > 0 ? namespaces[0].namespace : null;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       namespaces,
       summary: {
         totalNamespaces: namespaces.length,
         topNamespace,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/consumer-spend-velocity — Spend rate analysis ────────────────
@@ -9452,15 +9094,14 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         consumers: [],
         summary: {
           totalConsumers: 0,
           fastestSpender: null,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9491,15 +9132,14 @@ export class PayGateServer {
 
     const fastestSpender = consumers.find(c => c.creditsPerHour > 0)?.name || null;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       consumers,
       summary: {
         totalConsumers: consumers.length,
         fastestSpender,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/tool-error-rate — Per-tool error rates ───────────────────────
@@ -9508,8 +9148,7 @@ export class PayGateServer {
     if (!this.checkAdmin(_req, res)) return;
 
     if (this.requestLog.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         tools: [],
         summary: {
           totalTools: 0,
@@ -9517,7 +9156,7 @@ export class PayGateServer {
           highestErrorTool: null,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9564,8 +9203,7 @@ export class PayGateServer {
     // Find highest error tool (with at least 1 error)
     const highestError = tools.find(t => t.errorRate > 0);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       tools,
       summary: {
         totalTools: tools.length,
@@ -9573,7 +9211,7 @@ export class PayGateServer {
         highestErrorTool: highestError?.tool || null,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/hourly-traffic — Granular per-hour metrics ───────────────────
@@ -9582,8 +9220,7 @@ export class PayGateServer {
     if (!this.checkAdmin(_req, res)) return;
 
     if (this.requestLog.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         hours: [],
         summary: {
           totalRequests: 0,
@@ -9592,7 +9229,7 @@ export class PayGateServer {
           busiestHourRequests: 0,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9651,8 +9288,7 @@ export class PayGateServer {
       }
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       hours,
       summary: {
         totalRequests,
@@ -9661,7 +9297,7 @@ export class PayGateServer {
         busiestHourRequests,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/key-ranking — Key leaderboard ────────────────────────────────
@@ -9679,15 +9315,14 @@ export class PayGateServer {
     if (!validSortFields.includes(sortBy)) sortBy = 'totalSpent';
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         rankings: [],
         summary: {
           totalKeys: 0,
           sortedBy: sortBy,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9709,15 +9344,14 @@ export class PayGateServer {
     // Assign ranks
     const rankings = entries.map((e, i) => ({ rank: i + 1, ...e }));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       rankings,
       summary: {
         totalKeys: rankings.length,
         sortedBy: sortBy,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/daily-summary — Daily activity rollup ────────────────────────
@@ -9726,8 +9360,7 @@ export class PayGateServer {
     if (!this.checkAdmin(_req, res)) return;
 
     if (this.requestLog.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         days: [],
         summary: {
           totalDays: 0,
@@ -9736,7 +9369,7 @@ export class PayGateServer {
           averageRequestsPerDay: 0,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9795,8 +9428,7 @@ export class PayGateServer {
     const totalRequests = days.reduce((s, d) => s + d.requests, 0);
     const totalCreditsSpent = days.reduce((s, d) => s + d.creditsSpent, 0);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       days,
       summary: {
         totalDays: days.length,
@@ -9805,7 +9437,7 @@ export class PayGateServer {
         averageRequestsPerDay: days.length > 0 ? Math.round(totalRequests / days.length) : 0,
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /admin/credit-allocation — Credit allocation summary ────────────────
@@ -9817,8 +9449,7 @@ export class PayGateServer {
     const activeRecords = allRecords.filter(r => r.active && !r.suspended);
 
     if (activeRecords.length === 0) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         tiers: [],
         summary: {
           totalKeys: 0,
@@ -9828,7 +9459,7 @@ export class PayGateServer {
           averageAllocation: 0,
         },
         generatedAt: new Date().toISOString(),
-      }));
+      });
       return;
     }
 
@@ -9877,8 +9508,7 @@ export class PayGateServer {
         };
       });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       tiers,
       summary: {
         totalKeys: activeRecords.length,
@@ -9888,7 +9518,7 @@ export class PayGateServer {
         averageAllocation: Math.round(totalAllocated / activeRecords.length),
       },
       generatedAt: new Date().toISOString(),
-    }));
+    });
   }
 
   // ─── /keys/notes — Timestamped notes on API keys ─────────────────────────
@@ -9901,21 +9531,18 @@ export class PayGateServer {
     const keyParam = params.get('key');
 
     if (!keyParam) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
 
     const record = this.gate.store.resolveKeyRaw(keyParam);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
     const notes = record.notes || [];
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ key: maskKeyForAudit(record.key), notes, count: notes.length }));
+    this.sendJson(res, 200, { key: maskKeyForAudit(record.key), notes, count: notes.length });
   }
 
   private handleAddNote(req: IncomingMessage, res: ServerResponse): void {
@@ -9928,31 +9555,26 @@ export class PayGateServer {
       try {
         params = JSON.parse(body);
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
         return;
       }
 
       if (!params.key || typeof params.key !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: key' }));
+        this.sendError(res, 400, 'Missing required field: key');
         return;
       }
       if (!params.text || typeof params.text !== 'string' || !params.text.trim()) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: text (non-empty string)' }));
+        this.sendError(res, 400, 'Missing required field: text (non-empty string)');
         return;
       }
       if (params.text.length > 1000) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Note text must be 1000 characters or less' }));
+        this.sendError(res, 400, 'Note text must be 1000 characters or less');
         return;
       }
 
       const record = this.gate.store.resolveKeyRaw(params.key);
       if (!record) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key not found' }));
+        this.sendError(res, 404, 'Key not found');
         return;
       }
 
@@ -9960,8 +9582,7 @@ export class PayGateServer {
 
       // Cap at 50 notes per key
       if (record.notes.length >= 50) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Maximum 50 notes per key reached. Delete old notes first.' }));
+        this.sendError(res, 400, 'Maximum 50 notes per key reached. Delete old notes first.');
         return;
       }
 
@@ -9978,8 +9599,7 @@ export class PayGateServer {
         text: note.text.slice(0, 100),
       });
 
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ note, count: record.notes.length }));
+      this.sendJson(res, 201, { note, count: record.notes.length });
     });
   }
 
@@ -9992,20 +9612,17 @@ export class PayGateServer {
     const indexParam = params.get('index');
 
     if (!keyParam) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
     if (indexParam === null || indexParam === undefined) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: index' }));
+      this.sendError(res, 400, 'Missing required query parameter: index');
       return;
     }
 
     const record = this.gate.store.resolveKeyRaw(keyParam);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -10027,8 +9644,7 @@ export class PayGateServer {
       index,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deleted, remaining: notes.length }));
+    this.sendJson(res, 200, { deleted, remaining: notes.length });
   }
 
   // ─── /keys/schedule — Scheduled actions on API keys ──────────────────────
@@ -10045,21 +9661,19 @@ export class PayGateServer {
       // Resolve alias
       const record = this.gate.store.resolveKeyRaw(keyParam);
       if (!record) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key not found' }));
+        this.sendError(res, 404, 'Key not found');
         return;
       }
       schedules = schedules.filter(s => s.key === record.key);
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       schedules: schedules.map(s => ({
         ...s,
         key: maskKeyForAudit(s.key),
       })),
       count: schedules.length,
-    }));
+    });
   }
 
   private handleCreateSchedule(req: IncomingMessage, res: ServerResponse): void {
@@ -10072,14 +9686,12 @@ export class PayGateServer {
       try {
         params = JSON.parse(body);
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
         return;
       }
 
       if (!params.key || typeof params.key !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: key' }));
+        this.sendError(res, 400, 'Missing required field: key');
         return;
       }
 
@@ -10091,21 +9703,18 @@ export class PayGateServer {
       }
 
       if (!params.executeAt || typeof params.executeAt !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: executeAt (ISO 8601 timestamp)' }));
+        this.sendError(res, 400, 'Missing required field: executeAt (ISO 8601 timestamp)');
         return;
       }
 
       const executeTime = new Date(params.executeAt).getTime();
       if (isNaN(executeTime)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid executeAt: must be a valid ISO 8601 timestamp' }));
+        this.sendError(res, 400, 'Invalid executeAt: must be a valid ISO 8601 timestamp');
         return;
       }
 
       if (executeTime <= Date.now()) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'executeAt must be in the future' }));
+        this.sendError(res, 400, 'executeAt must be in the future');
         return;
       }
 
@@ -10113,24 +9722,21 @@ export class PayGateServer {
       if (params.action === 'topup') {
         const credits = (params.params as any)?.credits;
         if (!credits || typeof credits !== 'number' || credits <= 0) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'topup action requires params.credits (positive number)' }));
+          this.sendError(res, 400, 'topup action requires params.credits (positive number)');
           return;
         }
       }
 
       const record = this.gate.store.resolveKeyRaw(params.key);
       if (!record) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key not found' }));
+        this.sendError(res, 404, 'Key not found');
         return;
       }
 
       // Max 20 schedules per key
       const keySchedules = this.scheduledActions.filter(s => s.key === record.key);
       if (keySchedules.length >= 20) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Maximum 20 scheduled actions per key' }));
+        this.sendError(res, 400, 'Maximum 20 scheduled actions per key');
         return;
       }
 
@@ -10151,11 +9757,10 @@ export class PayGateServer {
         executeAt: schedule.executeAt,
       });
 
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 201, {
         ...schedule,
         key: maskKeyForAudit(schedule.key),
-      }));
+      });
     });
   }
 
@@ -10167,15 +9772,13 @@ export class PayGateServer {
     const scheduleId = params.get('id');
 
     if (!scheduleId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: id' }));
+      this.sendError(res, 400, 'Missing required query parameter: id');
       return;
     }
 
     const idx = this.scheduledActions.findIndex(s => s.id === scheduleId);
     if (idx === -1) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Schedule not found' }));
+      this.sendError(res, 404, 'Schedule not found');
       return;
     }
 
@@ -10188,10 +9791,9 @@ export class PayGateServer {
       executeAt: cancelled.executeAt,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       cancelled: { ...cancelled, key: maskKeyForAudit(cancelled.key) },
-    }));
+    });
   }
 
   /** Execute any scheduled actions that are due. Called by the schedule timer. */
@@ -10252,15 +9854,13 @@ export class PayGateServer {
     const keyParam = params.get('key');
 
     if (!keyParam) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      this.sendError(res, 400, 'Missing required query parameter: key');
       return;
     }
 
     const record = this.gate.store.resolveKeyRaw(keyParam);
     if (!record) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found' }));
+      this.sendError(res, 404, 'Key not found');
       return;
     }
 
@@ -10331,14 +9931,13 @@ export class PayGateServer {
     // Apply limit
     const page = timeline.slice(0, limit);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: maskedKey,
       name: record.name,
       total: timeline.length,
       limit,
       events: page,
-    }));
+    });
   }
 
   // ─── /keys/reserve — Credit reservations (hold, commit, release) ─────────
@@ -10357,22 +9956,20 @@ export class PayGateServer {
     if (keyParam) {
       const record = this.gate.store.resolveKeyRaw(keyParam);
       if (!record) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key not found' }));
+        this.sendError(res, 404, 'Key not found');
         return;
       }
       reservations = reservations.filter(r => r.key === record.key);
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       reservations: reservations.map(r => ({
         ...r,
         key: maskKeyForAudit(r.key),
       })),
       count: reservations.length,
       totalHeld: reservations.reduce((sum, r) => sum + r.credits, 0),
-    }));
+    });
   }
 
   private handleCreateReservation(req: IncomingMessage, res: ServerResponse): void {
@@ -10385,39 +9982,33 @@ export class PayGateServer {
       try {
         params = JSON.parse(body);
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
         return;
       }
 
       if (!params.key || typeof params.key !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: key' }));
+        this.sendError(res, 400, 'Missing required field: key');
         return;
       }
 
       if (!params.credits || typeof params.credits !== 'number' || params.credits <= 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing or invalid credits (must be positive number)' }));
+        this.sendError(res, 400, 'Missing or invalid credits (must be positive number)');
         return;
       }
 
       const record = this.gate.store.resolveKeyRaw(params.key);
       if (!record) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key not found' }));
+        this.sendError(res, 404, 'Key not found');
         return;
       }
 
       if (!record.active) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key is revoked' }));
+        this.sendError(res, 400, 'Key is revoked');
         return;
       }
 
       if (record.suspended) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key is suspended' }));
+        this.sendError(res, 400, 'Key is suspended');
         return;
       }
 
@@ -10443,8 +10034,7 @@ export class PayGateServer {
       // Max 50 active reservations per key
       const keyReservations = [...this.creditReservations.values()].filter(r => r.key === record.key);
       if (keyReservations.length >= 50) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Maximum 50 active reservations per key' }));
+        this.sendError(res, 400, 'Maximum 50 active reservations per key');
         return;
       }
 
@@ -10467,12 +10057,11 @@ export class PayGateServer {
         ttlSeconds: ttl,
       });
 
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 201, {
         ...reservation,
         key: maskKeyForAudit(reservation.key),
         available: available - params.credits,
-      }));
+      });
     });
   }
 
@@ -10486,37 +10075,32 @@ export class PayGateServer {
       try {
         params = JSON.parse(body);
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
         return;
       }
 
       if (!params.reservationId || typeof params.reservationId !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: reservationId' }));
+        this.sendError(res, 400, 'Missing required field: reservationId');
         return;
       }
 
       const reservation = this.creditReservations.get(params.reservationId);
       if (!reservation) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Reservation not found (may have expired)' }));
+        this.sendError(res, 404, 'Reservation not found (may have expired)');
         return;
       }
 
       // Check if expired
       if (new Date(reservation.expiresAt).getTime() <= Date.now()) {
         this.creditReservations.delete(params.reservationId);
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Reservation has expired' }));
+        this.sendError(res, 400, 'Reservation has expired');
         return;
       }
 
       const record = this.gate.store.resolveKeyRaw(reservation.key);
       if (!record) {
         this.creditReservations.delete(params.reservationId);
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Key not found' }));
+        this.sendError(res, 404, 'Key not found');
         return;
       }
 
@@ -10534,14 +10118,13 @@ export class PayGateServer {
         remainingCredits: record.credits,
       });
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         committed: {
           ...reservation,
           key: maskKeyForAudit(reservation.key),
         },
         remainingCredits: record.credits,
-      }));
+      });
     });
   }
 
@@ -10555,21 +10138,18 @@ export class PayGateServer {
       try {
         params = JSON.parse(body);
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
         return;
       }
 
       if (!params.reservationId || typeof params.reservationId !== 'string') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required field: reservationId' }));
+        this.sendError(res, 400, 'Missing required field: reservationId');
         return;
       }
 
       const reservation = this.creditReservations.get(params.reservationId);
       if (!reservation) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Reservation not found (may have expired)' }));
+        this.sendError(res, 404, 'Reservation not found (may have expired)');
         return;
       }
 
@@ -10582,13 +10162,12 @@ export class PayGateServer {
         credits: reservation.credits,
       });
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         released: {
           ...reservation,
           key: maskKeyForAudit(reservation.key),
         },
-      }));
+      });
     });
   }
 
@@ -10615,8 +10194,7 @@ export class PayGateServer {
 
   private async handleConfigReload(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -10629,8 +10207,7 @@ export class PayGateServer {
         body = JSON.parse(raw);
       }
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      this.sendError(res, 400, 'Invalid JSON body');
       return;
     }
 
@@ -10739,8 +10316,7 @@ export class PayGateServer {
 
     const warnings = diags.filter(d => d.level === 'warning');
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       reloaded: true,
       changed,
       skipped,
@@ -10748,56 +10324,51 @@ export class PayGateServer {
         ? `Config reloaded: ${changed.join(', ')} updated`
         : 'Config reloaded: no changes detected',
       ...(warnings.length > 0 ? { warnings: warnings.map(w => ({ field: w.field, message: w.message })) } : {}),
-    }));
+    });
   }
 
   // ─── /webhooks/stats — Webhook delivery statistics ──────────────────────
 
   private handleWebhookStats(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         configured: false,
         message: 'No webhook configured',
-      }));
+      });
       return;
     }
 
     const stats = this.gate.webhook.getRetryStats();
     const routerStats = this.gate.webhookRouter ? this.gate.webhookRouter.getAggregateStats() : null;
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       configured: true,
       maxRetries: this.gate.webhook.maxRetries,
       ...stats,
       ...(routerStats ? { filters: routerStats } : {}),
-    }));
+    });
   }
 
   // ─── /webhooks/log — Webhook delivery log ───────────────────────────────
 
   private handleWebhookLog(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         configured: false,
         message: 'No webhook configured',
         entries: [],
-      }));
+      });
       return;
     }
 
@@ -10818,92 +10389,81 @@ export class PayGateServer {
 
     const entries = this.gate.webhook.getDeliveryLog(options);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       configured: true,
       total: entries.length,
       entries,
-    }));
+    });
   }
 
   // ─── /webhooks/pause — Pause webhook delivery ─────────────────────────────
 
   private handleWebhookPause(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No webhook configured' }));
+      this.sendError(res, 400, 'No webhook configured');
       return;
     }
 
     const paused = this.gate.webhook.pause();
     if (!paused) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ paused: true, message: 'Already paused' }));
+      this.sendJson(res, 200, { paused: true, message: 'Already paused' });
       return;
     }
 
     this.audit.log('webhook.pause', 'admin', 'Webhook delivery paused');
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       paused: true,
       message: 'Webhook delivery paused. Events will be buffered until resumed.',
-    }));
+    });
   }
 
   // ─── /webhooks/resume — Resume webhook delivery ───────────────────────────
 
   private handleWebhookResume(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No webhook configured' }));
+      this.sendError(res, 400, 'No webhook configured');
       return;
     }
 
     const result = this.gate.webhook.resume();
     if (!result.resumed) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ paused: false, message: 'Not paused' }));
+      this.sendJson(res, 200, { paused: false, message: 'Not paused' });
       return;
     }
 
     this.audit.log('webhook.resume', 'admin', `Webhook delivery resumed, ${result.flushedEvents} buffered events flushed`);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       paused: false,
       message: 'Webhook delivery resumed.',
       flushedEvents: result.flushedEvents,
-    }));
+    });
   }
 
   // ─── /webhooks/test — Send test event ────────────────────────────────────
 
   private async handleWebhookTest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     if (!this.gate.webhook) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No webhook configured. Set --webhook-url or webhookUrl in config.' }));
+      this.sendError(res, 400, 'No webhook configured. Set --webhook-url or webhookUrl in config.');
       return;
     }
 
@@ -10946,8 +10506,7 @@ export class PayGateServer {
     try {
       parsed = new URL(webhookUrl);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid webhook URL configured' }));
+      this.sendError(res, 400, 'Invalid webhook URL configured');
       return;
     }
 
@@ -11009,11 +10568,10 @@ export class PayGateServer {
       success: result.success,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       url: webhookUrl.replace(/\/\/([^:]+):([^@]+)@/, '//$1:***@'), // mask credentials in URL
       ...result,
-    }));
+    });
   }
 
   // ─── /webhooks/filters — Webhook filter CRUD ─────────────────────────────
@@ -11022,30 +10580,26 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     if (!this.gate.webhookRouter) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ count: 0, filters: [], message: 'No webhook router configured' }));
+      this.sendJson(res, 200, { count: 0, filters: [], message: 'No webhook router configured' });
       return;
     }
 
     const filters = this.gate.webhookRouter.listRules();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ count: filters.length, filters }));
+    this.sendJson(res, 200, { count: filters.length, filters });
   }
 
   private async handleCreateWebhookFilter(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res, 'admin')) return;
 
     if (!this.gate.webhookRouter) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No webhook configured. Set webhookUrl or webhookFilters to enable webhook routing.' }));
+      this.sendError(res, 400, 'No webhook configured. Set webhookUrl or webhookFilters to enable webhook routing.');
       return;
     }
 
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
@@ -11072,30 +10626,26 @@ export class PayGateServer {
 
   private async handleUpdateWebhookFilter(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
 
     if (!this.gate.webhookRouter) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No webhook router configured' }));
+      this.sendError(res, 400, 'No webhook router configured');
       return;
     }
 
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     const filterId = String(params.id || '');
     if (!filterId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing id field' }));
+      this.sendError(res, 400, 'Missing id field');
       return;
     }
 
@@ -11121,52 +10671,45 @@ export class PayGateServer {
 
   private async handleDeleteWebhookFilter(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
 
     if (!this.gate.webhookRouter) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'No webhook router configured' }));
+      this.sendError(res, 400, 'No webhook router configured');
       return;
     }
 
     const body = await this.readBody(req);
     let params: { id?: string };
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     const filterId = String(params.id || '');
     if (!filterId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing id field' }));
+      this.sendError(res, 400, 'Missing id field');
       return;
     }
 
     const deleted = this.gate.webhookRouter.deleteRule(filterId);
     if (!deleted) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Filter not found' }));
+      this.sendError(res, 404, 'Filter not found');
       return;
     }
 
     this.audit.log('webhook_filter.deleted', 'admin', `Webhook filter deleted: ${filterId}`, { filterId });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, message: `Filter ${filterId} deleted` }));
+    this.sendJson(res, 200, { ok: true, message: `Filter ${filterId} deleted` });
   }
 
   // ─── /audit — Query audit log ─────────────────────────────────────────────
 
   private handleAudit(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -11191,8 +10734,7 @@ export class PayGateServer {
 
   private handleAuditExport(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -11223,8 +10765,7 @@ export class PayGateServer {
 
   private handleAuditStats(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -11244,8 +10785,7 @@ export class PayGateServer {
         url: req.url,
         method: req.method,
       });
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid admin key' }));
+      this.sendError(res, 401, 'Invalid admin key');
       return false;
     }
 
@@ -11271,8 +10811,7 @@ export class PayGateServer {
   private handleListTeams(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(req, res)) return;
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      this.sendError(res, 405, 'Method not allowed. Use GET.');
       return;
     }
 
@@ -11281,15 +10820,13 @@ export class PayGateServer {
       memberKeys: t.memberKeys.map(k => k.slice(0, 7) + '...' + k.slice(-4)),
     }));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ teams, count: teams.length }));
+    this.sendJson(res, 200, { teams, count: teams.length });
   }
 
   private async handleCreateTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
 
@@ -11298,14 +10835,12 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.name || typeof params.name !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      this.sendError(res, 400, 'Missing required field: name');
       return;
     }
 
@@ -11325,15 +10860,13 @@ export class PayGateServer {
 
     this.gate.store.save();
 
-    res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Team created', team }));
+    this.sendJson(res, 201, { message: 'Team created', team });
   }
 
   private async handleUpdateTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
 
@@ -11342,14 +10875,12 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.teamId || typeof params.teamId !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      this.sendError(res, 400, 'Missing required field: teamId');
       return;
     }
 
@@ -11362,23 +10893,20 @@ export class PayGateServer {
     });
 
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Team not found or inactive' }));
+      this.sendError(res, 404, 'Team not found or inactive');
       return;
     }
 
     this.audit.log('team.updated', 'admin', `Team updated: ${params.teamId}`, { teamId: params.teamId });
     this.gate.store.save();
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Team updated', team: this.teams.getTeam(params.teamId as string) }));
+    this.sendJson(res, 200, { message: 'Team updated', team: this.teams.getTeam(params.teamId as string) });
   }
 
   private async handleDeleteTeam(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
 
@@ -11387,36 +10915,31 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.teamId || typeof params.teamId !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      this.sendError(res, 400, 'Missing required field: teamId');
       return;
     }
 
     const success = this.teams.deleteTeam(params.teamId as string);
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Team not found or already deleted' }));
+      this.sendError(res, 404, 'Team not found or already deleted');
       return;
     }
 
     this.audit.log('team.deleted', 'admin', `Team deleted: ${params.teamId}`, { teamId: params.teamId });
     this.gate.store.save();
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Team deleted' }));
+    this.sendJson(res, 200, { message: 'Team deleted' });
   }
 
   private async handleTeamAssignKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
 
@@ -11425,27 +10948,23 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.teamId || typeof params.teamId !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      this.sendError(res, 400, 'Missing required field: teamId');
       return;
     }
     if (!params.key || typeof params.key !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: key' }));
+      this.sendError(res, 400, 'Missing required field: key');
       return;
     }
 
     // Verify the key exists
     const keyRecord = this.gate.store.resolveKey(params.key as string);
     if (!keyRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'API key not found' }));
+      this.sendError(res, 404, 'API key not found');
       return;
     }
 
@@ -11462,15 +10981,13 @@ export class PayGateServer {
     });
     this.gate.store.save();
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Key assigned to team' }));
+    this.sendJson(res, 200, { message: 'Key assigned to team' });
   }
 
   private async handleTeamRemoveKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res, 'admin')) return;
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
 
@@ -11479,26 +10996,22 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.teamId || typeof params.teamId !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: teamId' }));
+      this.sendError(res, 400, 'Missing required field: teamId');
       return;
     }
     if (!params.key || typeof params.key !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: key' }));
+      this.sendError(res, 400, 'Missing required field: key');
       return;
     }
 
     const success = this.teams.removeKey(params.teamId as string, params.key as string);
     if (!success) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not found in team' }));
+      this.sendError(res, 404, 'Key not found in team');
       return;
     }
 
@@ -11508,15 +11021,13 @@ export class PayGateServer {
     });
     this.gate.store.save();
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ message: 'Key removed from team' }));
+    this.sendJson(res, 200, { message: 'Key removed from team' });
   }
 
   private handleTeamUsage(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(req, res)) return;
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      this.sendError(res, 405, 'Method not allowed. Use GET.');
       return;
     }
 
@@ -11524,15 +11035,13 @@ export class PayGateServer {
     const teamId = url.searchParams.get('teamId');
 
     if (!teamId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required query param: teamId' }));
+      this.sendError(res, 400, 'Missing required query param: teamId');
       return;
     }
 
     const summary = this.teams.getUsageSummary(teamId, (key) => this.gate.store.getKey(key));
     if (!summary) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Team not found' }));
+      this.sendError(res, 404, 'Team not found');
       return;
     }
 
@@ -11544,8 +11053,7 @@ export class PayGateServer {
 
   private handleListNamespaces(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      this.sendError(res, 405, 'Method not allowed. Use GET.');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
@@ -11566,22 +11074,19 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.key) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required param: key (API key to delegate from)' }));
+      this.sendError(res, 400, 'Missing required param: key (API key to delegate from)');
       return;
     }
 
     // Verify the parent key exists and is active
     const keyRecord = this.gate.store.resolveKey(params.key);
     if (!keyRecord || !keyRecord.active) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'API key not found or inactive' }));
+      this.sendError(res, 404, 'API key not found or inactive');
       return;
     }
 
@@ -11601,8 +11106,7 @@ export class PayGateServer {
       label: params.label,
     });
 
-    res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 201, {
       token,
       expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
       ttl,
@@ -11610,15 +11114,14 @@ export class PayGateServer {
       allowedTools: params.allowedTools || [],
       label: params.label || null,
       message: 'Use this token as X-API-Key or Bearer token. It will expire automatically.',
-    }));
+    });
   }
 
   // ─── /tokens/revoke — Revoke a scoped token ────────────────────────────────
 
   private async handleRevokeToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -11628,29 +11131,25 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.token) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required param: token' }));
+      this.sendError(res, 400, 'Missing required param: token');
       return;
     }
 
     // Validate that it's a real, validly-signed token (even if expired)
     if (!ScopedTokenManager.isToken(params.token)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not a scoped token (must start with pgt_)' }));
+      this.sendError(res, 400, 'Not a scoped token (must start with pgt_)');
       return;
     }
 
     const entry = this.tokens.revokeToken(params.token, params.reason);
     if (!entry) {
       // Already revoked or invalid signature
-      res.writeHead(409, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Token already revoked or invalid signature' }));
+      this.sendError(res, 409, 'Token already revoked or invalid signature');
       return;
     }
 
@@ -11669,28 +11168,25 @@ export class PayGateServer {
       }).catch(() => {});
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       message: 'Token revoked',
       fingerprint: entry.fingerprint,
       expiresAt: entry.expiresAt,
       revokedAt: entry.revokedAt,
-    }));
+    });
   }
 
   // ─── /tokens/revoked — List revoked tokens ─────────────────────────────────
 
   private handleListRevokedTokens(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     const entries = this.tokens.revocationList.list();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       count: entries.length,
       entries: entries.map(e => ({
         fingerprint: e.fingerprint,
@@ -11698,7 +11194,7 @@ export class PayGateServer {
         revokedAt: e.revokedAt,
         reason: e.reason || null,
       })),
-    }));
+    });
   }
 
   // ─── /admin/keys — Admin key management ────────────────────────────────────
@@ -11707,15 +11203,13 @@ export class PayGateServer {
 
   private handleListPlugins(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      this.sendError(res, 405, 'Method not allowed. Use GET.');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
     const plugins = this.plugins.list();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ count: plugins.length, plugins }));
+    this.sendJson(res, 200, { count: plugins.length, plugins });
   }
 
   // ─── Key Group Endpoints ─────────────────────────────────────────────────
@@ -11723,8 +11217,7 @@ export class PayGateServer {
   private handleListGroups(req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(req, res)) return;
     const groups = this.groups.listGroups();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ count: groups.length, groups }));
+    this.sendJson(res, 200, { count: groups.length, groups });
   }
 
   private async handleCreateGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -11733,8 +11226,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
@@ -11772,8 +11264,7 @@ export class PayGateServer {
 
   private async handleUpdateGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -11781,15 +11272,13 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     const groupId = String(params.id || '');
     if (!groupId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing id field' }));
+      this.sendError(res, 400, 'Missing id field');
       return;
     }
 
@@ -11827,8 +11316,7 @@ export class PayGateServer {
 
   private async handleDeleteGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -11836,22 +11324,19 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { id?: string };
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     const groupId = String(params.id || '');
     if (!groupId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing id field' }));
+      this.sendError(res, 400, 'Missing id field');
       return;
     }
 
     const deleted = this.groups.deleteGroup(groupId);
     if (!deleted) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Group not found' }));
+      this.sendError(res, 404, 'Group not found');
       return;
     }
 
@@ -11862,14 +11347,12 @@ export class PayGateServer {
       this.redisSync.saveGroupAssignments().catch(() => {});
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, message: `Group ${groupId} deleted` }));
+    this.sendJson(res, 200, { ok: true, message: `Group ${groupId} deleted` });
   }
 
   private async handleAssignKeyToGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -11877,24 +11360,21 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; groupId?: string };
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     const apiKey = String(params.key || '');
     const groupId = String(params.groupId || '');
     if (!apiKey || !groupId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key or groupId field' }));
+      this.sendError(res, 400, 'Missing key or groupId field');
       return;
     }
 
     // Verify key exists
     const keyRecord = this.gate.store.getKey(apiKey);
     if (!keyRecord) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'API key not found' }));
+      this.sendError(res, 404, 'API key not found');
       return;
     }
 
@@ -11912,8 +11392,7 @@ export class PayGateServer {
         this.syncKeyMutation(apiKey);
       }
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, message: `Key assigned to group ${groupId}` }));
+      this.sendJson(res, 200, { ok: true, message: `Key assigned to group ${groupId}` });
     } catch (err: any) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
@@ -11922,8 +11401,7 @@ export class PayGateServer {
 
   private async handleRemoveKeyFromGroup(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -11931,22 +11409,19 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string };
     try { params = JSON.parse(body); } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     const apiKey = String(params.key || '');
     if (!apiKey) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing key field' }));
+      this.sendError(res, 400, 'Missing key field');
       return;
     }
 
     const removed = this.groups.removeKey(apiKey);
     if (!removed) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Key not in any group' }));
+      this.sendError(res, 404, 'Key not in any group');
       return;
     }
 
@@ -11963,16 +11438,14 @@ export class PayGateServer {
       this.syncKeyMutation(apiKey);
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, message: 'Key removed from group' }));
+    this.sendJson(res, 200, { ok: true, message: 'Key removed from group' });
   }
 
   // ─── Admin Key Management ────────────────────────────────────────────────
 
   private handleListAdminKeys(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+      this.sendError(res, 405, 'Method not allowed. Use GET.');
       return;
     }
     if (!this.checkAdmin(req, res, 'super_admin')) return;
@@ -11987,14 +11460,12 @@ export class PayGateServer {
       lastUsedAt: k.lastUsedAt,
     }));
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ count: keys.length, keys }));
+    this.sendJson(res, 200, { count: keys.length, keys });
   }
 
   private async handleCreateAdminKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'super_admin')) return;
@@ -12004,21 +11475,18 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      this.sendError(res, 400, 'Invalid JSON body');
       return;
     }
 
     if (!params.name || typeof params.name !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      this.sendError(res, 400, 'Missing required field: name');
       return;
     }
 
     const role = (params.role || 'admin') as AdminRole;
     if (!['super_admin', 'admin', 'viewer'].includes(role)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid role. Must be super_admin, admin, or viewer.' }));
+      this.sendError(res, 400, 'Invalid role. Must be super_admin, admin, or viewer.');
       return;
     }
 
@@ -12038,19 +11506,17 @@ export class PayGateServer {
       role,
     });
 
-    res.writeHead(201, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 201, {
       key: record.key,
       name: record.name,
       role: record.role,
       createdAt: record.createdAt,
-    }));
+    });
   }
 
   private async handleRevokeAdminKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'super_admin')) return;
@@ -12060,14 +11526,12 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      this.sendError(res, 400, 'Invalid JSON body');
       return;
     }
 
     if (!params.key || typeof params.key !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: key' }));
+      this.sendError(res, 400, 'Missing required field: key');
       return;
     }
 
@@ -12075,8 +11539,7 @@ export class PayGateServer {
 
     // Prevent revoking your own key
     if (params.key === callerKey) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot revoke your own admin key' }));
+      this.sendError(res, 400, 'Cannot revoke your own admin key');
       return;
     }
 
@@ -12097,8 +11560,7 @@ export class PayGateServer {
       revokedKeyMasked: targetMasked,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ revoked: true }));
+    this.sendJson(res, 200, { revoked: true });
   }
 
   // ─── /keys/templates — CRUD ────────────────────────────────────────────────
@@ -12107,8 +11569,7 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const templates = this.templates.list();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ total: templates.length, templates }));
+    this.sendJson(res, 200, { total: templates.length, templates });
   }
 
   private async handleCreateTemplate(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -12119,15 +11580,13 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     const name = params.name;
     if (!name || typeof name !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      this.sendError(res, 400, 'Missing required field: name');
       return;
     }
 
@@ -12151,8 +11610,7 @@ export class PayGateServer {
 
   private async handleDeleteTemplate(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
-      res.writeHead(405, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
       return;
     }
     if (!this.checkAdmin(req, res, 'admin')) return;
@@ -12162,14 +11620,12 @@ export class PayGateServer {
     try {
       params = JSON.parse(body);
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      this.sendError(res, 400, 'Invalid JSON');
       return;
     }
 
     if (!params.name || typeof params.name !== 'string') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required field: name' }));
+      this.sendError(res, 400, 'Missing required field: name');
       return;
     }
 
@@ -12184,8 +11640,7 @@ export class PayGateServer {
       templateName: params.name,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deleted: true, name: params.name }));
+    this.sendJson(res, 200, { deleted: true, name: params.name });
   }
 
   /**
@@ -12398,8 +11853,7 @@ export class PayGateServer {
       ? Math.round(filtered.reduce((sum, e) => sum + e.durationMs, 0) / filtered.length)
       : 0;
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       total,
       offset,
       limit,
@@ -12410,7 +11864,7 @@ export class PayGateServer {
         avgDurationMs,
       },
       requests: page,
-    }));
+    });
   }
 
   // ─── /tools/stats — Per-tool analytics from request log ────────────────────
@@ -12463,8 +11917,7 @@ export class PayGateServer {
         .slice(0, 10)
         .map(([key, calls]) => ({ key, calls, credits: consumerCredits[key] || 0 }));
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      this.sendJson(res, 200, {
         tool: toolFilter,
         totalCalls: toolEntries.length,
         allowed: allowed.length,
@@ -12477,7 +11930,7 @@ export class PayGateServer {
         p95DurationMs: p95,
         denyReasons,
         topConsumers,
-      }));
+      });
       return;
     }
 
@@ -12516,12 +11969,11 @@ export class PayGateServer {
       }))
       .sort((a, b) => b.totalCalls - a.totalCalls);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       totalTools: tools.length,
       totalCalls: entries.length,
       tools,
-    }));
+    });
   }
 
   // ─── /requests/dry-run — Simulate a tool call without executing ─────────────
@@ -12537,14 +11989,12 @@ export class PayGateServer {
         const toolName = params.tool;
 
         if (!apiKey || typeof apiKey !== 'string') {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing required field: key' }));
+          this.sendError(res, 400, 'Missing required field: key');
           return;
         }
 
         if (!toolName || typeof toolName !== 'string') {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing required field: tool' }));
+          this.sendError(res, 400, 'Missing required field: tool');
           return;
         }
 
@@ -12553,27 +12003,25 @@ export class PayGateServer {
         if (!keyRecord) {
           const isExpired = this.gate.store.isExpired(apiKey);
           const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allowed: false,
             reason,
             tool: toolName,
             creditsRequired: 0,
             creditsAvailable: 0,
-          }));
+          });
           return;
         }
 
         // Step 2: Suspended?
         if (keyRecord.suspended) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allowed: false,
             reason: 'key_suspended',
             tool: toolName,
             creditsRequired: 0,
             creditsAvailable: keyRecord.credits,
-          }));
+          });
           return;
         }
 
@@ -12581,54 +12029,50 @@ export class PayGateServer {
         const effectiveAllowed = keyRecord.allowedTools || [];
         const effectiveDenied = keyRecord.deniedTools || [];
         if (effectiveDenied.includes(toolName)) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allowed: false,
             reason: `tool_not_allowed: ${toolName} is in deniedTools`,
             tool: toolName,
             creditsRequired: 0,
             creditsAvailable: keyRecord.credits,
-          }));
+          });
           return;
         }
         if (effectiveAllowed.length > 0 && !effectiveAllowed.includes(toolName)) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allowed: false,
             reason: `tool_not_allowed: ${toolName} not in allowedTools`,
             tool: toolName,
             creditsRequired: 0,
             creditsAvailable: keyRecord.credits,
-          }));
+          });
           return;
         }
 
         // Step 4: Rate limit check (read-only)
         const rateStatus = this.gate.rateLimiter.getStatus(keyRecord.key);
         if (rateStatus.limit > 0 && rateStatus.remaining <= 0) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allowed: false,
             reason: 'rate_limited',
             tool: toolName,
             creditsRequired: 0,
             creditsAvailable: keyRecord.credits,
             rateLimit: rateStatus,
-          }));
+          });
           return;
         }
 
         // Step 5: Credits check
         const creditsRequired = this.gate.getToolPrice(toolName, params.arguments);
         if (keyRecord.credits < creditsRequired) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allowed: false,
             reason: `insufficient_credits: need ${creditsRequired}, have ${keyRecord.credits}`,
             tool: toolName,
             creditsRequired,
             creditsAvailable: keyRecord.credits,
-          }));
+          });
           return;
         }
 
@@ -12636,35 +12080,31 @@ export class PayGateServer {
         if (keyRecord.spendingLimit > 0) {
           const wouldSpend = keyRecord.totalSpent + creditsRequired;
           if (wouldSpend > keyRecord.spendingLimit) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
+            this.sendJson(res, 200, {
               allowed: false,
               reason: `spending_limit_exceeded: limit ${keyRecord.spendingLimit}, spent ${keyRecord.totalSpent}, need ${creditsRequired}`,
               tool: toolName,
               creditsRequired,
               creditsAvailable: keyRecord.credits,
-            }));
+            });
             return;
           }
         }
 
         // All checks passed — would be allowed
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        this.sendJson(res, 200, {
           allowed: true,
           tool: toolName,
           creditsRequired,
           creditsAvailable: keyRecord.credits,
           creditsAfter: keyRecord.credits - creditsRequired,
           ...(rateStatus.limit > 0 ? { rateLimit: rateStatus } : {}),
-        }));
+        });
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
       }
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to read request body' }));
+      this.sendError(res, 400, 'Failed to read request body');
     }
   }
 
@@ -12681,20 +12121,17 @@ export class PayGateServer {
         const tools = params.tools;
 
         if (!apiKey || typeof apiKey !== 'string') {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing required field: key' }));
+          this.sendError(res, 400, 'Missing required field: key');
           return;
         }
 
         if (!Array.isArray(tools) || tools.length === 0) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing required field: tools (non-empty array of {name} objects)' }));
+          this.sendError(res, 400, 'Missing required field: tools (non-empty array of {name} objects)');
           return;
         }
 
         if (tools.length > 100) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Maximum 100 tools per batch dry run' }));
+          this.sendError(res, 400, 'Maximum 100 tools per batch dry run');
           return;
         }
 
@@ -12712,41 +12149,38 @@ export class PayGateServer {
         if (!keyRecord) {
           const isExpired = this.gate.store.isExpired(apiKey);
           const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allAllowed: false,
             reason,
             totalCreditsRequired: 0,
             results: tools.map((t: any) => ({ tool: t.name, allowed: false, reason, creditsRequired: 0 })),
-          }));
+          });
           return;
         }
 
         // Step 2: Suspended?
         if (keyRecord.suspended) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allAllowed: false,
             reason: 'key_suspended',
             totalCreditsRequired: 0,
             creditsAvailable: keyRecord.credits,
             results: tools.map((t: any) => ({ tool: t.name, allowed: false, reason: 'key_suspended', creditsRequired: 0 })),
-          }));
+          });
           return;
         }
 
         // Step 3: Rate limit check (read-only)
         const rateStatus = this.gate.rateLimiter.getStatus(keyRecord.key);
         if (rateStatus.limit > 0 && rateStatus.remaining <= 0) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
+          this.sendJson(res, 200, {
             allAllowed: false,
             reason: 'rate_limited',
             totalCreditsRequired: 0,
             creditsAvailable: keyRecord.credits,
             rateLimit: rateStatus,
             results: tools.map((t: any) => ({ tool: t.name, allowed: false, reason: 'rate_limited', creditsRequired: 0 })),
-          }));
+          });
           return;
         }
 
@@ -12796,8 +12230,7 @@ export class PayGateServer {
           }
         }
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        this.sendJson(res, 200, {
           allAllowed,
           ...(firstDenyReason ? { reason: firstDenyReason } : {}),
           totalCreditsRequired,
@@ -12805,14 +12238,12 @@ export class PayGateServer {
           ...(allAllowed ? { creditsAfter: keyRecord.credits - totalCreditsRequired } : {}),
           ...(rateStatus.limit > 0 ? { rateLimit: rateStatus } : {}),
           results,
-        }));
+        });
       } catch {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        this.sendError(res, 400, 'Invalid JSON body');
       }
     } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Failed to read request body' }));
+      this.sendError(res, 400, 'Failed to read request body');
     }
   }
 
@@ -12916,8 +12347,7 @@ export class PayGateServer {
     const keyParam = params.get('key');
 
     if (!keyParam) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing required parameter: key' }));
+      this.sendError(res, 400, 'Missing required parameter: key');
       return;
     }
 
@@ -12926,8 +12356,7 @@ export class PayGateServer {
     if (!keyRecord) {
       const isExpired = this.gate.store.isExpired(keyParam);
       const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: reason, tools: [] }));
+      this.sendJson(res, 200, { error: reason, tools: [] });
       return;
     }
 
@@ -12974,15 +12403,14 @@ export class PayGateServer {
     // Global rate limit
     const globalRateLimit = this.gate.rateLimiter.getStatus(keyRecord.key);
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    this.sendJson(res, 200, {
       key: keyRecord.key.slice(0, 7) + '...' + keyRecord.key.slice(-4),
       creditsAvailable: keyRecord.credits,
       totalTools: tools.length,
       accessibleTools: tools.filter(t => t.accessible).length,
       ...(globalRateLimit.limit > 0 ? { globalRateLimit } : {}),
       tools,
-    }));
+    });
   }
 
   /** Calculate percentile from an array of numbers. */
