@@ -872,6 +872,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/anomalies':
+        if (req.method === 'GET') return this.handleAnomalyDetection(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1458,6 +1463,7 @@ export class PayGateServer {
         securityAudit: 'GET /admin/security — Security posture analysis with findings for missing IP allowlists, quotas, ACLs, spending limits, expiry, high-credit keys, and composite score (requires X-Admin-Key)',
         revenueAnalysis: 'GET /admin/revenue — Revenue metrics with per-tool revenue, per-key spending, hourly revenue trends, credit flow summary, and average revenue per call (requires X-Admin-Key)',
         keyPortfolio: 'GET /admin/key-portfolio — Key portfolio health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown (requires X-Admin-Key)',
+        anomalyDetection: 'GET /admin/anomalies — Anomaly detection identifying high denial rates, rapid credit depletion, low credit balances, and other unusual patterns (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5965,6 +5971,108 @@ export class PayGateServer {
         newestAgeDays,
       },
       byNamespace,
+    }));
+  }
+
+  // ─── /admin/anomalies — Anomaly detection ──────────────────────────────
+
+  private handleAnomalyDetection(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+    const allRecords = this.gate.store.getAllRecords();
+
+    interface Anomaly {
+      type: string;
+      severity: 'warning' | 'info' | 'critical';
+      keyName?: string;
+      tool?: string;
+      description: string;
+      details?: Record<string, unknown>;
+    }
+
+    const anomalies: Anomaly[] = [];
+
+    // ── High denial rate per key (>50% denied with at least 3 calls) ──
+    const keyEvents = new Map<string, { allowed: number; denied: number; name: string }>();
+    for (const e of events) {
+      const name = e.keyName || e.apiKey;
+      if (!keyEvents.has(name)) keyEvents.set(name, { allowed: 0, denied: 0, name });
+      const k = keyEvents.get(name)!;
+      if (e.allowed) k.allowed++;
+      else k.denied++;
+    }
+    for (const [, stats] of keyEvents) {
+      const total = stats.allowed + stats.denied;
+      if (total >= 3 && stats.denied / total > 0.5) {
+        anomalies.push({
+          type: 'high_denial_rate',
+          severity: 'warning',
+          keyName: stats.name,
+          description: `Key "${stats.name}" has ${Math.round(stats.denied / total * 100)}% denial rate (${stats.denied}/${total} calls denied)`,
+          details: { allowed: stats.allowed, denied: stats.denied, total, denialRate: Math.round(stats.denied / total * 10000) / 10000 },
+        });
+      }
+    }
+
+    // ── Rapid credit depletion (>75% credits spent with at least 1 call) ──
+    for (const record of allRecords) {
+      if (!record.active) continue;
+      const totalAllocated = record.credits + (record.totalSpent || 0);
+      if (totalAllocated > 0 && record.totalSpent > 0) {
+        const utilization = record.totalSpent / totalAllocated;
+        if (utilization >= 0.75) {
+          anomalies.push({
+            type: 'rapid_credit_depletion',
+            severity: 'warning',
+            keyName: record.name,
+            description: `Key "${record.name}" has used ${Math.round(utilization * 100)}% of allocated credits (${record.totalSpent}/${totalAllocated})`,
+            details: { totalAllocated, totalSpent: record.totalSpent, remaining: record.credits, utilization: Math.round(utilization * 10000) / 10000 },
+          });
+        }
+      }
+    }
+
+    // ── Low remaining credits (active key with <10% remaining or <10 credits) ──
+    for (const record of allRecords) {
+      if (!record.active) continue;
+      const totalAllocated = record.credits + (record.totalSpent || 0);
+      if (totalAllocated > 0 && record.totalSpent > 0) {
+        const remaining = record.credits;
+        const remainingPct = remaining / totalAllocated;
+        if (remaining <= 10 || remainingPct <= 0.1) {
+          // Don't duplicate if already flagged as rapid depletion
+          const alreadyFlagged = anomalies.some(a => a.type === 'rapid_credit_depletion' && a.keyName === record.name);
+          if (!alreadyFlagged) {
+            anomalies.push({
+              type: 'low_credits',
+              severity: 'info',
+              keyName: record.name,
+              description: `Key "${record.name}" has only ${remaining} credits remaining (${Math.round(remainingPct * 100)}% of allocated)`,
+              details: { remaining, totalAllocated, remainingPct: Math.round(remainingPct * 10000) / 10000 },
+            });
+          } else {
+            // Still add as separate anomaly type for detection
+            anomalies.push({
+              type: 'low_credits',
+              severity: 'info',
+              keyName: record.name,
+              description: `Key "${record.name}" has only ${remaining} credits remaining (${Math.round(remainingPct * 100)}% of allocated)`,
+              details: { remaining, totalAllocated, remainingPct: Math.round(remainingPct * 10000) / 10000 },
+            });
+          }
+        }
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalAnomalies: anomalies.length,
+        byType: anomalies.reduce((acc, a) => { acc[a.type] = (acc[a.type] || 0) + 1; return acc; }, {} as Record<string, number>),
+      },
+      anomalies,
+      analyzedAt: new Date().toISOString(),
     }));
   }
 

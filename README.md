@@ -118,6 +118,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Security Audit** — `GET /admin/security` security posture analysis identifying keys without IP allowlists, quotas, ACL restrictions, spending limits, or expiry dates, flagging high-credit keys, and computing a composite security score
 - **Revenue Analysis** — `GET /admin/revenue` revenue metrics with per-tool revenue breakdown, per-key spending, hourly revenue trends, credit flow summary (allocated/spent/remaining), and average revenue per call
 - **Key Portfolio Health** — `GET /admin/key-portfolio` portfolio-wide key health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown
+- **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2713,6 +2714,26 @@ curl http://localhost:3000/admin/key-portfolio -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Returns portfolio-wide key health: active/inactive/suspended counts, average credit utilization, stale keys (created but never used), keys expiring within 7 days sorted by urgency, age distribution statistics, and namespace breakdown. Read-only.
+
+### Anomaly Detection
+
+```bash
+curl http://localhost:3000/admin/anomalies -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalAnomalies": 3, "byType": { "high_denial_rate": 1, "rapid_credit_depletion": 1, "low_credits": 1 } },
+  "anomalies": [
+    { "type": "high_denial_rate", "severity": "warning", "keyName": "test-key", "description": "Key \"test-key\" has 80% denial rate (8/10 calls denied)" },
+    { "type": "rapid_credit_depletion", "severity": "warning", "keyName": "fast-spender", "description": "Key \"fast-spender\" has used 95% of allocated credits (950/1000)" },
+    { "type": "low_credits", "severity": "info", "keyName": "nearly-empty", "description": "Key \"nearly-empty\" has only 5 credits remaining (5% of allocated)" }
+  ],
+  "analyzedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Scans all active keys for anomalous patterns: keys with >50% denial rates (3+ calls minimum), rapid credit depletion (>=75% spent), and low remaining credits (<=10 credits or <=10% remaining). Each anomaly includes type, severity, affected key name, and human-readable description. Read-only.
 
 ### IP Allowlisting
 
