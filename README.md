@@ -102,6 +102,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Reservations** — `POST /keys/reserve` holds credits, `POST /keys/reserve/commit` deducts held credits, `POST /keys/reserve/release` frees the hold, `GET /keys/reserve` lists active reservations — prevents overcommit, configurable TTL (10s–1h), max 50 per key, auto-expiry, audit trail
 - **Request Log** — `GET /requests` queryable log of every tool call with timing, credits charged, status (allowed/denied), deny reason, key, and request ID — filter by key/tool/status/since, pagination, summary statistics (totals + avg duration), 5000-entry ring buffer
 - **Tool Stats** — `GET /tools/stats` per-tool analytics: call counts, success rate, avg/p95 latency, credits consumed, deny reason breakdown, top 10 consumers — optional `?tool=` for detailed single-tool view, `?since=` filter
+- **Request Log Export** — `GET /requests/export` exports the full request log as JSON or CSV with Content-Disposition headers — filter by key/tool/status/since/until, combined time-window queries, no pagination limit
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2204,6 +2205,35 @@ curl "http://localhost:3402/tools/stats?since=2025-03-01T00:00:00Z" \
 ```
 
 Top consumers limited to 10. Tools sorted by call count in overview. Data sourced from request log (5000-entry ring buffer).
+
+### Request Log Export
+
+Export the request log as JSON or CSV for offline analysis:
+
+```bash
+# Export as JSON (default)
+curl "http://localhost:3402/requests/export" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" -o paygate-requests.json
+
+# Export as CSV
+curl "http://localhost:3402/requests/export?format=csv" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" -o paygate-requests.csv
+
+# Export with filters
+curl "http://localhost:3402/requests/export?tool=my_tool&status=denied&since=2025-03-01T00:00:00Z&until=2025-03-31T23:59:59Z" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `format` | `json` (default) or `csv` |
+| `key` | Filter by API key (partial match) |
+| `tool` | Filter by tool name (exact match) |
+| `status` | `allowed` or `denied` |
+| `since` | ISO 8601 start timestamp |
+| `until` | ISO 8601 end timestamp |
+
+Both formats include Content-Disposition headers for automatic file download. Unlike `/requests`, the export endpoint returns **all** matching entries (no pagination limit). CSV includes proper quoting for values with commas.
 
 ### IP Allowlisting
 

@@ -714,6 +714,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/requests/export':
+        if (req.method === 'GET') return this.handleRequestLogExport(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Registry / Discovery endpoints ──────────────────────────────
       case '/.well-known/mcp-payment':
         return this.handlePaymentMetadata(req, res);
@@ -1361,6 +1366,7 @@ export class PayGateServer {
         keyActivity: 'GET /keys/activity?key=... — Unified activity timeline for a key (requires X-Admin-Key)',
         creditReservations: 'POST /keys/reserve to hold credits, POST /keys/reserve/commit to deduct, POST /keys/reserve/release to release, GET /keys/reserve to list (requires X-Admin-Key)',
         requestLog: 'GET /requests — Queryable log of tool call requests with timing, credits, status (requires X-Admin-Key)',
+        requestLogExport: 'GET /requests/export — Export request log as JSON or CSV with filters (requires X-Admin-Key)',
         toolStats: 'GET /tools/stats — Per-tool call counts, success rates, latency, credits, and top consumers (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
@@ -7058,6 +7064,96 @@ export class PayGateServer {
       totalCalls: entries.length,
       tools,
     }));
+  }
+
+  // ─── /requests/export — Export request log as JSON or CSV ───────────────────
+
+  private handleRequestLogExport(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+
+    const format = params.get('format') || 'json';
+    const keyFilter = params.get('key');
+    const toolFilter = params.get('tool');
+    const statusFilter = params.get('status');
+    const sinceFilter = params.get('since');
+    const untilFilter = params.get('until');
+
+    let filtered = this.requestLog;
+
+    // Filter by key (partial match on masked key)
+    if (keyFilter) {
+      const kf = keyFilter.toLowerCase();
+      filtered = filtered.filter(e => e.key.toLowerCase().includes(kf));
+    }
+
+    // Filter by tool name (exact match)
+    if (toolFilter) {
+      filtered = filtered.filter(e => e.tool === toolFilter);
+    }
+
+    // Filter by status
+    if (statusFilter === 'allowed' || statusFilter === 'denied') {
+      filtered = filtered.filter(e => e.status === statusFilter);
+    }
+
+    // Filter by since timestamp
+    if (sinceFilter) {
+      const sinceTime = new Date(sinceFilter).getTime();
+      if (!isNaN(sinceTime)) {
+        filtered = filtered.filter(e => new Date(e.timestamp).getTime() >= sinceTime);
+      }
+    }
+
+    // Filter by until timestamp
+    if (untilFilter) {
+      const untilTime = new Date(untilFilter).getTime();
+      if (!isNaN(untilTime)) {
+        filtered = filtered.filter(e => new Date(e.timestamp).getTime() <= untilTime);
+      }
+    }
+
+    // Return newest first
+    const sorted = [...filtered].reverse();
+
+    if (format === 'csv') {
+      const header = 'id,timestamp,tool,key,status,credits,durationMs,denyReason,requestId';
+      const rows = sorted.map(e => {
+        const escapeCsv = (v: string | undefined) => {
+          if (v === undefined || v === null) return '';
+          const s = String(v);
+          if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+            return '"' + s.replace(/"/g, '""') + '"';
+          }
+          return s;
+        };
+        return [
+          e.id,
+          e.timestamp,
+          escapeCsv(e.tool),
+          escapeCsv(e.key),
+          e.status,
+          e.credits,
+          e.durationMs,
+          escapeCsv(e.denyReason),
+          escapeCsv(e.requestId),
+        ].join(',');
+      });
+      const csv = [header, ...rows].join('\n');
+      res.writeHead(200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': 'attachment; filename="paygate-requests.csv"',
+      });
+      res.end(csv);
+    } else {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Disposition': 'attachment; filename="paygate-requests.json"',
+      });
+      res.end(JSON.stringify({ count: sorted.length, requests: sorted }, null, 2));
+    }
   }
 
   /** Calculate percentile from an array of numbers. */
