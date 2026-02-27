@@ -143,6 +143,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Correlation** — `GET /admin/tool-correlation` tool co-occurrence analysis showing which tools are commonly used together by the same consumers
 - **Consumer Segmentation** — `GET /admin/consumer-segmentation` classifies API key consumers into power/regular/casual/dormant segments with per-segment metrics
 - **Credit Distribution** — `GET /admin/credit-distribution` histogram of credit balances across active keys with bucket ranges and median calculation
+- **Response Time Distribution** — `GET /admin/response-time-distribution` histogram of response times with latency buckets and p50/p95/p99 percentiles
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3341,6 +3342,27 @@ curl http://localhost:3000/admin/credit-distribution -H "X-Admin-Key: YOUR_ADMIN
 ```
 
 Histogram of credit balances across active, non-suspended keys. Buckets: 0–10, 11–50, 51–100, 101–500, 501–1000, 1001+. Only non-empty buckets are returned. `medianCredits` is the median remaining balance. Useful for pricing analysis and capacity planning. Read-only.
+
+### Response Time Distribution
+
+```bash
+curl http://localhost:3000/admin/response-time-distribution -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "buckets": [
+    { "range": "0-50ms", "count": 45, "percentage": 60 },
+    { "range": "51-100ms", "count": 20, "percentage": 27 },
+    { "range": "101-250ms", "count": 8, "percentage": 11 },
+    { "range": "251-500ms", "count": 2, "percentage": 3 }
+  ],
+  "summary": { "totalRequests": 75, "avgResponseTime": 62, "p50": 42, "p95": 180, "p99": 350 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Histogram of response times across allowed tool calls. Buckets: 0–50ms, 51–100ms, 101–250ms, 251–500ms, 501–1000ms, 1001ms+. Includes percentile metrics (p50, p95, p99) and average response time. Only non-empty buckets are returned. Useful for SLA monitoring and performance optimization. Read-only.
 
 ### IP Allowlisting
 

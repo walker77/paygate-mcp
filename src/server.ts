@@ -997,6 +997,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/response-time-distribution':
+        if (req.method === 'GET') return this.handleResponseTimeDistribution(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1608,6 +1613,7 @@ export class PayGateServer {
         toolCorrelation: 'GET /admin/tool-correlation — Tool co-occurrence analysis showing which tools are commonly used together by the same consumers (requires X-Admin-Key)',
         consumerSegmentation: 'GET /admin/consumer-segmentation — Consumer classification into power/regular/casual/dormant segments with per-segment metrics (requires X-Admin-Key)',
         creditDistribution: 'GET /admin/credit-distribution — Histogram of credit balances across active keys with configurable buckets and median calculation (requires X-Admin-Key)',
+        responseTimeDistribution: 'GET /admin/response-time-distribution — Histogram of response times with latency buckets, percentiles p50/p95/p99, and performance analysis (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7934,6 +7940,89 @@ export class PayGateServer {
       summary: {
         totalKeys: activeRecords.length,
         medianCredits,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/response-time-distribution — Latency histogram ───────────────
+
+  private handleResponseTimeDistribution(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    // Collect durations from allowed requests only
+    const durations: number[] = [];
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      if (typeof entry.durationMs === 'number') {
+        durations.push(entry.durationMs);
+      }
+    }
+
+    if (durations.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        buckets: [],
+        summary: { totalRequests: 0, avgResponseTime: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Define latency buckets
+    const bucketDefs = [
+      { range: '0-50ms', min: 0, max: 50 },
+      { range: '51-100ms', min: 51, max: 100 },
+      { range: '101-250ms', min: 101, max: 250 },
+      { range: '251-500ms', min: 251, max: 500 },
+      { range: '501-1000ms', min: 501, max: 1000 },
+      { range: '1001ms+', min: 1001, max: Infinity },
+    ];
+
+    const bucketCounts = bucketDefs.map(def => ({
+      range: def.range,
+      min: def.min,
+      max: def.max,
+      count: 0,
+    }));
+
+    for (const d of durations) {
+      for (const bucket of bucketCounts) {
+        if (d >= bucket.min && d <= bucket.max) {
+          bucket.count++;
+          break;
+        }
+      }
+    }
+
+    // Calculate percentiles
+    const sorted = [...durations].sort((a, b) => a - b);
+    const percentile = (p: number) => {
+      const idx = Math.ceil((p / 100) * sorted.length) - 1;
+      return sorted[Math.max(0, idx)];
+    };
+
+    const total = durations.length;
+    const avg = Math.round(durations.reduce((s, d) => s + d, 0) / total);
+
+    // Only include non-empty buckets
+    const buckets = bucketCounts
+      .filter(b => b.count > 0)
+      .map(({ range, count }) => ({
+        range,
+        count,
+        percentage: Math.round((count / total) * 100),
+      }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      buckets,
+      summary: {
+        totalRequests: total,
+        avgResponseTime: avg,
+        p50: percentile(50),
+        p95: percentile(95),
+        p99: percentile(99),
       },
       generatedAt: new Date().toISOString(),
     }));
