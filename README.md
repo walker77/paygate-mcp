@@ -147,6 +147,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Consumer Lifetime Value** — `GET /admin/consumer-lifetime-value` per-consumer spend analysis with value tiers, tool diversity, and top spender rankings
 - **Tool Revenue Ranking** — `GET /admin/tool-revenue` ranks tools by total credits consumed with call counts, unique consumers, and percentage breakdown
 - **Consumer Retention Cohorts** — `GET /admin/consumer-retention` groups consumers by creation date with retention rates and avg spend per cohort
+- **Error Breakdown** — `GET /admin/error-breakdown` categorizes denied requests by reason with counts, percentages, affected consumers, and error rate
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3425,6 +3426,26 @@ curl http://localhost:3000/admin/consumer-retention -H "X-Admin-Key: YOUR_ADMIN_
 ```
 
 Groups active consumers by creation date (YYYY-MM-DD cohorts). A consumer is "retained" if they have at least 1 tool call. Per-cohort: created count, retained count, retention rate percentage, and average spend. Excludes revoked/suspended keys. Cohorts sorted newest first. Read-only.
+
+### Error Breakdown
+
+```bash
+curl http://localhost:3000/admin/error-breakdown -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "errors": [
+    { "reason": "insufficient_credits", "count": 45, "percentage": 75, "affectedConsumers": 12 },
+    { "reason": "rate_limited", "count": 10, "percentage": 17, "affectedConsumers": 3 },
+    { "reason": "acl_denied", "count": 5, "percentage": 8, "affectedConsumers": 2 }
+  ],
+  "summary": { "totalDenied": 60, "totalAllowed": 940, "errorRate": 6 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Categorizes denied requests by deny reason for root-cause analysis. Per-reason: count, percentage of total denials, and affected consumer count. `errorRate` is the percentage of total requests that were denied. Sorted by count descending. Read-only.
 
 ### IP Allowlisting
 

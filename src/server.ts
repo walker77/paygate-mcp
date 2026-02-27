@@ -1017,6 +1017,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/error-breakdown':
+        if (req.method === 'GET') return this.handleErrorBreakdown(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1632,6 +1637,7 @@ export class PayGateServer {
         consumerLifetimeValue: 'GET /admin/consumer-lifetime-value — Per-consumer value metrics with spend, calls, tool diversity, and tier classification (requires X-Admin-Key)',
         toolRevenue: 'GET /admin/tool-revenue — Tool revenue ranking with credits consumed, call counts, unique consumers, and percentage breakdown (requires X-Admin-Key)',
         consumerRetention: 'GET /admin/consumer-retention — Consumer retention cohorts grouped by creation date with retention rates and avg spend per cohort (requires X-Admin-Key)',
+        errorBreakdown: 'GET /admin/error-breakdown — Denied request breakdown by reason with counts, percentages, affected consumers, and overall error rate (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8230,6 +8236,54 @@ export class PayGateServer {
         totalKeys,
         retainedKeys,
         overallRetentionRate: totalKeys > 0 ? Math.round((retainedKeys / totalKeys) * 100) : 0,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/error-breakdown — Denied request analysis ────────────────────
+
+  private handleErrorBreakdown(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    let totalAllowed = 0;
+    let totalDenied = 0;
+    const reasonMap = new Map<string, { count: number; consumers: Set<string> }>();
+
+    for (const entry of this.requestLog) {
+      if (entry.status === 'allowed') {
+        totalAllowed++;
+      } else if (entry.status === 'denied') {
+        totalDenied++;
+        const reason = entry.denyReason || 'unknown';
+        let data = reasonMap.get(reason);
+        if (!data) {
+          data = { count: 0, consumers: new Set() };
+          reasonMap.set(reason, data);
+        }
+        data.count++;
+        data.consumers.add(entry.key);
+      }
+    }
+
+    const totalRequests = totalAllowed + totalDenied;
+
+    const errors = Array.from(reasonMap.entries())
+      .map(([reason, data]) => ({
+        reason,
+        count: data.count,
+        percentage: totalDenied > 0 ? Math.round((data.count / totalDenied) * 100) : 0,
+        affectedConsumers: data.consumers.size,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      errors,
+      summary: {
+        totalDenied,
+        totalAllowed,
+        errorRate: totalRequests > 0 ? Math.round((totalDenied / totalRequests) * 100) : 0,
       },
       generatedAt: new Date().toISOString(),
     }));
