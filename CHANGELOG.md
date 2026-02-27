@@ -1,5 +1,17 @@
 # Changelog
 
+## 8.81.0 (2026-02-27)
+
+### Admin Query Parameter Hardening
+- **sortBy allowlist validation** — `/keys` endpoint now rejects invalid `sortBy` values with 400 and lists valid fields (`name`, `credits`, `totalSpent`, `totalCalls`, `lastUsedAt`, `createdAt`)
+- **order validation** — rejects invalid `order` values (must be `asc` or `desc`)
+- **Pagination bounds** — `limit` and `offset` are clamped to safe ranges via `clampInt()` across all paginated endpoints: `/keys`, `/audit`, `/requests`, `/keys/credit-history`, `/keys/activity`, `/webhooks/log`
+- NaN and non-numeric values handled gracefully (fall through to defaults, never crash)
+- Prevents potential memory abuse from unbounded offset values
+- 20 new tests (sortBy/order validation, limit/offset clamping, NaN handling, audit/request log bounds)
+
+---
+
 ## 8.80.0 (2026-02-27)
 
 ### Request ID in Error Responses

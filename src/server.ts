@@ -66,6 +66,12 @@ function sanitizeString(value: string | undefined | null, maxLen = MAX_STRING_FI
   return String(value).slice(0, maxLen);
 }
 
+/** Clamp a numeric value to [min, max], returning defaultVal for NaN/undefined. */
+function clampInt(value: number | undefined, min: number, max: number, defaultVal?: number): number {
+  if (value === undefined || !Number.isFinite(value)) return defaultVal ?? min;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
 /** Generate a unique request ID (16 hex chars = 8 bytes of randomness) */
 export function generateRequestId(): string {
   return `req_${randomBytes(8).toString('hex')}`;
@@ -2160,6 +2166,20 @@ export class PayGateServer {
       params.has('minCredits') || params.has('maxCredits');
 
     if (hasPagination) {
+      // Validate sortBy against allowlist
+      const VALID_SORT_FIELDS = ['name', 'credits', 'totalSpent', 'totalCalls', 'lastUsedAt', 'createdAt'];
+      const rawSortBy = params.get('sortBy');
+      if (rawSortBy && !VALID_SORT_FIELDS.includes(rawSortBy)) {
+        this.sendError(res, 400, `Invalid sortBy field "${sanitizeString(rawSortBy, 50)}". Must be one of: ${VALID_SORT_FIELDS.join(', ')}`);
+        return;
+      }
+      // Validate order
+      const rawOrder = params.get('order');
+      if (rawOrder && rawOrder !== 'asc' && rawOrder !== 'desc') {
+        this.sendError(res, 400, 'Invalid order. Must be "asc" or "desc".');
+        return;
+      }
+
       const query: import('./types').KeyListQuery = {
         namespace: params.get('namespace') || undefined,
         group: params.has('group') ? (params.get('group') || '') : undefined,
@@ -2169,10 +2189,10 @@ export class PayGateServer {
         namePrefix: params.get('namePrefix') || undefined,
         minCredits: params.has('minCredits') ? Number(params.get('minCredits')) : undefined,
         maxCredits: params.has('maxCredits') ? Number(params.get('maxCredits')) : undefined,
-        sortBy: (params.get('sortBy') as any) || undefined,
-        order: (params.get('order') as any) || undefined,
-        limit: params.has('limit') ? Number(params.get('limit')) : undefined,
-        offset: params.has('offset') ? Number(params.get('offset')) : undefined,
+        sortBy: (rawSortBy as any) || undefined,
+        order: (rawOrder as any) || undefined,
+        limit: params.has('limit') && Number.isFinite(Number(params.get('limit'))) ? clampInt(Number(params.get('limit')), 1, 500) : undefined,
+        offset: params.has('offset') && Number.isFinite(Number(params.get('offset'))) ? clampInt(Number(params.get('offset')), 0, 100_000) : undefined,
       };
       const result = this.gate.store.listKeysFiltered(query);
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3546,7 +3566,8 @@ export class PayGateServer {
     }
 
     const type = params.get('type') || undefined;
-    const limit = Math.min(Math.max(1, Number(params.get('limit')) || 50), 200);
+    const limitRaw = params.get('limit');
+    const limit = limitRaw ? clampInt(parseInt(limitRaw, 10), 1, 200, 50) : 50;
     const since = params.get('since') || undefined;
 
     const entries = this.creditLedger.getHistory(actualKey, { type, limit, since });
@@ -9998,7 +10019,7 @@ export class PayGateServer {
     }
 
     const since = params.get('since') || undefined;
-    const limit = Math.min(200, Math.max(1, parseInt(params.get('limit') || '50', 10) || 50));
+    const limit = clampInt(parseInt(params.get('limit') || '50', 10), 1, 200, 50);
     const maskedKey = maskKeyForAudit(record.key);
 
     // 1. Collect audit events for this key
@@ -10513,8 +10534,7 @@ export class PayGateServer {
 
     const options: { limit?: number; since?: string; success?: boolean } = {};
     if (limitParam) {
-      const n = parseInt(limitParam, 10);
-      if (!isNaN(n) && n > 0) options.limit = n;
+      options.limit = clampInt(parseInt(limitParam, 10), 1, 500);
     }
     if (sinceParam) options.since = sinceParam;
     if (successParam === 'true') options.success = true;
@@ -10854,8 +10874,8 @@ export class PayGateServer {
     const actor = params.get('actor') || undefined;
     const since = params.get('since') || undefined;
     const until = params.get('until') || undefined;
-    const limit = params.get('limit') ? parseInt(params.get('limit')!, 10) : undefined;
-    const offset = params.get('offset') ? parseInt(params.get('offset')!, 10) : undefined;
+    const limit = params.get('limit') ? clampInt(parseInt(params.get('limit')!, 10), 1, 1000) : undefined;
+    const offset = params.get('offset') ? clampInt(parseInt(params.get('offset')!, 10), 0, 100_000) : undefined;
 
     const result = this.audit.query({ types, actor, since, until, limit, offset });
 
@@ -12041,8 +12061,8 @@ export class PayGateServer {
     const toolFilter = params.get('tool');
     const statusFilter = params.get('status'); // 'allowed' | 'denied'
     const sinceFilter = params.get('since');
-    const limit = Math.min(1000, Math.max(1, parseInt(params.get('limit') || '100', 10) || 100));
-    const offset = Math.max(0, parseInt(params.get('offset') || '0', 10) || 0);
+    const limit = clampInt(parseInt(params.get('limit') || '100', 10), 1, 1000, 100);
+    const offset = clampInt(parseInt(params.get('offset') || '0', 10), 0, 100_000, 0);
 
     let filtered = this.requestLog;
 
