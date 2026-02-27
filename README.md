@@ -123,6 +123,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
 - **SLA Monitoring** — `GET /admin/sla` tracks service level metrics: success rates, denial breakdowns by reason, per-tool availability and error rates, uptime tracking, sorted by call volume
 - **Capacity Planning** — `GET /admin/capacity` system capacity analysis with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations
+- **Key Dependency Map** — `GET /admin/dependencies` tool-to-key relationship map with tool usage popularity, unique key counts per tool, per-key tool lists, and used/unused tool identification
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2842,6 +2843,29 @@ curl http://localhost:3000/admin/capacity -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 System capacity analysis: overall credit utilization, burn rate (credits/call), top 10 consumers ranked by spend, per-namespace breakdown, and scaling recommendations for high utilization (>=75%) or depleted keys. Read-only.
+
+### Key Dependency Map
+
+```bash
+curl http://localhost:3000/admin/dependencies -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalTools": 5, "usedTools": 3, "unusedTools": 2 },
+  "toolUsage": [
+    { "tool": "search", "totalCalls": 150, "uniqueKeys": 8 },
+    { "tool": "translate", "totalCalls": 45, "uniqueKeys": 3 }
+  ],
+  "keyToolMap": [
+    { "keyName": "power-user", "tools": ["search", "translate", "summarize"], "toolCount": 3 },
+    { "keyName": "basic-user", "tools": ["search"], "toolCount": 1 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Tool-to-key relationship map: shows which tools each key uses, tool popularity ranked by total calls, unique key counts per tool, and identifies orphaned tools (available but unused). Useful for understanding tool adoption and pruning unused capabilities. Read-only.
 
 ### IP Allowlisting
 

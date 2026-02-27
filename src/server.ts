@@ -897,6 +897,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/dependencies':
+        if (req.method === 'GET') return this.handleDependencyMap(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1488,6 +1493,7 @@ export class PayGateServer {
         complianceReport: 'GET /admin/compliance — Compliance report with key governance, access control coverage, audit trail completeness, recommendations, and overall compliance score (requires X-Admin-Key)',
         slaMonitoring: 'GET /admin/sla — SLA monitoring with success rates, denial breakdowns, per-tool availability, uptime tracking, and denial reason aggregation (requires X-Admin-Key)',
         capacityPlanning: 'GET /admin/capacity — Capacity planning with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations (requires X-Admin-Key)',
+        dependencyMap: 'GET /admin/dependencies — Tool-to-key dependency map with tool usage popularity, unique key counts, per-key tool lists, and used/unused tool identification (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6464,6 +6470,74 @@ export class PayGateServer {
       topConsumers,
       byNamespace,
       recommendations,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/dependencies — Key Dependency Map ───────────────────────────
+
+  private handleDependencyMap(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+
+    // ── Tool usage from events ──
+    const toolStats = new Map<string, { totalCalls: number; keys: Set<string> }>();
+    const keyTools = new Map<string, Set<string>>();
+
+    for (const e of events) {
+      if (!e.allowed || !e.tool) continue;
+      const tool = e.tool;
+      const keyName = e.keyName || e.apiKey;
+
+      if (!toolStats.has(tool)) toolStats.set(tool, { totalCalls: 0, keys: new Set() });
+      const ts = toolStats.get(tool)!;
+      ts.totalCalls++;
+      ts.keys.add(keyName);
+
+      if (!keyTools.has(keyName)) keyTools.set(keyName, new Set());
+      keyTools.get(keyName)!.add(tool);
+    }
+
+    // ── Collect all known tool names (from config pricing + events) ──
+    const allToolNames = new Set<string>();
+    const toolPricing = (this as any).config?.toolPricing;
+    if (toolPricing) {
+      for (const name of Object.keys(toolPricing)) allToolNames.add(name);
+    }
+    for (const tool of toolStats.keys()) allToolNames.add(tool);
+
+    const usedTools = toolStats.size;
+    const totalTools = Math.max(allToolNames.size, usedTools);
+    const unusedTools = totalTools - usedTools;
+
+    // ── Tool usage sorted by popularity ──
+    const toolUsage = Array.from(toolStats.entries())
+      .map(([tool, stats]) => ({
+        tool,
+        totalCalls: stats.totalCalls,
+        uniqueKeys: stats.keys.size,
+      }))
+      .sort((a, b) => b.totalCalls - a.totalCalls);
+
+    // ── Per-key tool map ──
+    const keyToolMap = Array.from(keyTools.entries())
+      .map(([keyName, tools]) => ({
+        keyName,
+        tools: Array.from(tools).sort(),
+        toolCount: tools.size,
+      }))
+      .sort((a, b) => b.toolCount - a.toolCount);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalTools,
+        usedTools,
+        unusedTools,
+      },
+      toolUsage,
+      keyToolMap,
       generatedAt: new Date().toISOString(),
     }));
   }
