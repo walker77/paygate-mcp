@@ -1047,6 +1047,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/tool-popularity':
+        if (req.method === 'GET') return this.handleToolPopularity(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1668,6 +1673,7 @@ export class PayGateServer {
         groupRevenue: 'GET /admin/group-revenue — Revenue breakdown by key group with spend, call counts, key counts, and percentage breakdown (requires X-Admin-Key)',
         peakUsage: 'GET /admin/peak-usage — Traffic patterns by hour-of-day with requests, credits, consumers per hour for capacity planning (requires X-Admin-Key)',
         consumerActivity: 'GET /admin/consumer-activity — Per-consumer activity with calls, spend, credits remaining, last active time, and status (requires X-Admin-Key)',
+        toolPopularity: 'GET /admin/tool-popularity — Tool usage popularity with call counts, credits, unique consumers, and percentage breakdown (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8629,6 +8635,59 @@ export class PayGateServer {
         totalConsumers: consumers.length,
         activeConsumers: activeCount,
         inactiveConsumers: inactiveCount,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/tool-popularity — Tool usage popularity ──────────────────────
+
+  private handleToolPopularity(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const toolMap = new Map<string, { totalCalls: number; totalCredits: number; consumers: Set<string> }>();
+
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      let data = toolMap.get(entry.tool);
+      if (!data) {
+        data = { totalCalls: 0, totalCredits: 0, consumers: new Set() };
+        toolMap.set(entry.tool, data);
+      }
+      data.totalCalls += 1;
+      data.totalCredits += entry.credits || 0;
+      data.consumers.add(entry.key);
+    }
+
+    if (toolMap.size === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        tools: [],
+        summary: { totalTools: 0, totalCalls: 0, mostPopular: null },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const totalCalls = Array.from(toolMap.values()).reduce((s, d) => s + d.totalCalls, 0);
+
+    const tools = Array.from(toolMap.entries())
+      .map(([tool, data]) => ({
+        tool,
+        totalCalls: data.totalCalls,
+        totalCredits: data.totalCredits,
+        uniqueConsumers: data.consumers.size,
+        percentage: totalCalls > 0 ? Math.round((data.totalCalls / totalCalls) * 100) : 0,
+      }))
+      .sort((a, b) => b.totalCalls - a.totalCalls);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tools,
+      summary: {
+        totalTools: tools.length,
+        totalCalls,
+        mostPopular: tools[0]?.tool || null,
       },
       generatedAt: new Date().toISOString(),
     }));

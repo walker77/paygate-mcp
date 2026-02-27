@@ -153,6 +153,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Group Revenue** — `GET /admin/group-revenue` revenue breakdown by key group with spend, call counts, key counts, and percentage breakdown
 - **Peak Usage Times** — `GET /admin/peak-usage` traffic patterns by hour-of-day with request counts, credits, unique consumers, and peak hour identification
 - **Consumer Activity** — `GET /admin/consumer-activity` per-consumer activity metrics with calls, spend, credits remaining, last active time, and active/inactive status
+- **Tool Popularity** — `GET /admin/tool-popularity` tool usage popularity with call counts, credits, unique consumers, percentage, and most popular tool identification
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3552,6 +3553,26 @@ curl http://localhost:3000/admin/consumer-activity -H "X-Admin-Key: YOUR_ADMIN_K
 ```
 
 Per-consumer activity metrics. Shows each active key's call count, total spend, credits remaining, last active timestamp, and active/inactive status. Consumers with zero calls are "inactive". Excludes revoked/suspended keys. Sorted by spend descending. Read-only.
+
+### Tool Popularity
+
+```bash
+curl http://localhost:3000/admin/tool-popularity -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "tools": [
+    { "tool": "search", "totalCalls": 500, "totalCredits": 2500, "uniqueConsumers": 20, "percentage": 50 },
+    { "tool": "generate", "totalCalls": 300, "totalCredits": 3000, "uniqueConsumers": 15, "percentage": 30 },
+    { "tool": "translate", "totalCalls": 200, "totalCredits": 1000, "uniqueConsumers": 10, "percentage": 20 }
+  ],
+  "summary": { "totalTools": 3, "totalCalls": 1000, "mostPopular": "search" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Tool usage popularity ranking. Per-tool: total calls, credits spent, unique consumers, and call percentage. Only counts allowed (successful) requests. `mostPopular` identifies the most-called tool. Sorted by call count descending. Read-only.
 
 ### IP Allowlisting
 
