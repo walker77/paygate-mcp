@@ -638,10 +638,13 @@ export class PayGateServer {
   }
 
   /** Send a JSON error response: { error, requestId }. */
-  private sendError(res: ServerResponse, status: number, message: string): void {
+  private sendError(res: ServerResponse, status: number, message: string, data?: Record<string, unknown>): void {
     const requestId = res.getHeader('X-Request-Id') as string | undefined;
+    const body: Record<string, unknown> = { error: message };
+    if (requestId) body.requestId = requestId;
+    if (data) Object.assign(body, data);
     res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(requestId ? { error: message, requestId } : { error: message }));
+    res.end(JSON.stringify(body));
   }
 
   // ─── Request Handling ──────────────────────────────────────────────────────
@@ -2049,8 +2052,7 @@ export class PayGateServer {
     if (params.template) {
       tpl = this.templates.get(params.template);
       if (!tpl) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Template "${params.template}" not found` }));
+        this.sendError(res, 400, `Template "${params.template}" not found`);
         return;
       }
     }
@@ -2312,10 +2314,7 @@ export class PayGateServer {
       return;
     }
     if (sourceRecord.credits < credits) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: `Insufficient credits: source has ${sourceRecord.credits}, need ${credits}`,
-      }));
+      this.sendError(res, 400, `Insufficient credits: source has ${sourceRecord.credits}, need ${credits}`);
       return;
     }
 
@@ -2908,8 +2907,7 @@ export class PayGateServer {
 
     const result = this.gate.store.setAlias(record.key, alias);
     if (!result.success) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: result.error }));
+      this.sendError(res, 400, result.error!);
       return;
     }
 
@@ -4677,13 +4675,11 @@ export class PayGateServer {
     const validTypes = ['spending_threshold', 'credits_low', 'quota_warning', 'key_expiry_soon', 'rate_limit_spike'];
     for (const rule of params.rules) {
       if (!validTypes.includes(rule.type)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Invalid alert type: ${rule.type}. Valid: ${validTypes.join(', ')}` }));
+        this.sendError(res, 400, `Invalid alert type: ${rule.type}. Valid: ${validTypes.join(', ')}`);
         return;
       }
       if (!Number.isFinite(rule.threshold) || rule.threshold < 0) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Invalid threshold for ${rule.type}: must be a non-negative number` }));
+        this.sendError(res, 400, `Invalid threshold for ${rule.type}: must be a non-negative number`);
         return;
       }
     }
@@ -9783,8 +9779,7 @@ export class PayGateServer {
     const notes = record.notes || [];
     const index = parseInt(indexParam, 10);
     if (isNaN(index) || index < 0 || index >= notes.length) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Invalid index: ${indexParam}. Must be 0-${notes.length - 1}` }));
+      this.sendError(res, 400, `Invalid index: ${indexParam}. Must be 0-${notes.length - 1}`);
       return;
     }
 
@@ -9851,8 +9846,7 @@ export class PayGateServer {
 
       const validActions = ['revoke', 'suspend', 'topup'];
       if (!params.action || !validActions.includes(params.action)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Missing or invalid action. Must be one of: ${validActions.join(', ')}` }));
+        this.sendError(res, 400, `Missing or invalid action. Must be one of: ${validActions.join(', ')}`);
         return;
       }
 
@@ -10174,14 +10168,12 @@ export class PayGateServer {
       const available = record.credits - heldCredits;
 
       if (params.credits > available) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          error: 'Insufficient available credits',
+        this.sendError(res, 400, 'Insufficient available credits', {
           available,
           held: heldCredits,
           total: record.credits,
           requested: params.credits,
-        }));
+        });
         return;
       }
 
@@ -10367,10 +10359,7 @@ export class PayGateServer {
 
     const filePath = (body.configPath as string) || this.configPath;
     if (!filePath) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'No config file path available. Start with --config or provide configPath in request body.',
-      }));
+      this.sendError(res, 400, 'No config file path available. Start with --config or provide configPath in request body.');
       return;
     }
 
@@ -10380,10 +10369,7 @@ export class PayGateServer {
       const raw = readFileSync(filePath, 'utf-8');
       fileConfig = JSON.parse(raw);
     } catch (err) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: `Failed to read config file: ${(err as Error).message}`,
-      }));
+      this.sendError(res, 400, `Failed to read config file: ${(err as Error).message}`);
       return;
     }
 
@@ -10391,11 +10377,9 @@ export class PayGateServer {
     const diags = validateConfig(fileConfig as ValidatableConfig);
     const errors = diags.filter(d => d.level === 'error');
     if (errors.length > 0) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'Config validation failed',
+      this.sendError(res, 400, 'Config validation failed', {
         diagnostics: errors.map(d => ({ field: d.field, message: d.message })),
-      }));
+      });
       return;
     }
 
@@ -10769,11 +10753,9 @@ export class PayGateServer {
 
       this.audit.log('webhook_filter.created', 'admin', `Webhook filter created: ${rule.name}`, { filterId: rule.id, name: rule.name });
 
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(rule));
+      this.sendJson(res, 201, rule);
     } catch (err: any) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
+      this.sendError(res, 400, err.message);
     }
   }
 
@@ -10814,11 +10796,9 @@ export class PayGateServer {
 
       this.audit.log('webhook_filter.updated', 'admin', `Webhook filter updated: ${rule.name}`, { filterId: rule.id });
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(rule));
+      this.sendJson(res, 200, rule);
     } catch (err: any) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
+      this.sendError(res, 400, err.message);
     }
   }
 
@@ -10937,11 +10917,8 @@ export class PayGateServer {
       || req.socket.remoteAddress || 'unknown';
     const ipRateResult = this.adminRateLimiter.check(`ip:${sourceIp}`);
     if (!ipRateResult.allowed) {
-      res.writeHead(429, {
-        'Content-Type': 'application/json',
-        'Retry-After': String(Math.ceil(ipRateResult.resetInMs / 1000)),
-      });
-      res.end(JSON.stringify({ error: 'Too many admin requests. Try again later.' }));
+      res.setHeader('Retry-After', String(Math.ceil(ipRateResult.resetInMs / 1000)));
+      this.sendError(res, 429, 'Too many admin requests. Try again later.');
       return false;
     }
     this.adminRateLimiter.record(`ip:${sourceIp}`);
@@ -10966,8 +10943,7 @@ export class PayGateServer {
         requiredRole: minRole,
         currentRole: record.role,
       });
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Insufficient permissions', requiredRole: minRole, currentRole: record.role }));
+      this.sendError(res, 403, 'Insufficient permissions', { requiredRole: minRole, currentRole: record.role });
       return false;
     }
 
@@ -11138,8 +11114,7 @@ export class PayGateServer {
 
     const result = this.teams.assignKey(params.teamId as string, params.key as string);
     if (!result.success) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: result.error }));
+      this.sendError(res, 400, result.error!);
       return;
     }
 
@@ -11422,11 +11397,9 @@ export class PayGateServer {
       this.groups.saveToFile();
       if (this.redisSync) this.redisSync.saveGroup(group).catch(() => {});
 
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(group));
+      this.sendJson(res, 201, group);
     } catch (err: any) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
+      this.sendError(res, 400, err.message);
     }
   }
 
@@ -11474,11 +11447,9 @@ export class PayGateServer {
       this.groups.saveToFile();
       if (this.redisSync) this.redisSync.saveGroup(group).catch(() => {});
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(group));
+      this.sendJson(res, 200, group);
     } catch (err: any) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
+      this.sendError(res, 400, err.message);
     }
   }
 
@@ -11562,8 +11533,7 @@ export class PayGateServer {
 
       this.sendJson(res, 200, { ok: true, message: `Key assigned to group ${groupId}` });
     } catch (err: any) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
+      this.sendError(res, 400, err.message);
     }
   }
 
@@ -11714,8 +11684,7 @@ export class PayGateServer {
 
     const result = this.adminKeys.revoke(params.key);
     if (!result.success) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: result.error }));
+      this.sendError(res, 400, result.error!);
       return;
     }
 
@@ -11799,8 +11768,7 @@ export class PayGateServer {
     const result = this.templates.set(name, params as any);
 
     if (!result.success) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: result.error }));
+      this.sendError(res, 400, result.error!);
       return;
     }
 
@@ -11837,8 +11805,7 @@ export class PayGateServer {
 
     const deleted = this.templates.delete(templateName);
     if (!deleted) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Template "${templateName}" not found` }));
+      this.sendError(res, 404, `Template "${templateName}" not found`);
       return;
     }
 
@@ -12401,8 +12368,7 @@ export class PayGateServer {
         // Validate tool entries
         for (let i = 0; i < tools.length; i++) {
           if (!tools[i]?.name || typeof tools[i].name !== 'string') {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: `tools[${i}] missing required "name" field` }));
+            this.sendError(res, 400, `tools[${i}] missing required "name" field`);
             return;
           }
         }

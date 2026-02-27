@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.83.0 (2026-02-27)
+
+### Error Response Consistency
+- **`sendError()` now accepts optional `data` param** — error responses can include structured extra fields (e.g., reservation details, RBAC roles, config diagnostics) alongside the standard `{ error, requestId }` format
+- **Migrated 22 raw `res.writeHead(4xx)` calls to `sendError()`** — every admin error response now includes `requestId` for log correlation (completing the v8.80.0 rollout)
+- Affected endpoints: credit transfer, key alias, alert rules, scheduled actions, reservations, config reload, key notes, webhook filters, groups, teams, admin keys, templates, batch tool calls
+- 8 intentionally raw responses remain: JSON-RPC parse error (MCP spec format), Stripe webhook result passthrough, and OAuth RFC 7591/7009 errors (RFC-mandated format)
+- 10 new tests (requestId in transfer/template/schedule/RBAC/group/config/notes/reserve/admin-key errors, sendError data param preservation)
+
+---
+
 ## 8.82.0 (2026-02-27)
 
 ### Resource Leak Fixes
