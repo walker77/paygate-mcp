@@ -102,6 +102,42 @@ function clampArray<T>(arr: T[] | undefined, maxLen: number): T[] | undefined {
   return arr.slice(0, maxLen);
 }
 
+/**
+ * Sanitize error messages before sending to clients — prevents information disclosure.
+ * Returns a generic message unless the error is a known-safe validation error.
+ * The full error is returned for internal logging only.
+ */
+function safeErrorMessage(err: unknown, fallback = 'Invalid request'): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Allow known-safe, controlled error messages to pass through.
+  // These are validation messages from our own code, not system/library errors.
+  const safePatterns = [
+    /^invalid_grant/,
+    /^Request body too large$/,
+    /^Request body read timeout$/,
+    /^Missing required field/i,
+    /^Invalid (?:key|token|group|filter|parameter|redirect)/i,
+    /^(?:Key|Token|Group|Filter)\b.*\bnot found/i,
+    /^Unknown (?:client|action)/i,
+    /^Insufficient/i,
+    /^Duplicate/i,
+    /^Not found/i,
+    /^Unauthorized/i,
+    /^Forbidden/i,
+    /^(?:ACL|Quota|Rate) limit/i,
+    /^(?:Group|Filter) (?:must have|rule must)/i,
+    /^(?:Group) '.+' already exists/i,
+    /^.+(?:is required|are required)/i,          // validation messages: "X is required"
+    /^Only .+ (?:is |are )?supported/i,           // capability constraints
+    /^No API key linked/i,                        // OAuth setup validation
+    /^code_challenge/i,                           // PKCE validation
+  ];
+  for (const pattern of safePatterns) {
+    if (pattern.test(msg)) return msg;
+  }
+  return fallback;
+}
+
 /** Truncate user-supplied strings to MAX_STRING_FIELD to prevent log injection and memory abuse. */
 function sanitizeString(value: string | undefined | null, maxLen = MAX_STRING_FIELD): string {
   if (!value) return '';
@@ -2574,7 +2610,8 @@ export class PayGateServer {
             results.push({ index: i, action: op.action || 'unknown', success: false, error: `Unknown action: ${op.action}` });
         }
       } catch (e: any) {
-        results.push({ index: i, action: op.action || 'unknown', success: false, error: e.message || 'Internal error' });
+        this.logger.warn('Bulk operation failed', { index: i, action: op.action, error: e.message });
+        results.push({ index: i, action: op.action || 'unknown', success: false, error: safeErrorMessage(e, 'Operation failed') });
       }
     }
 
@@ -4466,8 +4503,9 @@ export class PayGateServer {
         client_id_issued_at: Math.floor(new Date(client.createdAt).getTime() / 1000),
       });
     } catch (err) {
+      this.logger.warn('OAuth client registration failed', { error: (err as Error).message });
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'invalid_client_metadata', error_description: (err as Error).message }));
+      res.end(JSON.stringify({ error: 'invalid_client_metadata', error_description: safeErrorMessage(err, 'Invalid client metadata') }));
     }
   }
 
@@ -4538,13 +4576,15 @@ export class PayGateServer {
       res.writeHead(302, { Location: redirectUrl.toString() });
       res.end();
     } catch (err) {
-      const errorMsg = (err as Error).message;
+      const rawMsg = (err as Error).message;
+      this.logger.warn('OAuth authorization failed', { error: rawMsg });
+      const safeMsg = safeErrorMessage(err, 'Authorization failed');
       // If there's a redirect URI and client is valid, redirect with error
       if (redirectUri) {
         try {
           const redirectUrl = new URL(redirectUri);
           redirectUrl.searchParams.set('error', 'server_error');
-          redirectUrl.searchParams.set('error_description', errorMsg);
+          redirectUrl.searchParams.set('error_description', safeMsg);
           if (state) redirectUrl.searchParams.set('state', state);
           res.writeHead(302, { Location: redirectUrl.toString() });
           res.end();
@@ -4552,7 +4592,7 @@ export class PayGateServer {
         } catch { /* fall through to JSON error */ }
       }
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'invalid_request', error_description: errorMsg }));
+      res.end(JSON.stringify({ error: 'invalid_request', error_description: safeMsg }));
     }
   }
 
@@ -4625,10 +4665,12 @@ export class PayGateServer {
         this.sendError(res, 400, 'unsupported_grant_type');
       }
     } catch (err) {
-      const errorMsg = (err as Error).message;
-      const errorCode = errorMsg.startsWith('invalid_grant') ? 'invalid_grant' : 'invalid_request';
+      const rawMsg = (err as Error).message;
+      this.logger.warn('OAuth token exchange failed', { error: rawMsg });
+      const errorCode = rawMsg.startsWith('invalid_grant') ? 'invalid_grant' : 'invalid_request';
+      const safeMsg = safeErrorMessage(err, 'Token exchange failed');
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: errorCode, error_description: errorMsg }));
+      res.end(JSON.stringify({ error: errorCode, error_description: safeMsg }));
     }
   }
 
@@ -10482,7 +10524,8 @@ export class PayGateServer {
       const raw = readFileSync(filePath, 'utf-8');
       fileConfig = JSON.parse(raw);
     } catch (err) {
-      this.sendError(res, 400, `Failed to read config file: ${(err as Error).message}`);
+      this.logger.error('Config file read/parse failed', { error: (err as Error).message, path: filePath });
+      this.sendError(res, 400, 'Failed to read or parse config file');
       return;
     }
 
@@ -10804,7 +10847,8 @@ export class PayGateServer {
       });
 
       reqObj.on('error', (err: Error) => {
-        resolve({ success: false, error: err.message, responseTime: Date.now() - startTime });
+        this.logger.warn('Webhook test delivery failed', { error: err.message, url: parsed.hostname });
+        resolve({ success: false, error: 'Connection failed', responseTime: Date.now() - startTime });
       });
 
       reqObj.on('timeout', () => {
@@ -10880,7 +10924,8 @@ export class PayGateServer {
 
       this.sendJson(res, 201, rule);
     } catch (err: any) {
-      this.sendError(res, 400, err.message);
+      this.logger.warn('Webhook filter creation failed', { error: err.message });
+      this.sendError(res, 400, safeErrorMessage(err, 'Failed to create webhook filter'));
     }
   }
 
@@ -10932,7 +10977,8 @@ export class PayGateServer {
 
       this.sendJson(res, 200, rule);
     } catch (err: any) {
-      this.sendError(res, 400, err.message);
+      this.logger.warn('Webhook filter update failed', { error: err.message });
+      this.sendError(res, 400, safeErrorMessage(err, 'Failed to update webhook filter'));
     }
   }
 
@@ -11546,7 +11592,8 @@ export class PayGateServer {
 
       this.sendJson(res, 201, group);
     } catch (err: any) {
-      this.sendError(res, 400, err.message);
+      this.logger.warn('Group creation failed', { error: err.message });
+      this.sendError(res, 400, safeErrorMessage(err, 'Failed to create group'));
     }
   }
 
@@ -11596,7 +11643,8 @@ export class PayGateServer {
 
       this.sendJson(res, 200, group);
     } catch (err: any) {
-      this.sendError(res, 400, err.message);
+      this.logger.warn('Group update failed', { error: err.message });
+      this.sendError(res, 400, safeErrorMessage(err, 'Failed to update group'));
     }
   }
 
@@ -11680,7 +11728,8 @@ export class PayGateServer {
 
       this.sendJson(res, 200, { ok: true, message: `Key assigned to group ${groupId}` });
     } catch (err: any) {
-      this.sendError(res, 400, err.message);
+      this.logger.warn('Group key assignment failed', { error: err.message, groupId });
+      this.sendError(res, 400, safeErrorMessage(err, 'Failed to assign key to group'));
     }
   }
 

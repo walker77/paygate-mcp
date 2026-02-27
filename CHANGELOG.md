@@ -1,5 +1,21 @@
 # Changelog
 
+## 8.91.0 (2026-02-27)
+
+### Error Message Sanitization (Information Disclosure Prevention)
+- **All catch-block error responses now sanitized** — prevents leaking internal details (stack traces, filesystem paths, class names) to clients
+- Added `safeErrorMessage()` utility with allowlist of known-safe validation patterns — unknown errors return generic fallback
+- **Config reload** (`POST /config/reload`): no longer leaks filesystem paths (ENOENT, EACCES) or JSON parse positions
+- **OAuth endpoints** (`/oauth/register`, `/oauth/authorize`, `/oauth/token`): error_description sanitized, raw errors logged internally
+- **Webhook filters** (`POST /webhooks/filters`, `POST /webhooks/filters/update`): validation errors sanitized
+- **Group endpoints** (`POST /groups`, `POST /groups/update`, `POST /groups/assign`): errors sanitized, safe validation messages (e.g. "already exists") pass through
+- **Bulk operations** (`POST /keys/bulk`): per-operation error messages sanitized
+- **Webhook test delivery**: connection errors return generic "Connection failed" instead of raw socket errors
+- All sanitized endpoints now log the real error details via structured logger for debugging
+- 14 new tests verifying no dangerous patterns (ENOENT, stack traces, paths) leak to clients
+
+---
+
 ## 8.90.0 (2026-02-27)
 
 ### Array Length Bounds Enforcement
