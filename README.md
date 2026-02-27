@@ -135,6 +135,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Status Overview** — `GET /admin/key-status` key status dashboard with active/suspended/revoked/expired counts and keys needing attention (low credits, near expiry)
 - **Webhook Health** — `GET /admin/webhook-health` webhook delivery health overview with success rate, pending retries, dead letter count, pause status, and buffered events
 - **Consumer Insights** — `GET /admin/consumer-insights` per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns
+- **System Health Score** — `GET /admin/system-health` composite 0-100 health score with weighted component breakdowns for key health, error rates, and credit utilization
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3134,6 +3135,27 @@ curl http://localhost:3000/admin/consumer-insights -H "X-Admin-Key: YOUR_ADMIN_K
 ```
 
 Per-key behavioral analytics. Top 10 spenders ranked by credits consumed, top 10 most active by call count. Each entry includes tool diversity (unique tools used). Summary shows total/active consumers and aggregate spend. Read-only.
+
+### System Health Score
+
+```bash
+curl http://localhost:3000/admin/system-health -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "score": 85,
+  "level": "healthy",
+  "components": {
+    "keyHealth": { "score": 90, "weight": 0.4, "detail": "2 suspended" },
+    "errorRate": { "score": 80, "weight": 0.35, "detail": "10% denial rate (5/50)" },
+    "creditUtilization": { "score": 85, "weight": 0.25, "detail": "45% utilized (4500/10000 credits)" }
+  },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Composite system health score 0-100 with weighted component breakdowns. Key health (40%): penalizes suspended/revoked/expired/low-credit keys. Error rate (35%): penalizes high denial rates. Credit utilization (25%): healthy at 10-80%, degrades at >80%. Levels: healthy (>=80), good (>=60), warning (>=40), critical (<40). Read-only.
 
 ### IP Allowlisting
 

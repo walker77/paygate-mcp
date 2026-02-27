@@ -957,6 +957,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/system-health':
+        if (req.method === 'GET') return this.handleSystemHealth(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1560,6 +1565,7 @@ export class PayGateServer {
         keyStatus: 'GET /admin/key-status — Key status dashboard with active/suspended/revoked/expired counts and keys needing attention (requires X-Admin-Key)',
         webhookHealth: 'GET /admin/webhook-health — Webhook delivery health overview with success rate, retries, dead letters, and pause status (requires X-Admin-Key)',
         consumerInsights: 'GET /admin/consumer-insights — Per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns (requires X-Admin-Key)',
+        systemHealth: 'GET /admin/system-health — Composite system health score 0-100 with component breakdowns for key health, error rates, and credit utilization (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7351,6 +7357,91 @@ export class PayGateServer {
       },
       topSpenders,
       mostActive,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/system-health — Composite system health score ─────────────────
+
+  private handleSystemHealth(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const now = Date.now();
+
+    // ── Component 1: Key Health (weight: 40%) ──
+    let keyHealthScore = 100;
+    let keyHealthDetail = 'All keys healthy';
+    if (allRecords.length > 0) {
+      const active = allRecords.filter(r => r.active && !r.suspended).length;
+      const suspended = allRecords.filter(r => r.suspended).length;
+      const revoked = allRecords.filter(r => !r.active && !r.suspended).length;
+      const expired = allRecords.filter(r => r.active && !r.suspended && r.expiresAt && new Date(r.expiresAt).getTime() <= now).length;
+      const lowCredits = allRecords.filter(r => r.active && !r.suspended && r.credits <= 10).length;
+
+      const problemRatio = (suspended + revoked + expired + lowCredits) / allRecords.length;
+      keyHealthScore = Math.max(0, Math.round(100 - problemRatio * 100));
+
+      const issues: string[] = [];
+      if (suspended > 0) issues.push(`${suspended} suspended`);
+      if (revoked > 0) issues.push(`${revoked} revoked`);
+      if (expired > 0) issues.push(`${expired} expired`);
+      if (lowCredits > 0) issues.push(`${lowCredits} low credits`);
+      keyHealthDetail = issues.length > 0 ? issues.join(', ') : `${active} active keys`;
+    }
+
+    // ── Component 2: Error Rate (weight: 35%) ──
+    let errorRateScore = 100;
+    let errorRateDetail = 'No errors';
+    const totalRequests = this.requestLog.length;
+    if (totalRequests > 0) {
+      const denied = this.requestLog.filter(e => e.status === 'denied').length;
+      const errorRate = denied / totalRequests;
+      errorRateScore = Math.max(0, Math.round(100 - errorRate * 200)); // 50% error rate = 0 score
+      errorRateDetail = `${Math.round(errorRate * 100)}% denial rate (${denied}/${totalRequests})`;
+    }
+
+    // ── Component 3: Credit Utilization (weight: 25%) ──
+    let creditScore = 100;
+    let creditDetail = 'No credits tracked';
+    const totalAllocated = allRecords.reduce((s, r) => s + (r.credits || 0) + (r.totalSpent || 0), 0);
+    const totalRemaining = allRecords.reduce((s, r) => s + (r.credits || 0), 0);
+    if (totalAllocated > 0) {
+      const utilization = (totalAllocated - totalRemaining) / totalAllocated;
+      // Healthy: 10-80% utilization; too low or too high degrade score
+      if (utilization > 0.9) {
+        creditScore = Math.round(50 - (utilization - 0.9) * 500);
+      } else if (utilization > 0.8) {
+        creditScore = Math.round(80 - (utilization - 0.8) * 300);
+      } else {
+        creditScore = 100;
+      }
+      creditScore = Math.max(0, Math.min(100, creditScore));
+      creditDetail = `${Math.round(utilization * 100)}% utilized (${totalAllocated - totalRemaining}/${totalAllocated} credits)`;
+    }
+
+    // ── Composite Score ──
+    const compositeScore = Math.round(
+      keyHealthScore * 0.4 +
+      errorRateScore * 0.35 +
+      creditScore * 0.25
+    );
+
+    let level: string;
+    if (compositeScore >= 80) level = 'healthy';
+    else if (compositeScore >= 60) level = 'good';
+    else if (compositeScore >= 40) level = 'warning';
+    else level = 'critical';
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      score: compositeScore,
+      level,
+      components: {
+        keyHealth: { score: keyHealthScore, weight: 0.4, detail: keyHealthDetail },
+        errorRate: { score: errorRateScore, weight: 0.35, detail: errorRateDetail },
+        creditUtilization: { score: creditScore, weight: 0.25, detail: creditDetail },
+      },
       generatedAt: new Date().toISOString(),
     }));
   }
