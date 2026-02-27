@@ -51,6 +51,7 @@ import { AdminKeyManager, AdminRole, ROLE_HIERARCHY } from './admin-keys';
 import { PluginManager, PayGatePlugin, PluginToolContext } from './plugin';
 import { KeyGroupManager } from './groups';
 import { WebhookRouter } from './webhook-router';
+import { checkSsrf } from './webhook';
 import { ExpiryScanner } from './expiry-scanner';
 import { KeyTemplateManager } from './key-templates';
 
@@ -10710,6 +10711,10 @@ export class PayGateServer {
       return;
     }
 
+    // Note: The webhook URL here is the operator's configured URL (--webhook-url),
+    // not user-supplied input. SSRF protection is applied at the admin API entry
+    // points (filter create/update) where untrusted URLs are accepted.
+
     const headers: Record<string, string | number> = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(payload),
@@ -10803,12 +10808,20 @@ export class PayGateServer {
       return;
     }
 
+    // SSRF protection: validate webhook filter URL before creating rule
+    const filterUrl = String(params.url || '');
+    const filterSsrfError = checkSsrf(filterUrl);
+    if (filterSsrfError) {
+      this.sendError(res, 400, `Webhook filter URL blocked (SSRF protection): ${filterSsrfError}`);
+      return;
+    }
+
     try {
       const rule = this.gate.webhookRouter.addRule({
         id: '',  // auto-generated
         name: sanitizeString(params.name as string) || '',
         events: Array.isArray(params.events) ? params.events.map(String) : [],
-        url: String(params.url || ''),
+        url: filterUrl,
         secret: params.secret ? String(params.secret) : undefined,
         keyPrefixes: Array.isArray(params.keyPrefixes) ? params.keyPrefixes.map(String) : undefined,
         active: params.active !== false,
@@ -10845,6 +10858,15 @@ export class PayGateServer {
     if (!filterId) {
       this.sendError(res, 400, 'Missing id field');
       return;
+    }
+
+    // SSRF protection: validate new URL if being updated
+    if (params.url !== undefined) {
+      const updateSsrfError = checkSsrf(String(params.url));
+      if (updateSsrfError) {
+        this.sendError(res, 400, `Webhook filter URL blocked (SSRF protection): ${updateSsrfError}`);
+        return;
+      }
     }
 
     try {

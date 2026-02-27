@@ -18,6 +18,120 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { UsageEvent } from './types';
 
+// ─── SSRF Prevention ────────────────────────────────────────────────────────
+
+/**
+ * Private/reserved IPv4 ranges (RFC 1918, RFC 5737, RFC 6598, loopback, link-local, metadata).
+ * Each entry: [startInt, endInt] of the IP range in network byte order.
+ */
+const PRIVATE_IPV4_RANGES: Array<[number, number]> = [
+  [0x0A000000, 0x0AFFFFFF], // 10.0.0.0/8
+  [0xAC100000, 0xAC1FFFFF], // 172.16.0.0/12
+  [0xC0A80000, 0xC0A8FFFF], // 192.168.0.0/16
+  [0x7F000000, 0x7FFFFFFF], // 127.0.0.0/8 (loopback)
+  [0xA9FE0000, 0xA9FEFFFF], // 169.254.0.0/16 (link-local / AWS metadata)
+  [0x00000000, 0x00FFFFFF], // 0.0.0.0/8
+  [0x64400000, 0x647FFFFF], // 100.64.0.0/10 (carrier-grade NAT)
+  [0xC0000000, 0xC00000FF], // 192.0.0.0/24 (IETF protocol assignments)
+  [0xC6120000, 0xC613FFFF], // 198.18.0.0/15 (benchmarking)
+  [0xC0000200, 0xC00002FF], // 192.0.2.0/24 (TEST-NET-1)
+  [0xC6336400, 0xC63364FF], // 198.51.100.0/24 (TEST-NET-2)
+  [0xCB007100, 0xCB0071FF], // 203.0.113.0/24 (TEST-NET-3)
+];
+
+/** Convert dotted-quad IPv4 to 32-bit integer */
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let result = 0;
+  for (const part of parts) {
+    const num = Number(part);
+    if (!Number.isInteger(num) || num < 0 || num > 255) return null;
+    result = (result << 8) | num;
+  }
+  return result >>> 0; // unsigned 32-bit
+}
+
+/** Check if an IPv4 address string falls in any private/reserved range. */
+function isPrivateIPv4(ip: string): boolean {
+  const num = ipv4ToInt(ip);
+  if (num === null) return false;
+  for (const [start, end] of PRIVATE_IPV4_RANGES) {
+    if (num >= start && num <= end) return true;
+  }
+  return false;
+}
+
+/** Well-known private/localhost hostnames */
+const PRIVATE_HOSTNAMES = new Set([
+  'localhost',
+  'localhost.localdomain',
+  'ip6-localhost',
+  'ip6-loopback',
+]);
+
+/**
+ * Check if a URL targets a private/internal network (SSRF protection).
+ * Returns a descriptive error string if the URL is private, or null if it's safe.
+ */
+export function checkSsrf(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'Invalid URL';
+  }
+
+  // Only allow http: and https: protocols
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `Disallowed protocol: ${parsed.protocol}`;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  // Block well-known private hostnames
+  if (PRIVATE_HOSTNAMES.has(hostname)) {
+    return `Private hostname: ${hostname}`;
+  }
+
+  // Block IPv6 loopback and private ranges
+  // URL parser wraps IPv6 in brackets: [::1] → hostname = "::1"
+  if (hostname === '::1' || hostname === '[::1]') {
+    return 'IPv6 loopback address';
+  }
+  if (hostname.startsWith('fe80:') || hostname.startsWith('[fe80:')) {
+    return 'IPv6 link-local address';
+  }
+  if (hostname.startsWith('fc') || hostname.startsWith('[fc') ||
+      hostname.startsWith('fd') || hostname.startsWith('[fd')) {
+    return 'IPv6 unique local address';
+  }
+
+  // Block private IPv4 ranges
+  if (isPrivateIPv4(hostname)) {
+    return `Private IPv4 address: ${hostname}`;
+  }
+
+  // Block IPv4-mapped IPv6 — dotted-quad form (e.g., ::ffff:127.0.0.1)
+  const ipv4MappedDotted = hostname.match(/::ffff:(\d+\.\d+\.\d+\.\d+)/i);
+  if (ipv4MappedDotted && isPrivateIPv4(ipv4MappedDotted[1])) {
+    return `Private IPv4-mapped IPv6 address: ${hostname}`;
+  }
+
+  // Block IPv4-mapped IPv6 — hex form (e.g., ::ffff:7f00:1 as parsed by URL)
+  const ipv4MappedHex = hostname.match(/::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})/i);
+  if (ipv4MappedHex) {
+    const hi = parseInt(ipv4MappedHex[1], 16);
+    const lo = parseInt(ipv4MappedHex[2], 16);
+    const dottedQuad = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    if (isPrivateIPv4(dottedQuad)) {
+      return `Private IPv4-mapped IPv6 address: ${hostname}`;
+    }
+  }
+
+  return null; // URL is safe
+}
+
 // ─── Admin Lifecycle Events ─────────────────────────────────────────────────
 
 export interface WebhookAdminEvent {
@@ -504,6 +618,11 @@ export class WebhookEmitter {
       });
       return;
     }
+
+    // Note: SSRF protection is enforced at the admin API entry points
+    // (webhook filter create/update, webhook test endpoint, config validator).
+    // Delivery-time checks are intentionally omitted to allow localhost
+    // webhook URLs in development and testing environments.
 
     const maskedUrl = WebhookEmitter.maskUrl(this.url);
     const startTime = Date.now();

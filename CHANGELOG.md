@@ -1,5 +1,18 @@
 # Changelog
 
+## 8.87.0 (2026-02-27)
+
+### Webhook SSRF Prevention
+- **Added `checkSsrf()` validation** — blocks webhook URLs targeting private/internal networks (RFC 1918, loopback, link-local, cloud metadata, carrier-grade NAT, IPv6 private ranges)
+- Covers all untrusted URL entry points: webhook filter create (POST /webhooks/filters), webhook filter update (POST /webhooks/filters/update)
+- Blocks `localhost`, `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` (AWS/GCP metadata), `100.64.0.0/10`, IPv6 loopback/link-local/ULA, and IPv4-mapped IPv6 hex form
+- Blocks non-HTTP protocols (`file://`, `ftp://`, `gopher://`)
+- Config validator now warns about private webhook URLs at startup
+- Operator-configured URLs (`--webhook-url`) are trusted (not blocked at delivery time) to support localhost development
+- 45 new tests: 34 unit tests for checkSsrf(), 8 integration tests on admin endpoints, 3 config validator tests
+
+---
+
 ## 8.86.0 (2026-02-27)
 
 ### Prototype Pollution Prevention

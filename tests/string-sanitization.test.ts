@@ -185,7 +185,7 @@ describe('String Field Sanitization', () => {
     const resp = await post('/webhooks/filters', {
       name: longName,
       events: ['gate.allow'],
-      url: 'http://localhost:19998/hook',
+      url: 'https://hooks.example.com/sanitization-test',
     });
     expect(resp.status).toBe(201);
     expect(resp.body.name.length).toBeLessThanOrEqual(MAX_FIELD);

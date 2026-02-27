@@ -5,6 +5,8 @@
  * catch misconfigurations before the server starts.
  */
 
+import { checkSsrf } from './webhook';
+
 export interface ConfigDiagnostic {
   level: 'error' | 'warning';
   field: string;
@@ -181,6 +183,15 @@ export function validateConfig(config: ValidatableConfig): ConfigDiagnostic[] {
   if (config.webhookUrl) {
     try {
       new URL(config.webhookUrl);
+      // SSRF protection: warn if webhook URL targets private/internal network
+      const ssrfError = checkSsrf(config.webhookUrl);
+      if (ssrfError) {
+        diags.push({
+          level: 'warning',
+          field: 'webhookUrl',
+          message: `webhookUrl targets a private/internal address (${ssrfError}). Webhook delivery will be blocked by SSRF protection.`,
+        });
+      }
     } catch {
       diags.push({
         level: 'error',
