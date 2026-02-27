@@ -138,6 +138,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **System Health Score** — `GET /admin/system-health` composite 0-100 health score with weighted component breakdowns for key health, error rates, and credit utilization
 - **Tool Adoption** — `GET /admin/tool-adoption` per-tool adoption metrics with unique consumers, adoption rate, first/last seen timestamps, and usage ranking
 - **Credit Efficiency** — `GET /admin/credit-efficiency` credit allocation efficiency with burn efficiency, waste ratio, over-provisioned and under-provisioned key detection
+- **Access Heatmap** — `GET /admin/access-heatmap` hourly access patterns with tool breakdown, unique consumers, and peak hour identification
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3223,6 +3224,33 @@ curl http://localhost:3000/admin/credit-efficiency -H "X-Admin-Key: YOUR_ADMIN_K
 ```
 
 Credit allocation efficiency analysis. `burnEfficiency` is the percentage of allocated credits actually spent. `wasteRatio` is the percentage remaining unused. Over-provisioned keys have >90% remaining credits. Under-provisioned keys have <=10 credits or <=10% remaining with active usage. Top 10 in each category, sorted by urgency. Read-only.
+
+### Access Heatmap
+
+```bash
+curl http://localhost:3000/admin/access-heatmap -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "hourly": [
+    {
+      "hour": "2025-01-15T14:00:00.000Z",
+      "total": 45,
+      "uniqueConsumers": 8,
+      "tools": { "search": 30, "translate": 15 }
+    }
+  ],
+  "summary": {
+    "totalRequests": 45,
+    "totalHours": 1,
+    "peakHour": { "hour": "2025-01-15T14:00:00.000Z", "total": 45 }
+  },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Hourly access patterns for capacity planning. Each bucket shows total requests, unique consumers, and per-tool breakdown. Peak hour identification helps spot usage spikes. Only counts allowed requests. Sorted chronologically. Read-only.
 
 ### IP Allowlisting
 

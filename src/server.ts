@@ -972,6 +972,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/access-heatmap':
+        if (req.method === 'GET') return this.handleAccessHeatmap(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1578,6 +1583,7 @@ export class PayGateServer {
         systemHealth: 'GET /admin/system-health — Composite system health score 0-100 with component breakdowns for key health, error rates, and credit utilization (requires X-Admin-Key)',
         toolAdoption: 'GET /admin/tool-adoption — Per-tool adoption metrics with unique consumers, adoption rate, first/last seen, and never-used tool identification (requires X-Admin-Key)',
         creditEfficiency: 'GET /admin/credit-efficiency — Credit allocation efficiency with burn efficiency, waste ratio, over-provisioned and under-provisioned key detection (requires X-Admin-Key)',
+        accessHeatmap: 'GET /admin/access-heatmap — Hourly access patterns with tool breakdown, unique consumers, and peak hour identification for capacity planning (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7593,6 +7599,66 @@ export class PayGateServer {
       },
       overProvisioned: overProvisioned.slice(0, 10),
       underProvisioned: underProvisioned.slice(0, 10),
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/access-heatmap — Hourly access patterns ───────────────────────
+
+  private handleAccessHeatmap(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    // Build hourly buckets from request log
+    const hourMap = new Map<string, {
+      total: number;
+      tools: Map<string, number>;
+      consumers: Set<string>;
+    }>();
+
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      const ts = new Date(entry.timestamp);
+      const hourKey = ts.toISOString().slice(0, 13) + ':00:00.000Z';
+
+      let bucket = hourMap.get(hourKey);
+      if (!bucket) {
+        bucket = { total: 0, tools: new Map(), consumers: new Set() };
+        hourMap.set(hourKey, bucket);
+      }
+
+      bucket.total++;
+      bucket.tools.set(entry.tool, (bucket.tools.get(entry.tool) || 0) + 1);
+      bucket.consumers.add(entry.key);
+    }
+
+    // Convert to sorted array
+    const hourly = Array.from(hourMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([hour, data]) => ({
+        hour,
+        total: data.total,
+        uniqueConsumers: data.consumers.size,
+        tools: Object.fromEntries(data.tools),
+      }));
+
+    // Find peak hour
+    let peakHour: { hour: string; total: number } | null = null;
+    for (const h of hourly) {
+      if (!peakHour || h.total > peakHour.total) {
+        peakHour = { hour: h.hour, total: h.total };
+      }
+    }
+
+    const totalRequests = hourly.reduce((s, h) => s + h.total, 0);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      hourly,
+      summary: {
+        totalRequests,
+        totalHours: hourly.length,
+        ...(peakHour ? { peakHour } : {}),
+      },
       generatedAt: new Date().toISOString(),
     }));
   }
