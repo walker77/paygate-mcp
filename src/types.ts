@@ -143,6 +143,8 @@ export interface PayGateConfig {
   keepAliveTimeoutMs?: number;
   /** Max HTTP requests per socket (pipelining limit). 0 = unlimited. Default: 0. */
   maxRequestsPerSocket?: number;
+  /** Max concurrent TCP connections. Prevents file descriptor exhaustion. Default: 10000. */
+  maxConnections?: number;
   /** Admin endpoint rate limit per IP (requests/min). 0 = unlimited. Default: 120. */
   adminRateLimit?: number;
 }

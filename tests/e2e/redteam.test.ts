@@ -473,14 +473,14 @@ describe('RED TEAM — PayGate Security', () => {
       expect(res.status).toBe(401); // Still requires admin key
     });
 
-    it('should handle request without Content-Type', async () => {
+    it('should reject request without Content-Type (415)', async () => {
       const res = await httpRequest(port, '/mcp', {
         method: 'POST',
         headers: { 'Content-Type': '' },
         body: { jsonrpc: '2.0', id: 1, method: 'ping', params: {} },
       });
-      // Should still work — we don't enforce Content-Type
-      expect([200, 400]).toContain(res.status);
+      // v8.92.0: Content-Type enforcement — POST requires application/json
+      expect(res.status).toBe(415);
     });
   });
 });

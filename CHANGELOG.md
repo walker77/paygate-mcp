@@ -1,5 +1,21 @@
 # Changelog
 
+## 8.92.0 (2026-02-27)
+
+### Request-Level Hardening
+- **Content-Type enforcement**: All POST endpoints now require `application/json` Content-Type (returns 415 Unsupported Media Type otherwise)
+  - `/oauth/token` also accepts `application/x-www-form-urlencoded` per RFC 6749
+  - Check runs after method validation (405) and auth (401/403), before body parsing
+  - Prevents content smuggling, protocol confusion, and non-JSON payload injection
+- **405 Method Not Allowed**: 10 multi-method endpoints now correctly return 405 (not 404) for unsupported HTTP methods
+  - Affected: `/keys`, `/keys/templates`, `/alerts`, `/webhooks/dead-letter`, `/webhooks/filters`, `/teams`, `/tokens`, `/admin/keys`, `/groups`
+  - Compliant with RFC 7231 Section 6.5.5
+- **Connection limits**: `server.maxConnections` set to 10,000 (configurable) to prevent file descriptor exhaustion
+- **ReDoS prevention**: `safeErrorMessage()` truncates input to 500 chars before regex matching
+- 19 new tests covering Content-Type rejection (8 tests) and 405 compliance (11 tests)
+
+---
+
 ## 8.91.0 (2026-02-27)
 
 ### Error Message Sanitization (Information Disclosure Prevention)

@@ -108,7 +108,9 @@ function clampArray<T>(arr: T[] | undefined, maxLen: number): T[] | undefined {
  * The full error is returned for internal logging only.
  */
 function safeErrorMessage(err: unknown, fallback = 'Invalid request'): string {
-  const msg = err instanceof Error ? err.message : String(err);
+  const raw = err instanceof Error ? err.message : String(err);
+  // Truncate before regex matching to prevent ReDoS on crafted long strings
+  const msg = raw.slice(0, 500);
   // Allow known-safe, controlled error messages to pass through.
   // These are validation messages from our own code, not system/library errors.
   const safePatterns = [
@@ -648,6 +650,7 @@ export class PayGateServer {
       this.server.requestTimeout = this.config.requestTimeoutMs ?? 30_000;       // 30s max per request (Node default: 0 = none)
       this.server.headersTimeout = this.config.headersTimeoutMs ?? 10_000;       // 10s to receive headers (Node default: 60s)
       this.server.keepAliveTimeout = this.config.keepAliveTimeoutMs ?? 65_000;   // 65s keep-alive (> typical 60s LB idle)
+      this.server.maxConnections = this.config.maxConnections ?? 10_000;         // Cap concurrent TCP connections to prevent FD exhaustion
       if (this.config.maxRequestsPerSocket) {
         this.server.maxRequestsPerSocket = this.config.maxRequestsPerSocket;     // Limit pipelined requests per socket
       }
@@ -802,7 +805,8 @@ export class PayGateServer {
       case '/keys':
         if (req.method === 'POST') return this.handleCreateKey(req, res);
         if (req.method === 'GET') return this.handleListKeys(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
+        return;
       case '/keys/revoke':
         return this.handleRevokeKey(req, res);
       case '/keys/suspend':
@@ -883,7 +887,8 @@ export class PayGateServer {
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
+        return;
       case '/keys/templates/delete':
         return this.handleDeleteTemplate(req, res);
       case '/topup':
@@ -948,12 +953,14 @@ export class PayGateServer {
       case '/alerts':
         if (req.method === 'GET') return this.handleGetAlerts(req, res);
         if (req.method === 'POST') return this.handleConfigureAlerts(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
+        return;
       // ─── Webhook admin endpoints ─────────────────────────────────────
       case '/webhooks/dead-letter':
         if (req.method === 'GET') return this.handleGetDeadLetters(req, res);
         if (req.method === 'DELETE') return this.handleClearDeadLetters(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or DELETE.');
+        return;
       case '/webhooks/replay':
         return this.handleWebhookReplay(req, res);
       case '/webhooks/stats':
@@ -969,7 +976,8 @@ export class PayGateServer {
       case '/webhooks/filters':
         if (req.method === 'GET') return this.handleListWebhookFilters(req, res);
         if (req.method === 'POST') return this.handleCreateWebhookFilter(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
+        return;
       case '/webhooks/filters/update':
         return this.handleUpdateWebhookFilter(req, res);
       case '/webhooks/filters/delete':
@@ -978,7 +986,8 @@ export class PayGateServer {
       case '/teams':
         if (req.method === 'GET') return this.handleListTeams(req, res);
         if (req.method === 'POST') return this.handleCreateTeam(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
+        return;
       case '/teams/update':
         return this.handleUpdateTeam(req, res);
       case '/teams/delete':
@@ -995,7 +1004,8 @@ export class PayGateServer {
       // ─── Scoped token endpoints ────────────────────────────────────────
       case '/tokens':
         if (req.method === 'POST') return this.handleCreateToken(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use POST.');
+        return;
       case '/tokens/revoke':
         return this.handleRevokeToken(req, res);
       case '/tokens/revoked':
@@ -1004,7 +1014,8 @@ export class PayGateServer {
       case '/admin/keys':
         if (req.method === 'POST') return this.handleCreateAdminKey(req, res);
         if (req.method === 'GET') return this.handleListAdminKeys(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
+        return;
       case '/admin/keys/revoke':
         return this.handleRevokeAdminKey(req, res);
       case '/admin/keys/rotate-bootstrap':
@@ -1273,7 +1284,8 @@ export class PayGateServer {
       case '/groups':
         if (req.method === 'GET') return this.handleListGroups(req, res);
         if (req.method === 'POST') return this.handleCreateGroup(req, res);
-        break;
+        this.sendError(res, 405, 'Method not allowed. Use GET or POST.');
+        return;
       case '/groups/update':
         return this.handleUpdateGroup(req, res);
       case '/groups/delete':
@@ -1342,6 +1354,7 @@ export class PayGateServer {
       this.sendError(res, 405, 'Method not allowed');
       return;
     }
+    if (!this.requireJsonContentType(req, res)) return;
 
     const body = await this.readBody(req);
 
@@ -4461,6 +4474,7 @@ export class PayGateServer {
       this.sendError(res, 405, 'Method not allowed');
       return;
     }
+    if (!this.requireJsonContentType(req, res)) return;
 
     const body = await this.readBody(req);
     let params: {
@@ -4606,13 +4620,14 @@ export class PayGateServer {
       this.sendError(res, 405, 'Method not allowed');
       return;
     }
+    if (!this.requireJsonContentType(req, res)) return;
 
     const body = await this.readBody(req);
     let params: Record<string, string>;
     try {
       params = safeJsonParse(body);
     } catch {
-      // Try URL-encoded form data
+      // Try URL-encoded form data (RFC 6749)
       params = {};
       const query = new URLSearchParams(body);
       for (const [k, v] of query) params[k] = v;
@@ -11139,6 +11154,9 @@ export class PayGateServer {
       return false;
     }
 
+    // Content-Type enforcement for POST requests (after auth, before body read)
+    if (req.method === 'POST' && !this.requireJsonContentType(req, res)) return false;
+
     return true;
   }
 
@@ -12055,6 +12073,27 @@ export class PayGateServer {
     }
 
     return '*';
+  }
+
+  /**
+   * Check Content-Type is JSON. Returns true if valid, false and sends 415 if not.
+   * Exempt paths (like /oauth/token) accept form-urlencoded per RFC 6749.
+   */
+  private requireJsonContentType(req: IncomingMessage, res: ServerResponse): boolean {
+    if (req.method !== 'POST') return true; // Only enforce for POST
+    const ct = (req.headers['content-type'] as string || '').toLowerCase();
+    const url = req.url?.split('?')[0] || '/';
+    if (url === '/oauth/token') {
+      // OAuth token endpoint accepts both JSON and form-encoded per RFC 6749
+      if (ct.startsWith('application/json') || ct.startsWith('application/x-www-form-urlencoded')) return true;
+      this.sendError(res, 415, 'Unsupported Media Type. Use application/json or application/x-www-form-urlencoded');
+      return false;
+    }
+    if (!ct.startsWith('application/json')) {
+      this.sendError(res, 415, 'Unsupported Media Type. Use application/json');
+      return false;
+    }
+    return true;
   }
 
   private readBody(req: IncomingMessage): Promise<string> {
