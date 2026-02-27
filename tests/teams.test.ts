@@ -403,8 +403,8 @@ describe('Team Server Endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   function request(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> {
     return new Promise((resolve, reject) => {

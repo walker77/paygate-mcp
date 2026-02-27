@@ -102,11 +102,11 @@ describe('Tool Availability', () => {
     apiKey = r.body.key;
     // Trigger tools/list to populate the tool registry
     await discoverTools(port, apiKey);
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns all tools with availability info', async () => {
     const r = await httpGet(port, `/tools/available?key=${apiKey}`, { 'X-Admin-Key': adminKey });

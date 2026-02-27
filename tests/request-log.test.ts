@@ -96,11 +96,11 @@ describe('Request Log', () => {
     // Create a key with enough credits
     const r = await httpPost(port, '/keys', { credits: 1000, name: 'test-key' }, { 'X-Admin-Key': adminKey });
     apiKey = r.body.key;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns empty log initially', async () => {
     const r = await httpGet(port, '/requests', { 'X-Admin-Key': adminKey });

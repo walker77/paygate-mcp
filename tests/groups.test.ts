@@ -418,8 +418,8 @@ describe('Server Group Endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('POST /groups creates a group', async () => {
     const res = await httpReq(port, '/groups', 'POST', {
@@ -586,8 +586,8 @@ describe('Root listing includes /groups', () => {
     expect(res.data.endpoints.listGroups).toContain('/groups');
     expect(res.data.endpoints.createGroup).toContain('/groups');
     expect(res.data.endpoints.assignKeyToGroup).toContain('/groups/assign');
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });
 
 describe('Group metrics gauge', () => {
@@ -611,6 +611,6 @@ describe('Group metrics gauge', () => {
     res = await httpReq(port, '/metrics', 'GET');
     expect(res.data).toContain('paygate_groups_total 1');
 
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });

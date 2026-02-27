@@ -90,8 +90,8 @@ describe('Denial Analysis', () => {
   let adminKey: string;
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns complete denial analysis structure', async () => {
     server = makeServer({ defaultCreditsPerCall: 5 });

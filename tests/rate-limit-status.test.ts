@@ -158,8 +158,8 @@ describe('GET /keys/rate-limit-status (HTTP)', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns global rate limit status', async () => {
     const res = await httpGet(port, `/keys/rate-limit-status?key=${testKey}`, { 'x-admin-key': adminKey });
@@ -260,8 +260,8 @@ describe('Rate limit status without per-tool limits', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('perTool is undefined when no per-tool limits configured', async () => {
     const res = await httpGet(port, `/keys/rate-limit-status?key=${testKey}`, { 'x-admin-key': adminKey });
@@ -289,8 +289,8 @@ describe('Rate limit status with unlimited rate limit', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns unlimited status', async () => {
     const res = await httpGet(port, `/keys/rate-limit-status?key=${testKey}`, { 'x-admin-key': adminKey });

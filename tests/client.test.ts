@@ -65,8 +65,8 @@ describe('PayGateClient SDK', () => {
   }, 15000);
 
   afterAll(async () => {
-    await server.stop();
-  }, 10000);
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   async function createApiKey(credits: number, opts?: Record<string, unknown>): Promise<string> {
     const res = await httpRequest(port, '/keys', {

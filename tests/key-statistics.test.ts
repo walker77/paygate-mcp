@@ -118,8 +118,8 @@ describe('Key Statistics Endpoint', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   // ─── Basic stats ───
   test('returns aggregate statistics', async () => {

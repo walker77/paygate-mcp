@@ -276,8 +276,8 @@ describe('Admin Key HTTP Endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   describe('POST /admin/keys', () => {
     it('should require X-Admin-Key', async () => {
@@ -460,8 +460,8 @@ describe('Role-Based Access Control', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   describe('viewer role', () => {
     it('should access read-only endpoints', async () => {
@@ -563,8 +563,8 @@ describe('Backward Compatibility', () => {
     );
     const result = await server.start();
     expect(result.adminKey).toBe('my-custom-admin-key');
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should auto-generate admin key if not provided', async () => {
     const server = new PayGateServer(
@@ -572,8 +572,8 @@ describe('Backward Compatibility', () => {
     );
     const result = await server.start();
     expect(result.adminKey).toMatch(/^admin_/);
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('bootstrap key should be super_admin', async () => {
     const server = new PayGateServer(
@@ -582,8 +582,8 @@ describe('Backward Compatibility', () => {
     );
     const result = await server.start();
     expect(server.adminKeys.hasRole('boot-key', 'super_admin')).toBe(true);
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });
 
 // ─── Audit Trail Tests ────────────────────────────────────────────────────────
@@ -604,8 +604,8 @@ describe('Admin Key Audit Trail', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should log admin_key.created event', async () => {
     await httpReq(port, 'POST', '/admin/keys', { name: 'Audited Key', role: 'viewer' }, { 'X-Admin-Key': adminKey });
@@ -658,6 +658,6 @@ describe('Root Listing', () => {
     expect(res.body.endpoints.createAdminKey).toBeDefined();
     expect(res.body.endpoints.revokeAdminKey).toBeDefined();
 
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });

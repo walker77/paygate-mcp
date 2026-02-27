@@ -44,8 +44,8 @@ describe('PayGateServer (HTTP)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   function request(path: string, options: {
     method?: string;

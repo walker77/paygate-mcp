@@ -176,8 +176,8 @@ describe('Trusted Proxies (HTTP integration)', () => {
   let adminKey: string;
 
   afterEach(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('/info shows trustedProxies feature as false when not configured', async () => {
     server = makeServer();

@@ -210,8 +210,8 @@ describe('Metrics E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('GET /metrics returns Prometheus text format', async () => {
     const res = await httpRequest({ port, method: 'GET', path: '/metrics' });

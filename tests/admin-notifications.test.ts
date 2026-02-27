@@ -105,11 +105,11 @@ describe('Admin Notifications', () => {
     const started = await server.start();
     port = started.port;
     adminKey = started.adminKey;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns empty notifications when all keys are healthy', async () => {
     await httpPost(port, '/keys', { credits: 1000, name: 'healthy' }, { 'X-Admin-Key': adminKey });

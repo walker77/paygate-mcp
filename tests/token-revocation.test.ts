@@ -314,8 +314,8 @@ describe('Token revocation HTTP endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('POST /tokens/revoke — requires admin key', async () => {
     const res = await httpRequest({

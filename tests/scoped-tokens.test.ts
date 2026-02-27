@@ -375,8 +375,8 @@ describe('Scoped token HTTP endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('POST /tokens creates a scoped token', async () => {
     // First create an API key

@@ -174,8 +174,8 @@ describe('GET /keys/credit-history (HTTP)', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('initial allocation is recorded on key creation', async () => {
     const res = await httpGet(port, `/keys/credit-history?key=${key1}`, { 'x-admin-key': adminKey });

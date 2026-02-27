@@ -300,8 +300,8 @@ describe('GET /webhooks/log (no webhook)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns configured=false when no webhook', async () => {
     const res = await request(port, 'GET', '/webhooks/log', undefined, { 'X-Admin-Key': adminKey });

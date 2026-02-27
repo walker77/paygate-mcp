@@ -70,8 +70,8 @@ describe('E2E: PayGate wrapping mock MCP server', () => {
   }, 15000);
 
   afterAll(async () => {
-    await server.stop();
-  }, 10000);
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   // ─── Full lifecycle test ──────────────────────────────────────────────────
 

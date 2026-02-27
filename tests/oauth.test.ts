@@ -80,8 +80,8 @@ function generatePKCE(): { verifier: string; challenge: string } {
 }
 
 afterEach(async () => {
-  if (server) await server.stop();
-});
+  if (server) await server.gracefulStop(5_000);
+}, 30_000);
 
 // ─── OAuthProvider Unit Tests ────────────────────────────────────────────────
 

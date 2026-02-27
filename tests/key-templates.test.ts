@@ -276,8 +276,8 @@ describe('Key Templates — Server Integration', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('GET /keys/templates returns empty list initially', async () => {
     const res = await request(port, 'GET', '/keys/templates', undefined, { 'X-Admin-Key': adminKey });
@@ -410,8 +410,8 @@ describe('Template-Based Key Creation', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('create key from template — inherits all defaults', async () => {
     const res = await request(port, 'POST', '/keys', {
@@ -518,8 +518,8 @@ describe('Key Templates — Audit Trail', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('template CRUD generates audit events', async () => {
     // Create
@@ -572,8 +572,8 @@ describe('Key Templates — Prometheus Gauge', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('/metrics includes paygate_templates_total', async () => {
     // Create a template first
@@ -609,8 +609,8 @@ describe('Key Templates — Root Listing', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('root listing includes template endpoints', async () => {
     const res = await request(port, 'GET', '/');

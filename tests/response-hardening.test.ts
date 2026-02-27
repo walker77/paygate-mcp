@@ -72,8 +72,8 @@ describe('v8.93.0 — Log injection prevention', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should handle requests with newlines in URL without crashing', async () => {
     // URL with control characters — should be handled safely
@@ -113,8 +113,8 @@ describe('v8.93.0 — Status response capping', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should return status with keys array (small set)', async () => {
     const res = await httpRequest(port, '/status', {
@@ -148,8 +148,8 @@ describe('v8.93.0 — Analytics topN capping', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should accept normal topN value', async () => {
     const res = await httpRequest(port, '/analytics?top=5', {
@@ -213,8 +213,8 @@ describe('v8.93.0 — Session creation rate limiting', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should allow initial session creation', async () => {
     const res = await httpRequest(port, '/mcp', {

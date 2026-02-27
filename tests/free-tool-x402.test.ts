@@ -210,8 +210,8 @@ describe('Free tool & x402 E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('/.well-known/mcp-payment should include freeToolCount and x402Compatible', async () => {
     server.registry.setDiscoveredTools(['free_search', 'paid_search', 'basic_tool']);
@@ -302,6 +302,6 @@ describe('billTaskCreation config', () => {
       expect(res.body.error.code).not.toBe(-32402);
     }
 
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });

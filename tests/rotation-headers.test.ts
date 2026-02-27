@@ -202,8 +202,8 @@ describe('Key Rotation E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('POST /keys/rotate rotates a key', async () => {
     // Create a key first
@@ -369,8 +369,8 @@ describe('Rate Limit Response Headers', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('POST /mcp tools/call returns X-Credits-Remaining header', async () => {
     // The echo backend may crash immediately, so calls may return errors.

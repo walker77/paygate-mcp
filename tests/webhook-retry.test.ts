@@ -361,8 +361,8 @@ describe('Webhook admin endpoints (v2.5.0)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('GET /webhooks/stats returns stats', async () => {
     const res = await httpRequest(port, '/webhooks/stats', {
@@ -443,8 +443,8 @@ describe('Webhook endpoints without webhook configured', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('GET /webhooks/stats shows not configured', async () => {
     const res = await httpRequest(port, '/webhooks/stats', {

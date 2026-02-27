@@ -64,8 +64,8 @@ describe('Enterprise Endpoints (v0.8.0)', () => {
   }, 15000);
 
   afterAll(async () => {
-    await server.stop();
-  }, 10000);
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   describe('POST /keys — Enhanced with ACL/Expiry', () => {
     it('should create key with allowedTools', async () => {

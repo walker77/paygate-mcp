@@ -69,8 +69,8 @@ describe('CORS — Default (wildcard)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('default CORS returns Access-Control-Allow-Origin: *', async () => {
     const res = await request(port, 'GET', '/health');
@@ -110,8 +110,8 @@ describe('CORS — Single Origin', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns origin when request matches', async () => {
     const res = await request(port, 'GET', '/health', undefined, { Origin: 'https://app.example.com' });
@@ -156,8 +156,8 @@ describe('CORS — Multiple Origins', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns origin when first origin matches', async () => {
     const res = await request(port, 'GET', '/health', undefined, { Origin: 'https://app1.example.com' });
@@ -221,8 +221,8 @@ describe('CORS — Credentials & Max-Age', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('includes Access-Control-Allow-Credentials: true', async () => {
     const res = await request(port, 'GET', '/health', undefined, { Origin: 'https://app.example.com' });

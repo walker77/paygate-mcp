@@ -84,8 +84,8 @@ describe('Revenue Analysis', () => {
   let adminKey: string;
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns complete revenue analysis structure', async () => {
     server = makeServer({ defaultCreditsPerCall: 5 });

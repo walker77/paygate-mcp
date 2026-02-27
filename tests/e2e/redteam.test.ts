@@ -87,7 +87,7 @@ describe('RED TEAM — PayGate Security', () => {
   }, 15000);
 
   afterAll(async () => {
-    await server.stop();
+    await server.gracefulStop(5_000);
   }, 10000);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1111,7 +1111,7 @@ describe('RED TEAM — Self-Service Endpoint Security', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
+    await server.gracefulStop(5_000);
   });
 
   // ── /balance: Information disclosure ──────────────────────────────────────
@@ -1320,7 +1320,7 @@ describe('RED TEAM — Dashboard Security', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
+    await server.gracefulStop(5_000);
   });
 
   test('should HTML-escape server name in dashboard (XSS via server name)', async () => {

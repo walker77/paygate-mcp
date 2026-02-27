@@ -89,11 +89,11 @@ describe('Batch Dry Run', () => {
     adminKey = started.adminKey;
     const r = await httpPost(port, '/keys', { credits: 100, name: 'test-key' }, { 'X-Admin-Key': adminKey });
     apiKey = r.body.key;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('all allowed when sufficient credits', async () => {
     const r = await httpPost(port, '/requests/dry-run/batch', {

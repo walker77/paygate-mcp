@@ -232,8 +232,8 @@ describe('SSE Streaming E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('POST /mcp returns JSON with Mcp-Session-Id header', async () => {
     const res = await httpRequest({

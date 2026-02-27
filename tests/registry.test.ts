@@ -181,8 +181,8 @@ describe('Registry/Discovery E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('GET /.well-known/mcp-payment returns payment metadata', async () => {
     const res = await httpRequest({ port, method: 'GET', path: '/.well-known/mcp-payment' });

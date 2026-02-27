@@ -231,8 +231,8 @@ describe('POST /keys/clone', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   /** Helper: create a fresh test key with config */
   async function createTestKey(name = 'test', credits = 100, extras?: Record<string, unknown>): Promise<string> {

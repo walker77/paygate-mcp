@@ -98,8 +98,8 @@ describe('Request ID — HTTP Integration', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('health endpoint returns X-Request-Id header', async () => {
     const res = await request(port, 'GET', '/health');
@@ -213,8 +213,8 @@ describe('Request ID — Audit Trail', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('gate.allow audit event includes requestId in metadata', async () => {
     // Create a key and make a tool call

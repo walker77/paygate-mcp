@@ -83,8 +83,8 @@ describe('POST /keys/alias', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('sets alias for a key', async () => {
     const res = await request(port, 'POST', '/keys/alias', { key: apiKey, alias: 'my-service' }, { 'X-Admin-Key': adminKey });
@@ -210,8 +210,8 @@ describe('Alias resolution in admin endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('POST /topup resolves alias', async () => {
     const res = await request(port, 'POST', '/topup', { key: alias, credits: 100 }, { 'X-Admin-Key': adminKey });
@@ -292,8 +292,8 @@ describe('Alias does NOT work for MCP auth', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('alias as X-API-Key on tools/call returns auth error', async () => {
     const mcpReq = {
@@ -384,8 +384,8 @@ describe('Alias audit trail', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('setting alias creates audit event', async () => {
     await request(port, 'POST', '/keys/alias', { key: apiKey, alias: 'audit-test' }, { 'X-Admin-Key': adminKey });
@@ -427,8 +427,8 @@ describe('Root listing includes alias endpoint', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('GET / includes keyAlias endpoint', async () => {
     const res = await request(port, 'GET', '/', undefined, { 'X-Admin-Key': adminKey });
@@ -466,8 +466,8 @@ describe('Credit transfer with alias', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('transfer credits using aliases for both from and to', async () => {
     const res = await request(port, 'POST', '/keys/transfer', {
@@ -506,8 +506,8 @@ describe('Clone does NOT copy alias', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('cloned key does not have original alias', async () => {
     const cloneRes = await request(port, 'POST', '/keys/clone', { key: apiKey }, { 'X-Admin-Key': adminKey });

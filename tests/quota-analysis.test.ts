@@ -90,8 +90,8 @@ describe('Quota Analysis', () => {
   let adminKey: string;
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns complete quota analysis structure', async () => {
     server = makeServer({

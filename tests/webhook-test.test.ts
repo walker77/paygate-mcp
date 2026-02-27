@@ -238,8 +238,8 @@ describe('POST /webhooks/test (no webhook)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns 400 when no webhook is configured', async () => {
     const res = await request(port, 'POST', '/webhooks/test', {}, { 'X-Admin-Key': adminKey });
@@ -307,8 +307,8 @@ describe('POST /webhooks/test (unreachable)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns failure when webhook is unreachable', async () => {
     const res = await request(port, 'POST', '/webhooks/test', {}, { 'X-Admin-Key': adminKey });

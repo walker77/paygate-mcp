@@ -235,8 +235,8 @@ describe('POST /keys/suspend and /keys/resume', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   /** Helper: create a fresh test key */
   async function createTestKey(name = 'test', credits = 100): Promise<string> {

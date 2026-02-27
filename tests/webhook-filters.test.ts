@@ -322,8 +322,8 @@ describe('Server — Webhook Filter Endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('GET /webhooks/filters should return empty list initially', async () => {
     const res = await httpReq(port, '/webhooks/filters', 'GET', undefined, { 'X-Admin-Key': adminKey });
@@ -478,8 +478,8 @@ describe('Server — No Webhook Configured', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('GET /webhooks/filters should return empty with message', async () => {
     const res = await httpReq(port, '/webhooks/filters', 'GET', undefined, { 'X-Admin-Key': adminKey });

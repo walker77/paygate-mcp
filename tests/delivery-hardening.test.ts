@@ -77,8 +77,8 @@ describe('v8.94.0 — Content-Length pre-check', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should reject request with Content-Length exceeding 1MB', async () => {
     const res = await httpRequest(port, '/mcp', {
@@ -212,8 +212,8 @@ describe('v8.94.0 — Webhook delivery-time SSRF', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should block webhook delivery to private IPs (DNS rebinding defense)', async () => {
     // Create a key to trigger a webhook event

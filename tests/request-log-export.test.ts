@@ -99,11 +99,11 @@ describe('Request Log Export', () => {
     adminKey = started.adminKey;
     const r = await httpPost(port, '/keys', { credits: 1000, name: 'test-key' }, { 'X-Admin-Key': adminKey });
     apiKey = r.body.key;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('exports empty log as JSON', async () => {
     const r = await httpGet(port, '/requests/export', { 'X-Admin-Key': adminKey });

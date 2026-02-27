@@ -345,8 +345,8 @@ describe('Gate Plugin Integration', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('transformPrice plugin overrides tool pricing', () => {
     server.use({
@@ -481,8 +481,8 @@ describe('Server Plugin Integration', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   // ─── use() method ────────────────────────────────────────────────
 
@@ -643,8 +643,8 @@ describe('GET /plugins', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('returns list of plugins with hooks', async () => {
     const res = await httpReq(port, '/plugins', 'GET', undefined, { 'X-Admin-Key': adminKey });
@@ -740,8 +740,8 @@ describe('Plugin Error Isolation', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('tool calls succeed despite crashing plugins', async () => {
     const res = await httpReq(port, '/mcp', 'POST', {
@@ -851,8 +851,8 @@ describe('Root listing includes /plugins', () => {
     expect(res.status).toBe(200);
     expect(res.data.endpoints.plugins).toBeDefined();
     expect(res.data.endpoints.plugins).toContain('/plugins');
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -880,6 +880,6 @@ describe('Plugin metrics gauge', () => {
     res = await httpReq(port, '/metrics', 'GET');
     expect(res.data).toContain('paygate_plugins_total 1');
 
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });

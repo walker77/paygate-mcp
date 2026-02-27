@@ -256,8 +256,8 @@ describe('Webhook Pause/Resume (no webhook)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('pause returns 400 when no webhook configured', async () => {
     const res = await request(port, 'POST', '/webhooks/pause', {}, { 'X-Admin-Key': adminKey });

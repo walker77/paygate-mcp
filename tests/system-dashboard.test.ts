@@ -86,11 +86,11 @@ describe('System Dashboard', () => {
     const started = await server.start();
     port = started.port;
     adminKey = started.adminKey;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns complete dashboard structure', async () => {
     const r = await httpGet(port, '/admin/dashboard', { 'X-Admin-Key': adminKey });

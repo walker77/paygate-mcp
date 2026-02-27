@@ -302,8 +302,8 @@ describe('Namespace HTTP endpoints', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('POST /keys creates key with namespace', async () => {
     const res = await httpRequest({

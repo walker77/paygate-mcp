@@ -342,8 +342,8 @@ describe('GET /keys/expiring (integration)', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns empty list when no keys exist', async () => {
     const res = await request(port, 'GET', '/keys/expiring', undefined, { 'X-Admin-Key': adminKey });
@@ -422,8 +422,8 @@ describe('Expiry scanner webhook + audit integration', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('scanner fires audit event for expiring key', async () => {
     // Create a key that expires in 1 hour (within 24h threshold)
@@ -460,8 +460,8 @@ describe('Root listing includes /keys/expiring', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('root listing includes keysExpiring endpoint', async () => {
     const res = await request(port, 'GET', '/', undefined, {});

@@ -281,8 +281,8 @@ describe('OpenAPI, Docs, MCP Identity E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   // ─── /openapi.json ──────────────────────────────────────────────────
 
@@ -456,8 +456,8 @@ describe('MCP Identity with OAuth', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should show oauth2=true when OAuth is enabled', async () => {
     const res = await httpRequest(port, '/.well-known/mcp.json');
@@ -490,8 +490,8 @@ describe('MCP Identity without OAuth', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should show oauth2=false when OAuth is disabled', async () => {
     const res = await httpRequest(port, '/.well-known/mcp.json');

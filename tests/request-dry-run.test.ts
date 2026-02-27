@@ -95,11 +95,11 @@ describe('Tool Call Dry Run', () => {
     adminKey = started.adminKey;
     const r = await httpPost(port, '/keys', { credits: 100, name: 'test-key' }, { 'X-Admin-Key': adminKey });
     apiKey = r.body.key;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns allowed for valid key with sufficient credits', async () => {
     const r = await httpPost(port, '/requests/dry-run', { key: apiKey, tool: 'dry_tool' }, { 'X-Admin-Key': adminKey });

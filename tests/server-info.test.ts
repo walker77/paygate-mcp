@@ -84,8 +84,8 @@ describe('GET /info — Server Info Endpoint', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns 200 with JSON body', async () => {
     const res = await request(port, 'GET', '/info');
@@ -194,8 +194,8 @@ describe('GET /info — Minimal Config', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('features reflect minimal config', async () => {
     const res = await request(port, 'GET', '/info');
@@ -231,8 +231,8 @@ describe('GET /info — Listed in Status', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('root endpoint lists /info in endpoints', async () => {
     const res = await request(port, 'GET', '/');

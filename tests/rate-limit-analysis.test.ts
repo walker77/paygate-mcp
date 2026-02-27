@@ -94,11 +94,11 @@ describe('Rate Limit Analysis', () => {
     const started = await server.start();
     port = started.port;
     adminKey = started.adminKey;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns complete rate limit analysis structure', async () => {
     const r = await httpGet(port, '/admin/rate-limits', { 'X-Admin-Key': adminKey });

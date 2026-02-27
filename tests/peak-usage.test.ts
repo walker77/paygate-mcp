@@ -85,8 +85,8 @@ describe('Peak Usage Times', () => {
   let adminKey: string;
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns complete structure', async () => {
     server = makeServer({ defaultCreditsPerCall: 5 });

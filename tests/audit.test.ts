@@ -215,8 +215,8 @@ describe('Audit Log E2E', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('GET /audit requires admin auth', async () => {
     const res = await httpRequest({ port, method: 'GET', path: '/audit' });

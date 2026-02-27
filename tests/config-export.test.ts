@@ -83,8 +83,8 @@ describe('Config Export — Basic', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns 200 with config object', async () => {
     const res = await request(port, 'GET', '/config', undefined, { 'X-Admin-Key': adminKey });
@@ -163,8 +163,8 @@ describe('Config Export — Sensitive Masking', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('masks webhook URL (keeps scheme + host)', async () => {
     const res = await request(port, 'GET', '/config', undefined, { 'X-Admin-Key': adminKey });
@@ -211,8 +211,8 @@ describe('Config Export — Default/Empty Values', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('webhookUrl is null when not configured', async () => {
     const res = await request(port, 'GET', '/config', undefined, { 'X-Admin-Key': adminKey });
@@ -261,8 +261,8 @@ describe('Config Export — Auth & Methods', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns 401 without admin key', async () => {
     const res = await request(port, 'GET', '/config');
@@ -292,8 +292,8 @@ describe('Config Export — Endpoint Listing', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('/config is listed in root endpoint directory', async () => {
     const res = await request(port, 'GET', '/');

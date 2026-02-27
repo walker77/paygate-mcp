@@ -421,8 +421,8 @@ describe('POST /keys/auto-topup endpoint', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('requires admin auth', async () => {
     const res = await request(port, 'POST', '/keys/auto-topup', { key: apiKey });

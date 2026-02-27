@@ -90,8 +90,8 @@ describe('Key Listing Pagination & Filtering', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   // ─── Legacy behavior (backward compat) ───
   test('GET /keys without pagination params returns flat array (legacy)', async () => {

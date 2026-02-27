@@ -86,8 +86,8 @@ describe('GET /keys/quota-status with global quota', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns quota status with global quota source', async () => {
     const res = await httpGet(port, `/keys/quota-status?key=${testKey}`, { 'x-admin-key': adminKey });
@@ -206,8 +206,8 @@ describe('GET /keys/quota-status with per-key quota', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('uses per-key quota and reports source', async () => {
     const res = await httpGet(port, `/keys/quota-status?key=${testKey}`, { 'x-admin-key': adminKey });
@@ -238,8 +238,8 @@ describe('GET /keys/quota-status with no quota', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('reports no quota source', async () => {
     const res = await httpGet(port, `/keys/quota-status?key=${testKey}`, { 'x-admin-key': adminKey });
@@ -298,8 +298,8 @@ describe('Quota status reset periods', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('resetDay is today in YYYY-MM-DD format', async () => {
     const res = await httpGet(port, `/keys/quota-status?key=${testKey}`, { 'x-admin-key': adminKey });

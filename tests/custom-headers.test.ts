@@ -79,8 +79,8 @@ describe('Custom Headers — Applied to responses', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('custom headers on /health', async () => {
     const res = await request(port, 'GET', '/health');
@@ -156,8 +156,8 @@ describe('Custom Headers — Not configured', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('no custom headers when not configured (security headers still present)', async () => {
     const res = await request(port, 'GET', '/health');
@@ -191,8 +191,8 @@ describe('Custom Headers — Empty object', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('empty customHeaders object does not add custom headers (security headers still present)', async () => {
     const res = await request(port, 'GET', '/health');

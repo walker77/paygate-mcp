@@ -89,11 +89,11 @@ describe('Key Dashboard', () => {
     adminKey = started.adminKey;
     const r = await httpPost(port, '/keys', { credits: 100, name: 'dash-key' }, { 'X-Admin-Key': adminKey });
     apiKey = r.body.key;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns complete dashboard for active key', async () => {
     const r = await httpGet(port, `/keys/dashboard?key=${apiKey}`, { 'X-Admin-Key': adminKey });

@@ -85,8 +85,8 @@ describe('GET /keys/compare (HTTP)', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('compares two keys successfully', async () => {
     const res = await httpGet(port, `/keys/compare?keys=${key1},${key2}`, { 'x-admin-key': adminKey });

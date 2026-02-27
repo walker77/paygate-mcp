@@ -174,8 +174,8 @@ describe('GET /keys/spending-velocity (HTTP)', () => {
   });
 
   afterAll(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns velocity for a key with no spending', async () => {
     const res = await httpGet(port, `/keys/spending-velocity?key=${testKey}`, { 'x-admin-key': adminKey });

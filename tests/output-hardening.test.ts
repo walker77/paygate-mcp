@@ -123,8 +123,8 @@ describe('Custom header validation', () => {
   let port: number;
 
   afterEach(async () => {
-    if (server) await server.stop();
-  });
+    if (server) await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should apply valid custom headers', async () => {
     server = new PayGateServer({
@@ -252,8 +252,8 @@ describe('OAuth state sanitization', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   it('should pass through normal state parameters', async () => {
     // Register a client and get its ID
@@ -382,6 +382,6 @@ describe('Request log string truncation', () => {
       }
     }
 
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 });

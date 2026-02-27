@@ -66,8 +66,8 @@ describe('v2.6.0 — Health Check', () => {
   }, 15000);
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('GET /health returns healthy status', async () => {
     const res = await httpRequest(port, '/health');
@@ -136,8 +136,8 @@ describe('v2.6.0 — Health with webhooks configured', () => {
   }, 15000);
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('GET /health includes webhook stats', async () => {
     const res = await httpRequest(port, '/health');

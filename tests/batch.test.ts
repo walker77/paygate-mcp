@@ -277,8 +277,8 @@ describe('v2.8.0 — HTTP tools/call_batch endpoint', () => {
   });
 
   afterAll(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   function request(path: string, options: {
     method?: string;

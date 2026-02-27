@@ -98,11 +98,11 @@ describe('Tool Stats', () => {
     adminKey = started.adminKey;
     const r = await httpPost(port, '/keys', { credits: 1000, name: 'test-key' }, { 'X-Admin-Key': adminKey });
     apiKey = r.body.key;
-  });
+  }, 30_000);
 
   afterEach(async () => {
-    await server.stop();
-  });
+    await server.gracefulStop(5_000);
+  }, 30_000);
 
   test('returns empty stats initially', async () => {
     const r = await httpGet(port, '/tools/stats', { 'X-Admin-Key': adminKey });
