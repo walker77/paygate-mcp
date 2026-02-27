@@ -114,6 +114,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Rate Limit Analysis** — `GET /admin/rate-limits` rate limit utilization analysis with per-key and per-tool breakdown, denial trends, most throttled keys, and current window utilization
 - **Quota Analysis** — `GET /admin/quotas` quota utilization analysis with per-key daily/monthly usage vs limits, per-tool denial breakdown, most constrained keys, and global/per-key quota source tracking
 - **Denial Analysis** — `GET /admin/denials` comprehensive denial breakdown by reason type (insufficient_credits, rate_limited, quota_exceeded, key_suspended, etc.) with per-key and per-tool stats, hourly trends, and most denied keys
+- **Traffic Analysis** — `GET /admin/traffic` request volume analysis with tool popularity, hourly volume, top consumers by call count, namespace breakdown, peak hour identification, and success rates
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2635,6 +2636,24 @@ curl http://localhost:3000/admin/denials -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Returns denial summary with denial rate, breakdown by canonical reason type (insufficient_credits, rate_limited, tool_rate_limited, quota_exceeded, key_suspended, api_key_expired, invalid_api_key, missing_api_key, tool_not_allowed, ip_not_allowed, spending_limit_exceeded, etc.), per-key denial counts with top reason, per-tool denial counts, hourly denial trends (last 24 hours), and top 10 most denied keys. Read-only.
+
+### Traffic Analysis
+
+```bash
+curl http://localhost:3000/admin/traffic -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalCalls": 500, "totalAllowed": 470, "totalDenied": 30, "successRate": 0.94, "uniqueKeys": 8, "uniqueTools": 3, "peakHour": "2025-01-15T14", "peakHourCalls": 85 },
+  "toolPopularity": [{ "tool": "summarize", "calls": 250, "successRate": 0.96, "credits": 2500 }],
+  "hourlyVolume": [{ "hour": "2025-01-15T14", "calls": 85, "allowed": 80, "denied": 5, "credits": 400 }],
+  "topConsumers": [{ "name": "heavy-user", "calls": 150, "successRate": 0.92, "credits": 1380 }],
+  "byNamespace": [{ "namespace": "production", "calls": 400, "allowed": 380, "credits": 3800 }]
+}
+```
+
+Returns traffic summary with success rate and peak hour, tool popularity ranked by call count with success rates and credit totals, hourly volume (last 24 hours) with allowed/denied/credit breakdowns, top 10 consumers by call count, and namespace breakdown with per-namespace stats. Read-only.
 
 ### IP Allowlisting
 

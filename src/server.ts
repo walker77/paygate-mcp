@@ -852,6 +852,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/traffic':
+        if (req.method === 'GET') return this.handleTrafficAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1434,6 +1439,7 @@ export class PayGateServer {
         rateLimitAnalysis: 'GET /admin/rate-limits — Rate limit utilization analysis with per-key and per-tool breakdown, denial trends, and most throttled keys (requires X-Admin-Key)',
         quotaAnalysis: 'GET /admin/quotas — Quota utilization analysis with per-key and per-tool breakdown, denial trends, most constrained keys, and configuration display (requires X-Admin-Key)',
         denialAnalysis: 'GET /admin/denials — Comprehensive denial breakdown by reason type with per-key and per-tool stats, hourly trends, and most denied keys (requires X-Admin-Key)',
+        trafficAnalysis: 'GET /admin/traffic — Traffic volume analysis with tool popularity, hourly volume, top consumers, namespace breakdown, and peak hour identification (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -5521,6 +5527,137 @@ export class PayGateServer {
       perTool,
       hourlyTrends,
       mostDenied,
+    }));
+  }
+
+  // ─── /admin/traffic — Traffic volume analysis ─────────────────────────────
+
+  private handleTrafficAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+
+    // ── Summary ──
+    let totalCalls = 0;
+    let totalAllowed = 0;
+    let totalDenied = 0;
+    const uniqueKeysSet = new Set<string>();
+    const uniqueToolsSet = new Set<string>();
+
+    for (const e of events) {
+      totalCalls++;
+      if (e.allowed) totalAllowed++;
+      else totalDenied++;
+      uniqueKeysSet.add(e.keyName || e.apiKey.slice(0, 10));
+      uniqueToolsSet.add(e.tool);
+    }
+    const successRate = totalCalls > 0
+      ? Math.round(totalAllowed / totalCalls * 10000) / 10000
+      : 0;
+
+    // ── Tool popularity ──
+    const toolMap = new Map<string, { calls: number; allowed: number; credits: number }>();
+    for (const e of events) {
+      if (!toolMap.has(e.tool)) toolMap.set(e.tool, { calls: 0, allowed: 0, credits: 0 });
+      const t = toolMap.get(e.tool)!;
+      t.calls++;
+      if (e.allowed) {
+        t.allowed++;
+        t.credits += e.creditsCharged;
+      }
+    }
+    const toolPopularity = Array.from(toolMap.entries())
+      .map(([tool, stats]) => ({
+        tool,
+        calls: stats.calls,
+        successRate: stats.calls > 0 ? Math.round(stats.allowed / stats.calls * 10000) / 10000 : 0,
+        credits: stats.credits,
+      }))
+      .sort((a, b) => b.calls - a.calls);
+
+    // ── Hourly volume ──
+    const hourBuckets = new Map<string, { calls: number; allowed: number; denied: number; credits: number }>();
+    for (const e of events) {
+      const hour = e.timestamp.slice(0, 13);
+      if (!hourBuckets.has(hour)) hourBuckets.set(hour, { calls: 0, allowed: 0, denied: 0, credits: 0 });
+      const h = hourBuckets.get(hour)!;
+      h.calls++;
+      if (e.allowed) {
+        h.allowed++;
+        h.credits += e.creditsCharged;
+      } else {
+        h.denied++;
+      }
+    }
+    const hourlyVolume = Array.from(hourBuckets.entries())
+      .map(([hour, stats]) => ({ hour, ...stats }))
+      .sort((a, b) => a.hour.localeCompare(b.hour))
+      .slice(-24);
+
+    // ── Peak hour ──
+    let peakHour: string | null = null;
+    let peakHourCalls = 0;
+    for (const h of hourlyVolume) {
+      if (h.calls > peakHourCalls) {
+        peakHour = h.hour;
+        peakHourCalls = h.calls;
+      }
+    }
+
+    // ── Top consumers (by call count) ──
+    const keyMap = new Map<string, { name: string; calls: number; allowed: number; credits: number }>();
+    for (const e of events) {
+      const name = e.keyName || e.apiKey.slice(0, 10);
+      if (!keyMap.has(name)) keyMap.set(name, { name, calls: 0, allowed: 0, credits: 0 });
+      const k = keyMap.get(name)!;
+      k.calls++;
+      if (e.allowed) {
+        k.allowed++;
+        k.credits += e.creditsCharged;
+      }
+    }
+    const topConsumers = Array.from(keyMap.values())
+      .map(k => ({
+        name: k.name,
+        calls: k.calls,
+        successRate: k.calls > 0 ? Math.round(k.allowed / k.calls * 10000) / 10000 : 0,
+        credits: k.credits,
+      }))
+      .sort((a, b) => b.calls - a.calls)
+      .slice(0, 10);
+
+    // ── Namespace breakdown ──
+    const nsMap = new Map<string, { calls: number; allowed: number; credits: number }>();
+    for (const e of events) {
+      const ns = e.namespace || 'default';
+      if (!nsMap.has(ns)) nsMap.set(ns, { calls: 0, allowed: 0, credits: 0 });
+      const n = nsMap.get(ns)!;
+      n.calls++;
+      if (e.allowed) {
+        n.allowed++;
+        n.credits += e.creditsCharged;
+      }
+    }
+    const byNamespace = Array.from(nsMap.entries())
+      .map(([namespace, stats]) => ({ namespace, ...stats }))
+      .sort((a, b) => b.calls - a.calls);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalCalls,
+        totalAllowed,
+        totalDenied,
+        successRate,
+        uniqueKeys: uniqueKeysSet.size,
+        uniqueTools: uniqueToolsSet.size,
+        peakHour,
+        peakHourCalls,
+      },
+      toolPopularity,
+      hourlyVolume,
+      topConsumers,
+      byNamespace,
     }));
   }
 
