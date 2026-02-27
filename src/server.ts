@@ -1052,6 +1052,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/credit-allocation':
+        if (req.method === 'GET') return this.handleCreditAllocation(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1674,6 +1679,7 @@ export class PayGateServer {
         peakUsage: 'GET /admin/peak-usage — Traffic patterns by hour-of-day with requests, credits, consumers per hour for capacity planning (requires X-Admin-Key)',
         consumerActivity: 'GET /admin/consumer-activity — Per-consumer activity with calls, spend, credits remaining, last active time, and status (requires X-Admin-Key)',
         toolPopularity: 'GET /admin/tool-popularity — Tool usage popularity with call counts, credits, unique consumers, and percentage breakdown (requires X-Admin-Key)',
+        creditAllocation: 'GET /admin/credit-allocation — Credit allocation summary with tier breakdown, totals, and average allocation across active keys (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8688,6 +8694,89 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/credit-allocation — Credit allocation summary ────────────────
+
+  private handleCreditAllocation(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        tiers: [],
+        summary: {
+          totalKeys: 0,
+          totalAllocated: 0,
+          totalRemaining: 0,
+          totalSpent: 0,
+          averageAllocation: 0,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Calculate allocation per key (credits remaining + totalSpent = original allocation)
+    const allocations = activeRecords.map(rec => ({
+      allocated: rec.credits + (rec.totalSpent || 0),
+      remaining: rec.credits,
+      spent: rec.totalSpent || 0,
+    }));
+
+    const totalAllocated = allocations.reduce((s, a) => s + a.allocated, 0);
+    const totalRemaining = allocations.reduce((s, a) => s + a.remaining, 0);
+    const totalSpent = allocations.reduce((s, a) => s + a.spent, 0);
+
+    // Classify into tiers
+    const tierDefs = [
+      { tier: '1-100', min: 1, max: 100 },
+      { tier: '101-500', min: 101, max: 500 },
+      { tier: '501+', min: 501, max: Infinity },
+    ];
+
+    const tierMap = new Map<string, { count: number; totalCredits: number }>();
+    for (const a of allocations) {
+      for (const td of tierDefs) {
+        if (a.allocated >= td.min && a.allocated <= td.max) {
+          const existing = tierMap.get(td.tier) || { count: 0, totalCredits: 0 };
+          existing.count++;
+          existing.totalCredits += a.allocated;
+          tierMap.set(td.tier, existing);
+          break;
+        }
+      }
+    }
+
+    // Build tiers array sorted ascending by tier order
+    const tierOrder = ['1-100', '101-500', '501+'];
+    const tiers = tierOrder
+      .filter(t => tierMap.has(t))
+      .map(t => {
+        const d = tierMap.get(t)!;
+        return {
+          tier: t,
+          count: d.count,
+          totalCredits: d.totalCredits,
+          percentage: totalAllocated > 0 ? Math.round((d.totalCredits / totalAllocated) * 10000) / 100 : 0,
+        };
+      });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tiers,
+      summary: {
+        totalKeys: activeRecords.length,
+        totalAllocated,
+        totalRemaining,
+        totalSpent,
+        averageAllocation: Math.round(totalAllocated / activeRecords.length),
       },
       generatedAt: new Date().toISOString(),
     }));

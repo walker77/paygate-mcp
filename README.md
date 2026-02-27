@@ -154,6 +154,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Peak Usage Times** — `GET /admin/peak-usage` traffic patterns by hour-of-day with request counts, credits, unique consumers, and peak hour identification
 - **Consumer Activity** — `GET /admin/consumer-activity` per-consumer activity metrics with calls, spend, credits remaining, last active time, and active/inactive status
 - **Tool Popularity** — `GET /admin/tool-popularity` tool usage popularity with call counts, credits, unique consumers, percentage, and most popular tool identification
+- **Credit Allocation Summary** — `GET /admin/credit-allocation` credit allocation across active keys with tier breakdown (1-100, 101-500, 501+), totals, and average allocation
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3573,6 +3574,26 @@ curl http://localhost:3000/admin/tool-popularity -H "X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
 Tool usage popularity ranking. Per-tool: total calls, credits spent, unique consumers, and call percentage. Only counts allowed (successful) requests. `mostPopular` identifies the most-called tool. Sorted by call count descending. Read-only.
+
+### Credit Allocation Summary
+
+```bash
+curl http://localhost:3000/admin/credit-allocation -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "tiers": [
+    { "tier": "1-100", "count": 15, "totalCredits": 750, "percentage": 5.0 },
+    { "tier": "101-500", "count": 30, "totalCredits": 9000, "percentage": 60.0 },
+    { "tier": "501+", "count": 5, "totalCredits": 5250, "percentage": 35.0 }
+  ],
+  "summary": { "totalKeys": 50, "totalAllocated": 15000, "totalRemaining": 12000, "totalSpent": 3000, "averageAllocation": 300 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Credit allocation distribution across active keys. Groups keys into allocation tiers (1-100, 101-500, 501+) with count, total credits, and percentage per tier. Summary includes total keys, total allocated/remaining/spent credits, and average allocation per key. Excludes revoked/suspended keys. Read-only.
 
 ### IP Allowlisting
 
