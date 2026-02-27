@@ -882,6 +882,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/compliance':
+        if (req.method === 'GET') return this.handleComplianceReport(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1470,6 +1475,7 @@ export class PayGateServer {
         keyPortfolio: 'GET /admin/key-portfolio — Key portfolio health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown (requires X-Admin-Key)',
         anomalyDetection: 'GET /admin/anomalies — Anomaly detection identifying high denial rates, rapid credit depletion, low credit balances, and other unusual patterns (requires X-Admin-Key)',
         usageForecasting: 'GET /admin/forecast — Usage forecasting with per-key depletion estimates, system-wide consumption trends, per-tool breakdown, and at-risk key identification (requires X-Admin-Key)',
+        complianceReport: 'GET /admin/compliance — Compliance report with key governance, access control coverage, audit trail completeness, recommendations, and overall compliance score (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6165,6 +6171,114 @@ export class PayGateServer {
         totalCalls,
         byTool,
       },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/compliance — Compliance Report ──────────────────────────────
+
+  private handleComplianceReport(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active);
+
+    // ── Key Governance ──
+    const totalKeys = activeRecords.length;
+    let keysWithExpiry = 0;
+    let keysWithoutExpiry = 0;
+
+    for (const r of activeRecords) {
+      if (r.expiresAt) keysWithExpiry++;
+      else keysWithoutExpiry++;
+    }
+
+    // ── Access Control ──
+    let keysWithAcl = 0;
+    let keysWithoutAcl = 0;
+    let keysWithIpRestriction = 0;
+    let keysWithoutIpRestriction = 0;
+    let keysWithSpendingLimit = 0;
+    let keysWithoutSpendingLimit = 0;
+
+    for (const r of activeRecords) {
+      if (r.allowedTools && r.allowedTools.length > 0) keysWithAcl++;
+      else keysWithoutAcl++;
+
+      if (r.ipAllowlist && r.ipAllowlist.length > 0) keysWithIpRestriction++;
+      else keysWithoutIpRestriction++;
+
+      if (r.spendingLimit && r.spendingLimit > 0) keysWithSpendingLimit++;
+      else keysWithoutSpendingLimit++;
+    }
+
+    // ── Audit Trail ──
+    const totalEvents = events.length;
+    const tools = new Set<string>();
+    const keys = new Set<string>();
+    for (const e of events) {
+      if (e.tool) tools.add(e.tool);
+      if (e.keyName || e.apiKey) keys.add(e.keyName || e.apiKey);
+    }
+
+    // ── Overall Score (0-100) ──
+    // Weighted: expiry 25%, ACL 25%, IP 20%, spending limit 15%, audit trail 15%
+    let score = 100;
+    if (totalKeys > 0) {
+      const expiryPct = keysWithExpiry / totalKeys;
+      const aclPct = keysWithAcl / totalKeys;
+      const ipPct = keysWithIpRestriction / totalKeys;
+      const spendPct = keysWithSpendingLimit / totalKeys;
+      score = Math.round(
+        expiryPct * 25 +
+        aclPct * 25 +
+        ipPct * 20 +
+        spendPct * 15 +
+        (totalEvents > 0 ? 15 : 0)
+      );
+    }
+
+    // ── Recommendations ──
+    const recommendations: string[] = [];
+    if (keysWithoutExpiry > 0) {
+      recommendations.push(`Set expiry dates on ${keysWithoutExpiry} key(s) without time-limited access`);
+    }
+    if (keysWithoutAcl > 0) {
+      recommendations.push(`Add tool ACL restrictions to ${keysWithoutAcl} key(s) with unrestricted tool access`);
+    }
+    if (keysWithoutIpRestriction > 0) {
+      recommendations.push(`Add IP allowlists to ${keysWithoutIpRestriction} key(s) accessible from any IP`);
+    }
+    if (keysWithoutSpendingLimit > 0) {
+      recommendations.push(`Set spending limits on ${keysWithoutSpendingLimit} key(s) without cost controls`);
+    }
+    if (totalEvents === 0 && totalKeys > 0) {
+      recommendations.push('No usage events recorded — ensure audit trail is capturing tool calls');
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      keyGovernance: {
+        totalKeys,
+        keysWithExpiry,
+        keysWithoutExpiry,
+      },
+      accessControl: {
+        keysWithAcl,
+        keysWithoutAcl,
+        keysWithIpRestriction,
+        keysWithoutIpRestriction,
+        keysWithSpendingLimit,
+        keysWithoutSpendingLimit,
+      },
+      auditTrail: {
+        totalEvents,
+        uniqueTools: tools.size,
+        uniqueKeys: keys.size,
+      },
+      overallScore: score,
+      recommendations,
       generatedAt: new Date().toISOString(),
     }));
   }

@@ -120,6 +120,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Portfolio Health** — `GET /admin/key-portfolio` portfolio-wide key health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown
 - **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
 - **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
+- **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2763,6 +2764,32 @@ curl http://localhost:3000/admin/forecast -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Forecasts credit consumption for all active keys: per-key depletion estimates with calls remaining, at-risk identification (<=5 estimated calls), system-wide credit aggregates, and per-tool cost breakdown sorted by revenue. Keys with no usage history show `estimatedCallsRemaining: null`. Read-only.
+
+### Compliance Report
+
+```bash
+curl http://localhost:3000/admin/compliance -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "keyGovernance": { "totalKeys": 5, "keysWithExpiry": 3, "keysWithoutExpiry": 2 },
+  "accessControl": {
+    "keysWithAcl": 3, "keysWithoutAcl": 2,
+    "keysWithIpRestriction": 2, "keysWithoutIpRestriction": 3,
+    "keysWithSpendingLimit": 4, "keysWithoutSpendingLimit": 1
+  },
+  "auditTrail": { "totalEvents": 150, "uniqueTools": 5, "uniqueKeys": 4 },
+  "overallScore": 72,
+  "recommendations": [
+    "Set expiry dates on 2 key(s) without time-limited access",
+    "Add tool ACL restrictions to 2 key(s) with unrestricted tool access"
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Compliance-ready report scoring key governance (expiry 25%), access control (ACL 25%, IP 20%, spending limits 15%), and audit trail (15%). Actionable recommendations for each gap. Read-only.
 
 ### IP Allowlisting
 
