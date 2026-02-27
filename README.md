@@ -150,6 +150,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Error Breakdown** — `GET /admin/error-breakdown` categorizes denied requests by reason with counts, percentages, affected consumers, and error rate
 - **Credit Utilization Rate** — `GET /admin/credit-utilization` shows utilization percentage across active keys with utilization bands and over-provisioning detection
 - **Namespace Revenue** — `GET /admin/namespace-revenue` revenue breakdown by namespace with spend, call counts, key counts, and percentage breakdown
+- **Group Revenue** — `GET /admin/group-revenue` revenue breakdown by key group with spend, call counts, key counts, and percentage breakdown
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3490,6 +3491,26 @@ curl http://localhost:3000/admin/namespace-revenue -H "X-Admin-Key: YOUR_ADMIN_K
 ```
 
 Revenue breakdown by namespace. Keys without a namespace are grouped as "default". Per-namespace: total credits spent, call count, key count, and revenue percentage. `topNamespace` is the highest revenue generator. Excludes revoked/suspended keys. Sorted by spend descending. Read-only.
+
+### Group Revenue
+
+```bash
+curl http://localhost:3000/admin/group-revenue -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "groups": [
+    { "group": "premium", "totalSpent": 2000, "totalCalls": 400, "keyCount": 8, "percentage": 65 },
+    { "group": "free-tier", "totalSpent": 800, "totalCalls": 160, "keyCount": 12, "percentage": 26 },
+    { "group": "ungrouped", "totalSpent": 280, "totalCalls": 56, "keyCount": 3, "percentage": 9 }
+  ],
+  "summary": { "totalGroups": 3, "totalRevenue": 3080, "topGroup": "premium" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Revenue breakdown by key group. Keys not assigned to any group are shown as "ungrouped". Group IDs are resolved to human-readable names. Per-group: total credits spent, call count, key count, and revenue percentage. `topGroup` is the highest revenue generator. Excludes revoked/suspended keys. Sorted by spend descending. Read-only.
 
 ### IP Allowlisting
 
