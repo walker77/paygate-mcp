@@ -1,5 +1,15 @@
 # Changelog
 
+## 8.68.0 (2026-02-27)
+
+### CI/CD
+- **Enhanced GitHub Actions CI** — coverage reporting job (80% threshold gate), Docker build verification job
+- Coverage check fails CI if lines or functions drop below 80%
+- Docker job builds image and verifies `/health` endpoint responds
+- Multi-node matrix testing: Node.js 18, 20, 22
+
+---
+
 ## 8.67.0 (2026-02-27)
 
 ### Load Testing
