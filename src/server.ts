@@ -927,6 +927,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/audit-summary':
+        if (req.method === 'GET') return this.handleAuditSummary(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1524,6 +1529,7 @@ export class PayGateServer {
         creditFlow: 'GET /admin/credit-flow — Credit inflow/outflow analysis with utilization, top spenders, and per-tool spend breakdown (requires X-Admin-Key)',
         keyAge: 'GET /admin/key-age — Key age distribution with oldest/newest keys, age buckets, and recently created list (requires X-Admin-Key)',
         namespaceUsage: 'GET /admin/namespace-usage — Per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison (requires X-Admin-Key)',
+        auditSummary: 'GET /admin/audit-summary — Audit event analytics with type breakdown, top actors, recent events, and activity summary (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6918,6 +6924,56 @@ export class PayGateServer {
     res.end(JSON.stringify({
       summary: { totalNamespaces: nsMap.size },
       namespaces,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/audit-summary — Audit event analytics ───────────────────────
+
+  private handleAuditSummary(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const stats = this.audit.stats();
+    const allEvents = this.audit.exportAll();
+
+    // ── Event type breakdown sorted by count descending ──
+    const eventsByType = Object.entries(stats.eventsByType)
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count);
+
+    // ── Top actors by event count (top 10) ──
+    const actorMap = new Map<string, number>();
+    for (const e of allEvents) {
+      actorMap.set(e.actor, (actorMap.get(e.actor) || 0) + 1);
+    }
+    const topActors = Array.from(actorMap.entries())
+      .map(([actor, count]) => ({ actor, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    // ── Recent events (newest first, max 20) ──
+    const recentEvents = allEvents.length > 0
+      ? allEvents.slice(-20).reverse().map(e => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          type: e.type,
+          actor: e.actor,
+          message: e.message,
+        }))
+      : [];
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalEvents: stats.totalEvents,
+        eventsLastHour: stats.eventsLastHour,
+        eventsLast24h: stats.eventsLast24h,
+        oldestEvent: stats.oldestEvent,
+        newestEvent: stats.newestEvent,
+      },
+      eventsByType,
+      topActors,
+      recentEvents,
       generatedAt: new Date().toISOString(),
     }));
   }

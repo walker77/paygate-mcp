@@ -129,6 +129,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Flow Analysis** — `GET /admin/credit-flow` credit inflow/outflow analysis with utilization percentage, top spenders, and per-tool spend breakdown
 - **Key Age Analysis** — `GET /admin/key-age` key age distribution with oldest/newest keys, age buckets (24h/7d/30d/older), and recently created list
 - **Namespace Usage Summary** — `GET /admin/namespace-usage` per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison
+- **Audit Summary** — `GET /admin/audit-summary` audit event analytics with type breakdown, top actors, recent events, and activity summary
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2983,6 +2984,33 @@ curl http://localhost:3000/admin/namespace-usage -H "X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
 Per-namespace usage metrics: key counts, credit allocation/spending/remaining, call counts, and utilization percentages. Sorted by spending (highest first). Keys without a namespace appear under "default". Read-only.
+
+### Audit Summary
+
+```bash
+curl http://localhost:3000/admin/audit-summary -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalEvents": 142, "eventsLastHour": 18, "eventsLast24h": 95, "oldestEvent": "2025-01-14T08:00:00Z", "newestEvent": "2025-01-15T14:30:00Z" },
+  "eventsByType": [
+    { "type": "gate.allow", "count": 80 },
+    { "type": "gate.deny", "count": 25 },
+    { "type": "key.created", "count": 12 }
+  ],
+  "topActors": [
+    { "actor": "pg_abc1...", "count": 60 },
+    { "actor": "admin", "count": 30 }
+  ],
+  "recentEvents": [
+    { "id": 142, "timestamp": "2025-01-15T14:30:00Z", "type": "gate.allow", "actor": "pg_abc1...", "message": "Allowed: tool_a" }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Audit event analytics: total events with hourly/daily counts, event type breakdown sorted by frequency, top 10 most active actors, and the 20 most recent events (newest first). Read-only.
 
 ### IP Allowlisting
 
