@@ -101,6 +101,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Activity Timeline** — `GET /keys/activity?key=...` returns a unified chronological feed of audit events and usage events for a specific key — newest first, optional `?since=` and `?limit=` filters, alias support
 - **Credit Reservations** — `POST /keys/reserve` holds credits, `POST /keys/reserve/commit` deducts held credits, `POST /keys/reserve/release` frees the hold, `GET /keys/reserve` lists active reservations — prevents overcommit, configurable TTL (10s–1h), max 50 per key, auto-expiry, audit trail
 - **Request Log** — `GET /requests` queryable log of every tool call with timing, credits charged, status (allowed/denied), deny reason, key, and request ID — filter by key/tool/status/since, pagination, summary statistics (totals + avg duration), 5000-entry ring buffer
+- **Tool Stats** — `GET /tools/stats` per-tool analytics: call counts, success rate, avg/p95 latency, credits consumed, deny reason breakdown, top 10 consumers — optional `?tool=` for detailed single-tool view, `?since=` filter
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2142,6 +2143,67 @@ curl "http://localhost:3402/requests?tool=my_tool&status=allowed&limit=10" \
 ```
 
 5000-entry ring buffer. Summary statistics are computed on filtered results. Deny reasons: `insufficient_credits`, `rate_limited`, `invalid_api_key`, `key_suspended`, `api_key_expired`, `tool_not_allowed`, `quota_exceeded`.
+
+### Tool Stats
+
+Per-tool analytics derived from the request log:
+
+```bash
+# Overview of all tools
+curl "http://localhost:3402/tools/stats" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Detailed stats for a specific tool
+curl "http://localhost:3402/tools/stats?tool=my_tool" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by time range
+curl "http://localhost:3402/tools/stats?since=2025-03-01T00:00:00Z" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response (overview):**
+
+```json
+{
+  "totalTools": 3,
+  "totalCalls": 150,
+  "tools": [
+    {
+      "tool": "my_tool",
+      "totalCalls": 100,
+      "allowed": 95,
+      "denied": 5,
+      "successRate": 95,
+      "totalCredits": 475,
+      "avgDurationMs": 42
+    }
+  ]
+}
+```
+
+**Response (detailed `?tool=my_tool`):**
+
+```json
+{
+  "tool": "my_tool",
+  "totalCalls": 100,
+  "allowed": 95,
+  "denied": 5,
+  "successRate": 95,
+  "totalCredits": 475,
+  "avgDurationMs": 42,
+  "p95DurationMs": 120,
+  "denyReasons": {
+    "insufficient_credits": 3,
+    "rate_limited": 2
+  },
+  "topConsumers": [
+    { "key": "pg_abc1...2345", "calls": 50, "credits": 250 },
+    { "key": "pg_xyz9...8765", "calls": 30, "credits": 150 }
+  ]
+}
+```
+
+Top consumers limited to 10. Tools sorted by call count in overview. Data sourced from request log (5000-entry ring buffer).
 
 ### IP Allowlisting
 

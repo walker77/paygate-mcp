@@ -723,6 +723,11 @@ export class PayGateServer {
         return this.handleMetrics(req, res);
       case '/analytics':
         return this.handleAnalytics(req, res);
+      case '/tools/stats':
+        if (req.method === 'GET') return this.handleToolStats(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       case '/alerts':
         if (req.method === 'GET') return this.handleGetAlerts(req, res);
         if (req.method === 'POST') return this.handleConfigureAlerts(req, res);
@@ -1356,6 +1361,7 @@ export class PayGateServer {
         keyActivity: 'GET /keys/activity?key=... — Unified activity timeline for a key (requires X-Admin-Key)',
         creditReservations: 'POST /keys/reserve to hold credits, POST /keys/reserve/commit to deduct, POST /keys/reserve/release to release, GET /keys/reserve to list (requires X-Admin-Key)',
         requestLog: 'GET /requests — Queryable log of tool call requests with timing, credits, status (requires X-Admin-Key)',
+        toolStats: 'GET /tools/stats — Per-tool call counts, success rates, latency, credits, and top consumers (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6941,5 +6947,124 @@ export class PayGateServer {
       },
       requests: page,
     }));
+  }
+
+  // ─── /tools/stats — Per-tool analytics from request log ────────────────────
+
+  private handleToolStats(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const sinceFilter = params.get('since');
+    const toolFilter = params.get('tool');
+
+    let entries = this.requestLog;
+
+    // Filter by since
+    if (sinceFilter) {
+      const sinceTime = new Date(sinceFilter).getTime();
+      if (!isNaN(sinceTime)) {
+        entries = entries.filter(e => new Date(e.timestamp).getTime() >= sinceTime);
+      }
+    }
+
+    // If specific tool requested, return detailed stats for just that tool
+    if (toolFilter) {
+      const toolEntries = entries.filter(e => e.tool === toolFilter);
+      const allowed = toolEntries.filter(e => e.status === 'allowed');
+      const denied = toolEntries.filter(e => e.status === 'denied');
+      const totalCredits = toolEntries.reduce((sum, e) => sum + e.credits, 0);
+      const avgDurationMs = toolEntries.length > 0
+        ? Math.round(toolEntries.reduce((sum, e) => sum + e.durationMs, 0) / toolEntries.length)
+        : 0;
+      const p95 = this.percentile(toolEntries.map(e => e.durationMs), 95);
+
+      // Deny reason breakdown
+      const denyReasons: Record<string, number> = {};
+      for (const e of denied) {
+        const reason = e.denyReason || 'unknown';
+        denyReasons[reason] = (denyReasons[reason] || 0) + 1;
+      }
+
+      // Top consumers by call count
+      const consumerCalls: Record<string, number> = {};
+      const consumerCredits: Record<string, number> = {};
+      for (const e of toolEntries) {
+        consumerCalls[e.key] = (consumerCalls[e.key] || 0) + 1;
+        consumerCredits[e.key] = (consumerCredits[e.key] || 0) + e.credits;
+      }
+      const topConsumers = Object.entries(consumerCalls)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([key, calls]) => ({ key, calls, credits: consumerCredits[key] || 0 }));
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        tool: toolFilter,
+        totalCalls: toolEntries.length,
+        allowed: allowed.length,
+        denied: denied.length,
+        successRate: toolEntries.length > 0
+          ? Math.round((allowed.length / toolEntries.length) * 10000) / 100
+          : 0,
+        totalCredits,
+        avgDurationMs,
+        p95DurationMs: p95,
+        denyReasons,
+        topConsumers,
+      }));
+      return;
+    }
+
+    // Aggregate stats per tool
+    const toolMap: Record<string, {
+      calls: number;
+      allowed: number;
+      denied: number;
+      credits: number;
+      totalDurationMs: number;
+    }> = {};
+
+    for (const e of entries) {
+      if (!toolMap[e.tool]) {
+        toolMap[e.tool] = { calls: 0, allowed: 0, denied: 0, credits: 0, totalDurationMs: 0 };
+      }
+      const t = toolMap[e.tool];
+      t.calls++;
+      if (e.status === 'allowed') t.allowed++;
+      else t.denied++;
+      t.credits += e.credits;
+      t.totalDurationMs += e.durationMs;
+    }
+
+    const tools = Object.entries(toolMap)
+      .map(([tool, stats]) => ({
+        tool,
+        totalCalls: stats.calls,
+        allowed: stats.allowed,
+        denied: stats.denied,
+        successRate: stats.calls > 0
+          ? Math.round((stats.allowed / stats.calls) * 10000) / 100
+          : 0,
+        totalCredits: stats.credits,
+        avgDurationMs: stats.calls > 0 ? Math.round(stats.totalDurationMs / stats.calls) : 0,
+      }))
+      .sort((a, b) => b.totalCalls - a.totalCalls);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      totalTools: tools.length,
+      totalCalls: entries.length,
+      tools,
+    }));
+  }
+
+  /** Calculate percentile from an array of numbers. */
+  private percentile(values: number[], p: number): number {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const idx = Math.ceil((p / 100) * sorted.length) - 1;
+    return sorted[Math.max(0, idx)];
   }
 }
