@@ -1007,6 +1007,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/tool-revenue':
+        if (req.method === 'GET') return this.handleToolRevenue(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1620,6 +1625,7 @@ export class PayGateServer {
         creditDistribution: 'GET /admin/credit-distribution — Histogram of credit balances across active keys with configurable buckets and median calculation (requires X-Admin-Key)',
         responseTimeDistribution: 'GET /admin/response-time-distribution — Histogram of response times with latency buckets, percentiles p50/p95/p99, and performance analysis (requires X-Admin-Key)',
         consumerLifetimeValue: 'GET /admin/consumer-lifetime-value — Per-consumer value metrics with spend, calls, tool diversity, and tier classification (requires X-Admin-Key)',
+        toolRevenue: 'GET /admin/tool-revenue — Tool revenue ranking with credits consumed, call counts, unique consumers, and percentage breakdown (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8101,6 +8107,61 @@ export class PayGateServer {
         avgLifetimeValue: activeRecords.length > 0
           ? Math.round(totalLifetimeValue / activeRecords.length)
           : 0,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/tool-revenue — Tool revenue ranking ──────────────────────────
+
+  private handleToolRevenue(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    // Aggregate from requestLog: only allowed requests
+    const toolMap = new Map<string, { totalCredits: number; callCount: number; consumers: Set<string> }>();
+
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      let data = toolMap.get(entry.tool);
+      if (!data) {
+        data = { totalCredits: 0, callCount: 0, consumers: new Set() };
+        toolMap.set(entry.tool, data);
+      }
+      data.totalCredits += entry.credits || 0;
+      data.callCount += 1;
+      data.consumers.add(entry.key);
+    }
+
+    if (toolMap.size === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        tools: [],
+        summary: { totalTools: 0, totalRevenue: 0, topTool: null },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const totalRevenue = Array.from(toolMap.values()).reduce((s, d) => s + d.totalCredits, 0);
+
+    const tools = Array.from(toolMap.entries())
+      .map(([tool, data]) => ({
+        tool,
+        totalCredits: data.totalCredits,
+        callCount: data.callCount,
+        avgCreditsPerCall: data.callCount > 0 ? Math.round(data.totalCredits / data.callCount) : 0,
+        uniqueConsumers: data.consumers.size,
+        percentage: totalRevenue > 0 ? Math.round((data.totalCredits / totalRevenue) * 100) : 0,
+      }))
+      .sort((a, b) => b.totalCredits - a.totalCredits);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tools,
+      summary: {
+        totalTools: tools.length,
+        totalRevenue,
+        topTool: tools[0]?.tool || null,
       },
       generatedAt: new Date().toISOString(),
     }));

@@ -145,6 +145,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Distribution** — `GET /admin/credit-distribution` histogram of credit balances across active keys with bucket ranges and median calculation
 - **Response Time Distribution** — `GET /admin/response-time-distribution` histogram of response times with latency buckets and p50/p95/p99 percentiles
 - **Consumer Lifetime Value** — `GET /admin/consumer-lifetime-value` per-consumer spend analysis with value tiers, tool diversity, and top spender rankings
+- **Tool Revenue Ranking** — `GET /admin/tool-revenue` ranks tools by total credits consumed with call counts, unique consumers, and percentage breakdown
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3384,6 +3385,26 @@ curl http://localhost:3000/admin/consumer-lifetime-value -H "X-Admin-Key: YOUR_A
 ```
 
 Per-consumer value analysis for active keys with usage. Value tiers: **high** (100+ credits spent), **medium** (10–99), **low** (<10). `toolsUsed` shows tool diversity. Top 20 consumers by lifetime value. Zero-spend consumers excluded from list. `avgLifetimeValue` uses all active keys as denominator. Read-only.
+
+### Tool Revenue Ranking
+
+```bash
+curl http://localhost:3000/admin/tool-revenue -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "tools": [
+    { "tool": "code_review", "totalCredits": 1500, "callCount": 300, "avgCreditsPerCall": 5, "uniqueConsumers": 25, "percentage": 60 },
+    { "tool": "generate_tests", "totalCredits": 750, "callCount": 150, "avgCreditsPerCall": 5, "uniqueConsumers": 18, "percentage": 30 },
+    { "tool": "lint_check", "totalCredits": 250, "callCount": 50, "avgCreditsPerCall": 5, "uniqueConsumers": 12, "percentage": 10 }
+  ],
+  "summary": { "totalTools": 3, "totalRevenue": 2500, "topTool": "code_review" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Ranks tools by total credits consumed from allowed requests. Each tool entry includes call count, average credits per call, unique consumer count, and revenue percentage. `topTool` is the highest revenue generator. Only allowed requests are counted; denied requests are excluded. Sorted by total credits descending. Read-only.
 
 ### IP Allowlisting
 
