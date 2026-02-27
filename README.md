@@ -142,6 +142,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Churn Analysis** — `GET /admin/key-churn` key churn metrics with creation/revocation rates, churn and retention percentages, and never-used key detection
 - **Tool Correlation** — `GET /admin/tool-correlation` tool co-occurrence analysis showing which tools are commonly used together by the same consumers
 - **Consumer Segmentation** — `GET /admin/consumer-segmentation` classifies API key consumers into power/regular/casual/dormant segments with per-segment metrics
+- **Credit Distribution** — `GET /admin/credit-distribution` histogram of credit balances across active keys with bucket ranges and median calculation
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3318,6 +3319,28 @@ curl http://localhost:3000/admin/consumer-segmentation -H "X-Admin-Key: YOUR_ADM
 ```
 
 Classifies active API key consumers into segments based on usage: **power** (20+ calls), **regular** (5–19 calls), **casual** (1–4 calls), **dormant** (0 calls). Each segment includes aggregate metrics: count, total credits remaining, total spent, and average calls per key. Excludes revoked and suspended keys. Read-only.
+
+### Credit Distribution
+
+```bash
+curl http://localhost:3000/admin/credit-distribution -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "buckets": [
+    { "range": "0-10", "count": 5, "totalCredits": 30 },
+    { "range": "11-50", "count": 12, "totalCredits": 420 },
+    { "range": "51-100", "count": 8, "totalCredits": 640 },
+    { "range": "101-500", "count": 4, "totalCredits": 1200 },
+    { "range": "1001+", "count": 2, "totalCredits": 5000 }
+  ],
+  "summary": { "totalKeys": 31, "medianCredits": 50 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Histogram of credit balances across active, non-suspended keys. Buckets: 0–10, 11–50, 51–100, 101–500, 501–1000, 1001+. Only non-empty buckets are returned. `medianCredits` is the median remaining balance. Useful for pricing analysis and capacity planning. Read-only.
 
 ### IP Allowlisting
 

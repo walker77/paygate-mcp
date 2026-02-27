@@ -992,6 +992,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/credit-distribution':
+        if (req.method === 'GET') return this.handleCreditDistribution(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1602,6 +1607,7 @@ export class PayGateServer {
         keyChurn: 'GET /admin/key-churn — Key churn analysis with creation/revocation rates, churn and retention percentages, and never-used key detection (requires X-Admin-Key)',
         toolCorrelation: 'GET /admin/tool-correlation — Tool co-occurrence analysis showing which tools are commonly used together by the same consumers (requires X-Admin-Key)',
         consumerSegmentation: 'GET /admin/consumer-segmentation — Consumer classification into power/regular/casual/dormant segments with per-segment metrics (requires X-Admin-Key)',
+        creditDistribution: 'GET /admin/credit-distribution — Histogram of credit balances across active keys with configurable buckets and median calculation (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7853,6 +7859,81 @@ export class PayGateServer {
       segments,
       summary: {
         totalConsumers: activeRecords.length,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/credit-distribution — Credit balance histogram ───────────────
+
+  private handleCreditDistribution(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        buckets: [],
+        summary: { totalKeys: 0, medianCredits: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Define bucket ranges
+    const bucketDefs = [
+      { range: '0-10', min: 0, max: 10 },
+      { range: '11-50', min: 11, max: 50 },
+      { range: '51-100', min: 51, max: 100 },
+      { range: '101-500', min: 101, max: 500 },
+      { range: '501-1000', min: 501, max: 1000 },
+      { range: '1001+', min: 1001, max: Infinity },
+    ];
+
+    // Count keys per bucket
+    const bucketCounts = bucketDefs.map(def => ({
+      range: def.range,
+      min: def.min,
+      max: def.max,
+      count: 0,
+      totalCredits: 0,
+    }));
+
+    const creditValues: number[] = [];
+
+    for (const rec of activeRecords) {
+      const credits = rec.credits || 0;
+      creditValues.push(credits);
+
+      for (const bucket of bucketCounts) {
+        if (credits >= bucket.min && credits <= bucket.max) {
+          bucket.count++;
+          bucket.totalCredits += credits;
+          break;
+        }
+      }
+    }
+
+    // Calculate median
+    creditValues.sort((a, b) => a - b);
+    const mid = Math.floor(creditValues.length / 2);
+    const medianCredits = creditValues.length % 2 === 0
+      ? Math.round((creditValues[mid - 1] + creditValues[mid]) / 2)
+      : creditValues[mid];
+
+    // Only include non-empty buckets, in order
+    const buckets = bucketCounts
+      .filter(b => b.count > 0)
+      .map(({ range, count, totalCredits }) => ({ range, count, totalCredits }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      buckets,
+      summary: {
+        totalKeys: activeRecords.length,
+        medianCredits,
       },
       generatedAt: new Date().toISOString(),
     }));
