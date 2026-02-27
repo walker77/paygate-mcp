@@ -57,6 +57,8 @@ import { WebhookRouter } from './webhook-router';
 import { checkSsrf } from './webhook';
 import { ExpiryScanner } from './expiry-scanner';
 import { KeyTemplateManager } from './key-templates';
+import { StripeCheckout, CreditPackage } from './stripe-checkout';
+import { BackupManager, BackupStateProvider, BackupSnapshot } from './backup';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -362,6 +364,10 @@ export class PayGateServer {
   readonly templates: KeyTemplateManager;
   /** Per-key credit mutation history */
   readonly creditLedger: CreditLedger;
+  /** Stripe Checkout for self-service credit purchases (null if not configured) */
+  readonly stripeCheckout: StripeCheckout | null = null;
+  /** Backup manager for full state snapshots and disaster recovery */
+  readonly backup: BackupManager;
   /** Rate limiter for admin API endpoints (brute-force protection) */
   private readonly adminRateLimiter: RateLimiter;
   /** Rate limiter for session creation (prevents session slot exhaustion) */
@@ -657,6 +663,81 @@ export class PayGateServer {
       // Wire group manager for Redis sync
       sync.groupManager = this.groups;
     }
+
+    // Stripe Checkout for self-service credit purchases (via config)
+    const stripeConfig = (config as any).stripe;
+    if (stripeConfig?.secretKey && stripeConfig?.packages) {
+      this.stripeCheckout = new StripeCheckout({
+        secretKey: stripeConfig.secretKey,
+        packages: stripeConfig.packages,
+        successUrl: stripeConfig.successUrl || '/portal?payment=success',
+        cancelUrl: stripeConfig.cancelUrl || '/portal?payment=cancelled',
+        collectEmail: stripeConfig.collectEmail,
+      });
+    }
+
+    // Backup manager for full state snapshots
+    this.backup = new BackupManager(this.createBackupProvider());
+  }
+
+  /**
+   * Create a BackupStateProvider adapter that bridges server internals to the BackupManager interface.
+   */
+  private createBackupProvider(): BackupStateProvider {
+    const self = this;
+    return {
+      exportKeys: () => self.gate.store.exportKeys(),
+      importKeys: (keys, mode) => self.gate.store.importKeys(keys as any[], mode as any),
+      exportTeams: () => self.teams.listTeams(),
+      importTeams: (teams, mode) => {
+        let imported = 0, skipped = 0, errors = 0;
+        for (const team of teams) {
+          try {
+            const t = team as any;
+            if (mode === 'skip' && self.teams.getTeam(t.id)) { skipped++; continue; }
+            self.teams.createTeam({ name: t.name, description: t.description, budget: t.budget, quota: t.quota, tags: t.tags });
+            imported++;
+          } catch { errors++; }
+        }
+        return { imported, skipped, errors };
+      },
+      exportGroups: () => self.groups.listGroups(),
+      importGroups: (groups, mode) => {
+        let imported = 0, skipped = 0, errors = 0;
+        for (const group of groups) {
+          try {
+            const g = group as any;
+            if (mode === 'skip' && self.groups.getGroup(g.id)) { skipped++; continue; }
+            self.groups.createGroup({ name: g.name, description: g.description, allowedTools: g.allowedTools, deniedTools: g.deniedTools, rateLimitPerMin: g.rateLimitPerMin, quota: g.quota, tags: g.tags });
+            imported++;
+          } catch { errors++; }
+        }
+        return { imported, skipped, errors };
+      },
+      exportWebhookFilters: () => self.config.webhookFilters || [],
+      importWebhookFilters: (filters, _mode) => {
+        // Webhook filters are config-level — merge into running config
+        const existing = self.config.webhookFilters || [];
+        const existingIds = new Set(existing.map((f: any) => f.id));
+        let imported = 0, skipped = 0;
+        for (const f of filters) {
+          const filter = f as any;
+          if (existingIds.has(filter.id)) { skipped++; continue; }
+          existing.push(filter);
+          imported++;
+        }
+        self.config.webhookFilters = existing;
+        return { imported, skipped, errors: 0 };
+      },
+      getStats: () => ({
+        totalKeys: self.gate.store.getKeyCount(),
+        totalTeams: self.teams.listTeams().length,
+        totalGroups: self.groups.listGroups().length,
+        totalAuditEntries: self.audit.query({ limit: 0 }).total,
+        totalUsageEvents: self.gate.meter.eventCount,
+      }),
+      getServerVersion: () => PKG_VERSION,
+    };
   }
 
   /**
@@ -831,6 +912,7 @@ export class PayGateServer {
     res.setHeader('Cache-Control', 'no-store');                 // API responses should not be cached
     res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
     res.removeHeader('X-Powered-By');                           // Hide server technology
+    res.setHeader('X-PayGate-Version', PKG_VERSION);             // API version for clients
 
     // CORS headers
     const corsConfig = this.config.cors;
@@ -838,7 +920,7 @@ export class PayGateServer {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization, X-Request-Id');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id, X-PayGate-Version');
     if (corsConfig?.credentials) {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
     }
@@ -1011,6 +1093,14 @@ export class PayGateServer {
         return this.handleUsage(req, res);
       case '/stripe/webhook':
         return this.handleStripeWebhook(req, res);
+      case '/stripe/checkout':
+        return this.handleStripeCheckout(req, res);
+      case '/stripe/packages':
+        return this.handleStripePackages(req, res);
+      case '/admin/backup':
+        return this.handleAdminBackup(req, res);
+      case '/admin/restore':
+        return this.handleAdminRestore(req, res);
       case '/dashboard':
         return this.handleDashboard(req, res);
       case '/audit':
@@ -2126,6 +2216,10 @@ export class PayGateServer {
         toolProfitability: 'GET /admin/tool-profitability — Per-tool profitability analysis with revenue, calls, avg revenue per call, and unique callers (requires X-Admin-Key)',
         creditWaste: 'GET /admin/credit-waste — Per-key credit waste analysis with utilization metrics and waste percentage (requires X-Admin-Key)',
         groupActivity: 'GET /admin/group-activity — Per-group activity metrics with key counts, spend, calls, credits remaining for policy-template-based analytics (requires X-Admin-Key)',
+        stripeCheckout: 'POST /stripe/checkout — Create Stripe Checkout session for self-service credit purchase (requires X-API-Key)',
+        stripePackages: 'GET /stripe/packages — List available credit packages (public)',
+        adminBackup: 'GET /admin/backup — Full state snapshot for disaster recovery (requires X-Admin-Key, admin)',
+        adminRestore: 'POST /admin/restore — Restore state from backup snapshot (requires X-Admin-Key, admin)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -2138,6 +2232,7 @@ export class PayGateServer {
       shadowMode: this.config.shadowMode,
       oauth: !!this.oauth,
       redis: !!this.redisSync,
+      stripeCheckout: !!this.stripeCheckout,
     });
   }
 
@@ -4638,6 +4733,182 @@ export class PayGateServer {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     }
+  }
+
+  // ─── /stripe/checkout — Self-service credit purchase via Stripe Checkout ──
+
+  private async handleStripeCheckout(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      // List available packages (public, rate-limited)
+      if (!this.checkPublicRateLimit(req, res)) return;
+      return this.handleStripePackages(req, res);
+    }
+
+    if (req.method !== 'POST') {
+      this.sendError(res, 405, 'Method not allowed');
+      return;
+    }
+
+    if (!this.stripeCheckout) {
+      this.sendError(res, 404, 'Stripe Checkout not configured');
+      return;
+    }
+
+    // Authenticate with API key (the buyer's key — they're purchasing credits for themselves)
+    const apiKey = req.headers['x-api-key'] as string;
+    if (!apiKey) {
+      this.sendError(res, 401, 'Missing X-API-Key header');
+      return;
+    }
+
+    const keyRecord = this.gate.store.getKey(apiKey);
+    if (!keyRecord || !keyRecord.active) {
+      this.sendError(res, 401, 'Invalid or inactive API key');
+      return;
+    }
+
+    const body = await this.readBody(req);
+    let params: { packageId?: string; metadata?: Record<string, string> };
+    try {
+      params = safeJsonParse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON');
+      return;
+    }
+
+    if (!params.packageId || typeof params.packageId !== 'string') {
+      this.sendError(res, 400, 'Missing "packageId" (string)');
+      return;
+    }
+
+    // Validate metadata (max 10 entries, 500 chars each)
+    if (params.metadata) {
+      if (typeof params.metadata !== 'object') {
+        this.sendError(res, 400, '"metadata" must be an object');
+        return;
+      }
+      const entries = Object.entries(params.metadata);
+      if (entries.length > 10) {
+        this.sendError(res, 400, 'Maximum 10 metadata entries');
+        return;
+      }
+      for (const [k, v] of entries) {
+        if (typeof v !== 'string' || v.length > 500 || k.length > 100) {
+          this.sendError(res, 400, `Invalid metadata entry: key/value must be strings (max 100/500 chars)`);
+          return;
+        }
+      }
+    }
+
+    try {
+      const result = await this.stripeCheckout.createSession(params.packageId, apiKey, params.metadata);
+
+      this.audit.log('stripe.checkout_created', maskKeyForAudit(apiKey),
+        `Checkout session created for package "${params.packageId}" (${result.credits} credits)`,
+        { sessionId: result.sessionId, packageId: params.packageId, credits: result.credits },
+      );
+
+      this.sendJson(res, 200, {
+        sessionId: result.sessionId,
+        url: result.url,
+        packageId: result.packageId,
+        credits: result.credits,
+      });
+    } catch (e: any) {
+      this.sendError(res, 502, `Stripe Checkout error: ${e.message?.slice(0, 200)}`);
+    }
+  }
+
+  // ─── /stripe/packages — List available credit packages ──────────────────
+
+  private handleStripePackages(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      this.sendError(res, 405, 'Method not allowed');
+      return;
+    }
+    if (!this.checkPublicRateLimit(req, res)) return;
+
+    if (!this.stripeCheckout) {
+      this.sendJson(res, 200, { packages: [], configured: false });
+      return;
+    }
+
+    const packages = this.stripeCheckout.listPackages().map(p => ({
+      id: p.id,
+      name: p.name,
+      description: p.description || null,
+      credits: p.credits,
+      priceInCents: p.priceInCents,
+      currency: p.currency,
+    }));
+
+    this.sendJson(res, 200, { packages, configured: true });
+  }
+
+  // ─── /admin/backup — Full state snapshot for disaster recovery ──────────
+
+  private handleAdminBackup(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      this.sendError(res, 405, 'Method not allowed');
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const snapshot = this.backup.createSnapshot();
+
+    this.audit.log('admin.backup_created', 'admin',
+      `Full state backup created (${snapshot.data.keys?.length || 0} keys, ${snapshot.data.teams?.length || 0} teams)`,
+      { checksum: snapshot.checksum },
+    );
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="paygate-backup-${new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-')}.json"`,
+    });
+    res.end(JSON.stringify(snapshot, null, 2));
+  }
+
+  // ─── /admin/restore — Restore state from backup snapshot ────────────────
+
+  private async handleAdminRestore(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      this.sendError(res, 405, 'Method not allowed');
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    const body = await this.readBody(req);
+    let params: { snapshot?: unknown; mode?: string };
+    try {
+      params = safeJsonParse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON');
+      return;
+    }
+
+    if (!params.snapshot) {
+      this.sendError(res, 400, 'Missing "snapshot" object');
+      return;
+    }
+
+    const mode = (params.mode === 'full' || params.mode === 'merge' || params.mode === 'overwrite')
+      ? params.mode : 'merge';
+
+    // Validate before restoring
+    const validation = this.backup.validateSnapshot(params.snapshot);
+    if (!validation.valid) {
+      this.sendError(res, 400, 'Invalid snapshot', { errors: validation.errors });
+      return;
+    }
+
+    const result = this.backup.restoreFromSnapshot(params.snapshot as any, mode);
+
+    this.audit.log('admin.backup_restored', 'admin',
+      `State restored from backup (mode: ${mode})`,
+      { mode, results: result.results, warnings: result.warnings },
+    );
+
+    this.sendJson(res, result.success ? 200 : 207, result);
   }
 
   // ─── /dashboard — Admin web dashboard ─────────────────────────────────────

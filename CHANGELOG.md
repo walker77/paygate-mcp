@@ -1,5 +1,49 @@
 # Changelog
 
+## 9.0.0 (2026-02-27)
+
+### Stripe Checkout — Self-Service Credit Purchases
+- **Stripe Checkout Sessions** (`POST /stripe/checkout`): API key holders can purchase credits via Stripe
+  - Configurable credit packages with id, credits, price, currency, name, description
+  - Creates Stripe Checkout Sessions with PayGate metadata for auto-top-up
+  - After payment, existing `StripeWebhookHandler` automatically tops up credits
+  - Zero dependencies — uses Node.js built-in `https` module
+- **Credit packages listing** (`GET /stripe/packages`): Public endpoint to list available packages
+  - Returns `configured: false` with empty packages when Stripe not configured
+  - Rate-limited via public endpoint rate limiter
+- **Portal Buy Credits UI**: Self-service portal now includes Buy Credits bar
+  - Fetches available packages, renders purchase buttons with price/credits
+  - Redirects to Stripe Checkout on purchase — credits added automatically
+- **New module**: `StripeCheckout` class exported from `paygate-mcp`
+  - `listPackages()`, `getPackage()`, `createSession()`, `getSession()`
+  - Full TypeScript types: `CreditPackage`, `StripeCheckoutConfig`, `CheckoutSessionResult`
+
+### State Backup & Restore — Disaster Recovery
+- **Full state backup** (`GET /admin/backup`): Export complete server state as JSON snapshot
+  - Includes keys, teams, groups, webhook filters, and aggregate stats
+  - SHA-256 checksum for integrity verification
+  - `Content-Disposition: attachment` header for direct download
+  - Versioned snapshot format (v1.0) for forward compatibility
+- **State restore** (`POST /admin/restore`): Import state from a backup snapshot
+  - Three restore modes: `full` (replace), `merge` (additive), `overwrite` (merge + overwrite)
+  - Checksum validation before restore — rejects corrupted snapshots
+  - Per-entity import results (imported, skipped, errors)
+- **New module**: `BackupManager` class exported from `paygate-mcp`
+  - `createSnapshot()`, `validateSnapshot()`, `restoreFromSnapshot()`
+  - `BackupStateProvider` adapter interface for clean separation
+
+### API Version Header
+- **`X-PayGate-Version` header**: Included on every HTTP response
+  - Version read from package.json at runtime — no hardcoded strings
+  - Exposed in `Access-Control-Expose-Headers` for browser access
+  - Present on health, ready, admin, CORS preflight, and all other endpoints
+
+### Infrastructure
+- New audit event types: `stripe.checkout_created`, `admin.backup_created`, `admin.backup_restored`
+- All new endpoints in OpenAPI 3.1 spec, root listing, and robots.txt
+- Root listing includes `stripeCheckout` flag indicating Stripe configuration status
+- 34 new tests (185 suites, 3,494 tests total)
+
 ## 8.99.0 (2026-02-27)
 
 ### Admin Dashboard v2

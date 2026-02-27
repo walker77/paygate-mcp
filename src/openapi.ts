@@ -526,6 +526,83 @@ function billingPaths() {
         responses: { 200: jsonResponse('Webhook processed'), ...errorResponse(400, 'Invalid signature') },
       },
     },
+    '/stripe/checkout': {
+      post: {
+        tags: ['Billing'], summary: 'Create Stripe Checkout session',
+        description: 'Creates a Stripe Checkout session for self-service credit purchase. Requires X-API-Key. Returns a URL to redirect the user to Stripe Checkout.',
+        security: [{ ApiKeyAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: {
+          type: 'object', required: ['packageId'],
+          properties: {
+            packageId: { type: 'string', description: 'Credit package ID' },
+            metadata: { type: 'object', additionalProperties: { type: 'string' }, description: 'Optional metadata (max 10 entries)' },
+          },
+        } } } },
+        responses: {
+          200: jsonResponse('Checkout session', {
+            type: 'object',
+            properties: {
+              sessionId: { type: 'string' }, url: { type: 'string' },
+              packageId: { type: 'string' }, credits: { type: 'number' },
+            },
+          }),
+          ...errorResponse(404, 'Stripe Checkout not configured'),
+        },
+      },
+    },
+    '/stripe/packages': {
+      get: {
+        tags: ['Billing'], summary: 'List available credit packages',
+        description: 'Returns available credit packages for self-service purchase. Public endpoint (rate-limited).',
+        responses: {
+          200: jsonResponse('Credit packages', {
+            type: 'object',
+            properties: {
+              packages: { type: 'array', items: { type: 'object', properties: {
+                id: { type: 'string' }, name: { type: 'string' }, credits: { type: 'number' },
+                priceInCents: { type: 'number' }, currency: { type: 'string' },
+              } } },
+              configured: { type: 'boolean' },
+            },
+          }),
+        },
+      },
+    },
+    '/admin/backup': {
+      get: {
+        tags: ['Admin'], summary: 'Create full state backup',
+        description: 'Creates a point-in-time snapshot of all PayGate state (keys, teams, groups, webhook filters) with SHA-256 checksum. For disaster recovery.',
+        security: [{ AdminKeyAuth: [] }],
+        responses: {
+          200: jsonResponse('Backup snapshot', {
+            type: 'object',
+            properties: {
+              version: { type: 'string' }, timestamp: { type: 'string' },
+              serverVersion: { type: 'string' }, data: { type: 'object' },
+              checksum: { type: 'string' },
+            },
+          }),
+        },
+      },
+    },
+    '/admin/restore': {
+      post: {
+        tags: ['Admin'], summary: 'Restore state from backup',
+        description: 'Restores PayGate state from a backup snapshot. Supports merge (additive), overwrite (merge + overwrite conflicts), and full (complete replacement) modes.',
+        security: [{ AdminKeyAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: {
+          type: 'object', required: ['snapshot'],
+          properties: {
+            snapshot: { type: 'object', description: 'Backup snapshot object' },
+            mode: { type: 'string', enum: ['merge', 'overwrite', 'full'], description: 'Restore mode (default: merge)' },
+          },
+        } } } },
+        responses: {
+          200: jsonResponse('Restore result'),
+          ...errorResponse(400, 'Invalid snapshot'),
+        },
+      },
+    },
   };
 }
 

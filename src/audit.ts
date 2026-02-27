@@ -99,7 +99,12 @@ export type AuditEventType =
   // Credit reservations
   | 'credits.reserved'
   | 'credits.committed'
-  | 'credits.released';
+  | 'credits.released'
+  // Stripe Checkout
+  | 'stripe.checkout_created'
+  // Backup & Restore
+  | 'admin.backup_created'
+  | 'admin.backup_restored';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

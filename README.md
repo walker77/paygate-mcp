@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 130+ endpoints
+- [API Reference](#api-reference) — All 135+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
@@ -65,7 +65,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
-- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 130+ endpoints documented
+- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 135+ endpoints documented
 - **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
 - **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
@@ -81,7 +81,10 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Horizontal Scaling (Redis)** — Redis-backed state for multi-process deployments with atomic credit deduction, distributed rate limiting, persistent usage audit trail, real-time pub/sub notifications, and admin API sync
 - **Webhook Retry Queue** — Exponential backoff retry (1s, 2s, 4s...) with dead letter queue for permanently failed deliveries, admin API for monitoring, clearing, and replaying
 - **Admin Dashboard v2** — Tabbed web dashboard at `/dashboard` with overview, keys management (create/suspend/resume/revoke/top-up), analytics (credit flow, deny reasons, top consumers, webhook health), and system status — all data via safe DOM methods, 30s auto-refresh
-- **Self-Service Portal** — API key holder portal at `/portal` — check credits, usage, rate limits, available tools, and recent activity without admin access
+- **Self-Service Portal** — API key holder portal at `/portal` — check credits, usage, rate limits, available tools, and recent activity without admin access; includes Buy Credits UI for Stripe Checkout
+- **Stripe Checkout** — Self-service credit purchases via Stripe Checkout Sessions — `POST /stripe/checkout` creates a session, `GET /stripe/packages` lists available packages; zero-dependency implementation using Node.js `https`, auto-tops-up credits via webhook
+- **State Backup & Restore** — `GET /admin/backup` exports full server state (keys, teams, groups, webhooks) as versioned JSON with SHA-256 checksum; `POST /admin/restore` imports with merge/overwrite/full modes and integrity verification
+- **API Version Header** — `X-PayGate-Version` header on every HTTP response for client version tracking, exposed via CORS
 - **Readiness Probe** — `GET /ready` returns 200/503 based on operational state (not draining, not maintenance, backend connected) — separate from `/health` liveness probe, ideal for Kubernetes
 - **Health Check + Graceful Shutdown** — `GET /health` public endpoint with status, uptime, version, in-flight requests, Redis & webhook stats; `gracefulStop()` drains in-flight requests before teardown
 - **Config Validation + Dry Run** — `paygate-mcp validate --config paygate.json` catches misconfigurations before starting; `--dry-run` discovers tools, prints pricing table, then exits
@@ -437,7 +440,11 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/usage` | GET | `X-Admin-Key` | Export usage data (JSON or CSV) |
 | `/status` | GET | `X-Admin-Key` | Full dashboard with usage stats |
 | `/dashboard` | GET | None (admin key in-browser) | Real-time admin web dashboard |
+| `/stripe/checkout` | POST | `X-API-Key` | Create Stripe Checkout Session for credit purchase |
+| `/stripe/packages` | GET | None | List available credit packages (public, rate-limited) |
 | `/stripe/webhook` | POST | Stripe Signature | Auto-top-up credits on payment |
+| `/admin/backup` | GET | `X-Admin-Key` | Export full server state as versioned JSON snapshot |
+| `/admin/restore` | POST | `X-Admin-Key` | Import state from backup (merge/overwrite/full modes) |
 | `/.well-known/oauth-authorization-server` | GET | None | OAuth 2.1 server metadata |
 | `/oauth/register` | POST | None | Dynamic Client Registration (RFC 7591) |
 | `/oauth/authorize` | GET | None | Authorization endpoint (PKCE required) |
@@ -447,7 +454,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/.well-known/mcp.json` | GET | None | MCP Server Identity card (discovery) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
-| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 130+ endpoints) |
+| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 135+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |

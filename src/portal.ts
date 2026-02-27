@@ -80,6 +80,14 @@ font-family:var(--mono);font-size:13px;color:var(--accent2)}
 color:var(--yellow);font-size:13px;margin-bottom:16px;display:none}
 .danger{background:#ef444410;border:1px solid #ef444430;border-radius:8px;padding:12px 16px;
 color:var(--red);font-size:13px;margin-bottom:16px;display:none}
+.buy-bar{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;
+margin-bottom:16px;display:none;align-items:center;gap:12px;flex-wrap:wrap}
+.buy-bar h3{font-size:14px;font-weight:600;white-space:nowrap}
+.pkg-btn{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 16px;
+border-radius:8px;font-size:13px;cursor:pointer;font-family:var(--mono);transition:all 0.2s}
+.pkg-btn:hover{border-color:var(--accent);color:var(--accent2)}
+.pkg-btn .pkg-price{color:var(--green);font-weight:600}
+.pkg-btn .pkg-credits{color:var(--accent2)}
 #app{display:none}
 </style>
 </head>
@@ -105,6 +113,11 @@ color:var(--red);font-size:13px;margin-bottom:16px;display:none}
   <main>
     <div class="danger" id="alert-exhausted">Credits exhausted. Tool calls will be denied until credits are added.</div>
     <div class="warning" id="alert-low">Credits are running low. Contact your administrator for a top-up.</div>
+
+    <div class="buy-bar" id="buy-credits-bar">
+      <h3>&#x1f4b3; Buy Credits</h3>
+      <div id="packages-list" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+    </div>
 
     <div class="cards">
       <div class="card">
@@ -175,6 +188,7 @@ function doLogin() {
       document.getElementById('login-screen').style.display = 'none';
       document.getElementById('app').style.display = 'block';
       refresh();
+      loadPackages();
       setInterval(refresh, 30000);
     } else {
       document.getElementById('login-error').textContent = 'Invalid API key or balance check failed.';
@@ -297,6 +311,59 @@ function buildToolsList(tools) {
     chip.textContent = typeof t === 'string' ? t : (t.name || t.tool || String(t));
     container.appendChild(chip);
   });
+}
+
+async function loadPackages() {
+  try {
+    var res = await fetch(BASE + '/stripe/packages');
+    if (res.status !== 200) return;
+    var data = await res.json();
+    if (!data.configured || !data.packages || data.packages.length === 0) return;
+
+    var bar = document.getElementById('buy-credits-bar');
+    var list = document.getElementById('packages-list');
+    bar.style.display = 'flex';
+    list.textContent = '';
+
+    data.packages.forEach(function(pkg) {
+      var btn = document.createElement('button');
+      btn.className = 'pkg-btn';
+      btn.onclick = function() { buyPackage(pkg.id); };
+
+      var price = document.createElement('span');
+      price.className = 'pkg-price';
+      price.textContent = '$' + (pkg.priceInCents / 100).toFixed(2);
+
+      var sep = document.createTextNode(' — ');
+
+      var credits = document.createElement('span');
+      credits.className = 'pkg-credits';
+      credits.textContent = pkg.credits.toLocaleString() + ' credits';
+
+      btn.appendChild(price);
+      btn.appendChild(sep);
+      btn.appendChild(credits);
+      list.appendChild(btn);
+    });
+  } catch(e) { console.log('No packages:', e); }
+}
+
+async function buyPackage(packageId) {
+  try {
+    var res = await fetch(BASE + '/stripe/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+      body: JSON.stringify({ packageId: packageId }),
+    });
+    var data = await res.json();
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      alert('Failed to create checkout session: ' + (data.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Checkout failed: ' + e.message);
+  }
 }
 
 async function refresh() {
