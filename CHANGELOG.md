@@ -1,5 +1,16 @@
 # Changelog
 
+## 8.74.0 (2026-02-27)
+
+### Graceful Shutdown Completeness
+- **SSE stream cleanup** during `gracefulStop()` — admin event streams are closed before drain wait, preventing dangling connections
+- **Background timer cleanup** during `gracefulStop()` — scheduled actions timer stopped before drain wait
+- **SSE error handler** — `res.on('error')` auto-removes disconnected clients from the admin event stream set (broken pipe, network failure)
+- **Scheduled actions error boundary** — `executeScheduledActions()` wrapped in try/catch to prevent background task crashes from killing the server
+- 8 new tests (SSE shutdown cleanup, drain behavior, health drain status, double-stop idempotency, timer cleanup, SSE disconnect resilience, background error boundary)
+
+---
+
 ## 8.73.0 (2026-02-27)
 
 ### Process Safety & Socket Hardening

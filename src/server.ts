@@ -513,8 +513,14 @@ export class PayGateServer {
     // Start the key expiry scanner (proactive background scanning)
     this.expiryScanner.start(() => this.gate.store.getAllRecords());
 
-    // Start scheduled actions executor (checks every 10s)
-    this.scheduleTimer = setInterval(() => this.executeScheduledActions(), 10_000);
+    // Start scheduled actions executor (checks every 10s) — error boundary prevents background crashes
+    this.scheduleTimer = setInterval(() => {
+      try {
+        this.executeScheduledActions();
+      } catch (err) {
+        this.logger.error('Scheduled actions executor error', { error: (err as Error).message });
+      }
+    }, 10_000);
     this.scheduleTimer.unref();
 
     // Plugin lifecycle: onStart
@@ -4830,15 +4836,17 @@ export class PayGateServer {
       this.adminEventKeepAliveTimer.unref();
     }
 
-    // Cleanup on disconnect
-    req.on('close', () => {
+    // Cleanup on disconnect or error
+    const cleanup = () => {
       this.adminEventStreams.delete(client);
       // Stop keepalive if no more connections
       if (this.adminEventStreams.size === 0 && this.adminEventKeepAliveTimer) {
         clearInterval(this.adminEventKeepAliveTimer);
         this.adminEventKeepAliveTimer = null;
       }
-    });
+    };
+    req.on('close', cleanup);
+    res.on('error', cleanup); // Clean up on write errors (broken pipe, network failure)
   }
 
   // ─── /admin/notifications — Actionable notifications ──────────────────────
@@ -11869,6 +11877,22 @@ export class PayGateServer {
     // Stop accepting new TCP connections immediately
     if (this.server) {
       this.server.close(() => {}); // close listener (existing connections stay alive)
+    }
+
+    // Close SSE admin event streams so they don't keep connections alive
+    if (this.adminEventKeepAliveTimer) {
+      clearInterval(this.adminEventKeepAliveTimer);
+      this.adminEventKeepAliveTimer = null;
+    }
+    for (const client of this.adminEventStreams) {
+      try { client.res.end(); } catch { /* ignore */ }
+    }
+    this.adminEventStreams.clear();
+
+    // Stop background timers (scheduled actions, expiry scanner)
+    if (this.scheduleTimer) {
+      clearInterval(this.scheduleTimer);
+      this.scheduleTimer = null;
     }
 
     // Wait for in-flight requests to finish, with a hard timeout
