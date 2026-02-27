@@ -159,6 +159,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Ranking** — `GET /admin/key-ranking` leaderboard of active keys ranked by spend, calls, or credits remaining with configurable sorting
 - **Hourly Traffic** — `GET /admin/hourly-traffic` granular per-hour request counts with allowed/denied breakdown, credits, consumers, tools, and busiest hour
 - **Tool Error Rate** — `GET /admin/tool-error-rate` per-tool error rates with denied/allowed counts, error percentage, and overall reliability metrics
+- **Consumer Spend Velocity** — `GET /admin/consumer-spend-velocity` per-consumer spend rate with credits/hour, depletion forecast, and velocity ranking
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3678,6 +3679,26 @@ curl http://localhost:3000/admin/tool-error-rate -H "X-Admin-Key: YOUR_ADMIN_KEY
 ```
 
 Per-tool error/denial rate analysis. Per-tool: total requests, allowed/denied counts, and error rate percentage. Summary includes total tools, overall error rate, and identifies the tool with highest error rate. Sorted by error rate descending. Read-only.
+
+### Consumer Spend Velocity
+
+```bash
+curl http://localhost:3000/admin/consumer-spend-velocity -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "consumers": [
+    { "name": "power-user", "totalSpent": 500, "creditsRemaining": 500, "creditsPerHour": 25.5, "hoursUntilDepleted": 19.61 },
+    { "name": "casual-user", "totalSpent": 50, "creditsRemaining": 950, "creditsPerHour": 2.1, "hoursUntilDepleted": 452.38 },
+    { "name": "idle-user", "totalSpent": 0, "creditsRemaining": 100, "creditsPerHour": 0, "hoursUntilDepleted": null }
+  ],
+  "summary": { "totalConsumers": 3, "fastestSpender": "power-user" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-consumer spend velocity analysis. Per-consumer: total spent, credits remaining, credits per hour rate, and estimated hours until depletion. Zero-spend consumers have `creditsPerHour: 0` and `hoursUntilDepleted: null`. Summary identifies the fastest spender. Excludes revoked/suspended keys. Sorted by spend rate descending. Read-only.
 
 ### IP Allowlisting
 

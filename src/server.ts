@@ -1077,6 +1077,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-spend-velocity':
+        if (req.method === 'GET') return this.handleConsumerSpendVelocity(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1704,6 +1709,7 @@ export class PayGateServer {
         keyRanking: 'GET /admin/key-ranking — Key leaderboard ranked by spend, calls, or credits remaining with configurable sorting (requires X-Admin-Key)',
         hourlyTraffic: 'GET /admin/hourly-traffic — Granular per-hour request counts with allowed/denied breakdown, credits, consumers, and tools (requires X-Admin-Key)',
         toolErrorRate: 'GET /admin/tool-error-rate — Per-tool error rates with denied/allowed counts, error percentage, and overall reliability metrics (requires X-Admin-Key)',
+        consumerSpendVelocity: 'GET /admin/consumer-spend-velocity — Per-consumer spend rate with credits/hour, depletion forecast, and velocity ranking (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8718,6 +8724,65 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/consumer-spend-velocity — Spend rate analysis ────────────────
+
+  private handleConsumerSpendVelocity(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        consumers: [],
+        summary: {
+          totalConsumers: 0,
+          fastestSpender: null,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const now = Date.now();
+
+    const consumers = activeRecords.map(rec => {
+      const totalSpent = rec.totalSpent || 0;
+      const creditsRemaining = rec.credits;
+      const createdAt = rec.createdAt ? new Date(rec.createdAt).getTime() : now;
+      const hoursActive = Math.max((now - createdAt) / (1000 * 60 * 60), 0.001); // Avoid division by zero
+
+      const creditsPerHour = totalSpent > 0 ? Math.round((totalSpent / hoursActive) * 100) / 100 : 0;
+      const hoursUntilDepleted = creditsPerHour > 0
+        ? Math.round((creditsRemaining / creditsPerHour) * 100) / 100
+        : null;
+
+      return {
+        name: rec.name,
+        totalSpent,
+        creditsRemaining,
+        creditsPerHour,
+        hoursUntilDepleted,
+      };
+    });
+
+    // Sort by creditsPerHour descending
+    consumers.sort((a, b) => b.creditsPerHour - a.creditsPerHour);
+
+    const fastestSpender = consumers.find(c => c.creditsPerHour > 0)?.name || null;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      consumers,
+      summary: {
+        totalConsumers: consumers.length,
+        fastestSpender,
       },
       generatedAt: new Date().toISOString(),
     }));
