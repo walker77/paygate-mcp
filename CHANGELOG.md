@@ -1,5 +1,17 @@
 # Changelog
 
+## 8.86.0 (2026-02-27)
+
+### Prototype Pollution Prevention
+- **Added `safeJsonParse()` with reviver-based sanitization** — strips `__proto__`, `constructor`, and `prototype` keys from all user-supplied JSON payloads
+- Replaced all 54 `JSON.parse()` calls on untrusted input in server.ts with `safeJsonParse()`
+- Prevents Object.prototype pollution attacks where `{"__proto__": {"admin": true}}` could escalate privileges
+- Nested pollution attempts (deep `__proto__` keys) are also stripped at any depth
+- Trusted local file reads (package.json, config files) intentionally left as standard `JSON.parse()`
+- 14 new tests verifying pollution prevention across multiple admin endpoints, nested payloads, and error paths
+
+---
+
 ## 8.85.0 (2026-02-27)
 
 ### Admin Endpoint Body Size Enforcement

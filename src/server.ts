@@ -57,6 +57,21 @@ import { KeyTemplateManager } from './key-templates';
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
 
+/** Dangerous property names that enable prototype pollution attacks. */
+const PROTO_POISON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * JSON.parse with prototype pollution protection.
+ * Strips __proto__, constructor, and prototype keys from parsed objects
+ * to prevent Object.prototype pollution attacks via malicious payloads.
+ */
+function safeJsonParse<T = unknown>(text: string): T {
+  return JSON.parse(text, (key, value) => {
+    if (PROTO_POISON_KEYS.has(key)) return undefined; // Strip dangerous keys
+    return value;
+  });
+}
+
 /** Max length for user-supplied string fields (names, reasons, messages, memos) */
 const MAX_STRING_FIELD = 500;
 
@@ -1269,7 +1284,7 @@ export class PayGateServer {
 
     let request: JsonRpcRequest;
     try {
-      request = JSON.parse(body);
+      request = safeJsonParse(body);
     } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' } }));
@@ -2065,7 +2080,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { name?: string; credits?: number; allowedTools?: string[]; deniedTools?: string[]; expiresIn?: number; expiresAt?: string; quota?: { dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number }; tags?: Record<string, string>; ipAllowlist?: string[]; namespace?: string; template?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2244,7 +2259,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; credits?: number };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2309,7 +2324,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { from?: string; to?: string; credits?: number; memo?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2417,7 +2432,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { operations?: Array<{ action: string; [key: string]: unknown }> };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2603,7 +2618,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { keys?: unknown[]; mode?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2668,7 +2683,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2717,7 +2732,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; reason?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2776,7 +2791,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2832,7 +2847,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; name?: string; credits?: number; tags?: Record<string, string>; namespace?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -2910,14 +2925,14 @@ export class PayGateServer {
     if (!this.checkAdmin(req, res)) return;
 
     const raw = await this.readBody(req);
-    const params = JSON.parse(raw);
+    const params = safeJsonParse<Record<string, unknown>>(raw);
     if (!params.key) {
       this.sendError(res, 400, 'Missing "key" parameter');
       return;
     }
 
     // Resolve the key (support existing aliases for the source key)
-    const record = this.gate.store.resolveKeyRaw(params.key);
+    const record = this.gate.store.resolveKeyRaw(params.key as string);
     if (!record) {
       this.sendError(res, 404, 'Key not found');
       return;
@@ -2974,7 +2989,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -3027,7 +3042,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; allowedTools?: string[]; deniedTools?: string[] };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -3072,7 +3087,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; expiresAt?: string | null; expiresIn?: number };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -3133,7 +3148,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; dailyCallLimit?: number; monthlyCallLimit?: number; dailyCreditLimit?: number; monthlyCreditLimit?: number; remove?: boolean };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -3189,7 +3204,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; tags?: Record<string, string | null> };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -3237,7 +3252,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; ips?: string[] };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -3285,7 +3300,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { tags?: Record<string, string>; namespace?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -4088,7 +4103,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; threshold?: number; amount?: number; maxDaily?: number; disable?: boolean };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -4215,7 +4230,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; spendingLimit?: number };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -4372,7 +4387,7 @@ export class PayGateServer {
       api_key?: string; // optional: link to existing API key
     };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'invalid_client_metadata');
       return;
@@ -4426,7 +4441,7 @@ export class PayGateServer {
     } else if (req.method === 'POST') {
       const body = await this.readBody(req);
       try {
-        params = JSON.parse(body);
+        params = safeJsonParse(body);
       } catch {
         // Try URL-encoded form data
         const query = new URLSearchParams(body);
@@ -4508,7 +4523,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, string>;
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       // Try URL-encoded form data
       params = {};
@@ -4584,7 +4599,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { token?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       const query = new URLSearchParams(body);
       params = { token: query.get('token') || undefined };
@@ -4684,7 +4699,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { rules?: Array<{ type: string; threshold: number; cooldownSeconds?: number }> };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -4777,7 +4792,7 @@ export class PayGateServer {
     let params: { indices?: number[] } = {};
     if (body.trim()) {
       try {
-        params = JSON.parse(body);
+        params = safeJsonParse(body);
       } catch {
         this.sendError(res, 400, 'Invalid JSON');
         return;
@@ -4839,7 +4854,7 @@ export class PayGateServer {
 
     let params: { enabled?: boolean; message?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -9736,7 +9751,7 @@ export class PayGateServer {
 
     let params: { key?: string; text?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -9870,7 +9885,7 @@ export class PayGateServer {
 
     let params: { key?: string; action?: string; executeAt?: string; params?: Record<string, unknown> };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -10169,7 +10184,7 @@ export class PayGateServer {
 
     let params: { key?: string; credits?: number; ttlSeconds?: number; memo?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -10264,7 +10279,7 @@ export class PayGateServer {
 
     let params: { reservationId?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -10331,7 +10346,7 @@ export class PayGateServer {
 
     let params: { reservationId?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -10398,7 +10413,7 @@ export class PayGateServer {
     try {
       const raw = await this.readBody(req);
       if (raw.trim()) {
-        body = JSON.parse(raw);
+        body = safeJsonParse(raw);
       }
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
@@ -10657,7 +10672,7 @@ export class PayGateServer {
     try {
       const raw = await this.readBody(req);
       if (raw) {
-        const body = JSON.parse(raw);
+        const body = safeJsonParse<Record<string, unknown>>(raw);
         if (body && typeof body === 'object' && body.message) {
           customMessage = String(body.message);
         }
@@ -10783,7 +10798,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -10821,7 +10836,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -10864,7 +10879,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: { id?: string };
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -11025,7 +11040,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11065,7 +11080,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11105,7 +11120,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11138,7 +11153,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11185,7 +11200,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11263,7 +11278,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string; ttl?: number; allowedTools?: string[]; label?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11320,7 +11335,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { token?: string; reason?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11416,7 +11431,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -11460,7 +11475,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -11510,7 +11525,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: { id?: string };
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -11546,7 +11561,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: { key?: string; groupId?: string };
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -11594,7 +11609,7 @@ export class PayGateServer {
 
     const body = await this.readBody(req);
     let params: { key?: string };
-    try { params = JSON.parse(body); } catch {
+    try { params = safeJsonParse(body); } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
     }
@@ -11659,7 +11674,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { name?: string; role?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -11711,7 +11726,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { key?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON body');
       return;
@@ -11799,7 +11814,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: Record<string, unknown>;
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -11839,7 +11854,7 @@ export class PayGateServer {
     const body = await this.readBody(req);
     let params: { name?: string };
     try {
-      params = JSON.parse(body);
+      params = safeJsonParse(body);
     } catch {
       this.sendError(res, 400, 'Invalid JSON');
       return;
@@ -12262,7 +12277,7 @@ export class PayGateServer {
     try {
       const raw = await this.readBody(req);
       try {
-        const params = JSON.parse(raw);
+        const params = safeJsonParse<Record<string, unknown>>(raw);
         const apiKey = params.key;
         const toolName = params.tool;
 
@@ -12342,7 +12357,7 @@ export class PayGateServer {
         }
 
         // Step 5: Credits check
-        const creditsRequired = this.gate.getToolPrice(toolName, params.arguments);
+        const creditsRequired = this.gate.getToolPrice(toolName, params.arguments as Record<string, unknown> | undefined);
         if (keyRecord.credits < creditsRequired) {
           this.sendJson(res, 200, {
             allowed: false,
@@ -12394,7 +12409,7 @@ export class PayGateServer {
     try {
       const raw = await this.readBody(req);
       try {
-        const params = JSON.parse(raw);
+        const params = safeJsonParse<Record<string, unknown>>(raw);
         const apiKey = params.key;
         const tools = params.tools;
 
