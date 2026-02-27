@@ -392,9 +392,10 @@ describe('RED TEAM — PayGate Security', () => {
         method: 'POST',
         body: { id: 1, method: 'tools/list' },
       });
-      // Should still process (we don't strictly validate jsonrpc field)
-      // But it should not crash
-      expect(res.status).toBe(200);
+      // Strict JSON-RPC 2.0 validation rejects missing jsonrpc field
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe(-32600);
+      expect(res.body.error.message).toContain('jsonrpc must be "2.0"');
     });
 
     it('should handle prototype pollution attempts', async () => {

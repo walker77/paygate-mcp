@@ -1,5 +1,19 @@
 # Changelog
 
+## 8.84.0 (2026-02-27)
+
+### JSON-RPC 2.0 Envelope Validation
+- **Strict envelope validation on `/mcp`** — validates `jsonrpc`, `method`, and `id` fields before processing
+- Rejects non-object bodies (arrays, strings, numbers) with `-32600 Invalid Request`
+- Rejects missing or wrong `jsonrpc` version (must be `"2.0"`)
+- Rejects missing or non-string `method` field
+- **Request ID type safety** — rejects object, array, and boolean IDs per JSON-RPC 2.0 spec (must be string, number, or null)
+- Prevents orphaned pending requests in stdio proxy from non-spec IDs that can't match via Map lookup
+- Guards added to all three transport layers: server.ts (HTTP), proxy.ts (stdio), http-proxy.ts (Streamable HTTP)
+- 14 new tests (envelope validation, ID type rejection, valid ID acceptance, prototype pollution protection)
+
+---
+
 ## 8.83.0 (2026-02-27)
 
 ### Error Response Consistency

@@ -47,6 +47,12 @@ export class HttpMcpProxy extends EventEmitter {
       return this.errorResponse(request.id, -32603, 'Proxy not started');
     }
 
+    // Guard: reject non-spec request IDs (must be string | number | null | undefined)
+    if (request.id !== undefined && request.id !== null &&
+        typeof request.id !== 'string' && typeof request.id !== 'number') {
+      return this.errorResponse(undefined, -32600, 'Invalid Request: id must be string, number, or null');
+    }
+
     // Free methods pass through without auth (but tools/list may be ACL-filtered)
     if (this.gate.isFreeMethod(request.method)) {
       const response = await this.forwardToServer(request);

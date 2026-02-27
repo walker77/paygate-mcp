@@ -1276,6 +1276,30 @@ export class PayGateServer {
       return;
     }
 
+    // Validate JSON-RPC 2.0 envelope per spec
+    if (!request || typeof request !== 'object' || Array.isArray(request)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: expected JSON object' } }));
+      return;
+    }
+    if (request.jsonrpc !== '2.0') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: jsonrpc must be "2.0"' } }));
+      return;
+    }
+    if (!request.method || typeof request.method !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: method must be a string' } }));
+      return;
+    }
+    // JSON-RPC 2.0 spec: id must be string, number, or null
+    if (request.id !== undefined && request.id !== null &&
+        typeof request.id !== 'string' && typeof request.id !== 'number') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: id must be string, number, or null' } }));
+      return;
+    }
+
     // Session management: reuse or create
     let sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !this.sessions.getSession(sessionId)) {

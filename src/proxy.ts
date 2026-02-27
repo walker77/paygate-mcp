@@ -253,6 +253,12 @@ export class McpProxy extends EventEmitter {
 
       const id = request.id;
 
+      // Guard: reject non-spec request IDs (must be string | number | null | undefined)
+      if (id !== undefined && id !== null && typeof id !== 'string' && typeof id !== 'number') {
+        reject(new Error('Invalid request id: must be string, number, or null'));
+        return;
+      }
+
       // Notifications (no id) — fire and forget
       if (id === undefined || id === null) {
         const msg = JSON.stringify(request) + '\n';
