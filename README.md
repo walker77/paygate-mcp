@@ -160,6 +160,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Hourly Traffic** — `GET /admin/hourly-traffic` granular per-hour request counts with allowed/denied breakdown, credits, consumers, tools, and busiest hour
 - **Tool Error Rate** — `GET /admin/tool-error-rate` per-tool error rates with denied/allowed counts, error percentage, and overall reliability metrics
 - **Consumer Spend Velocity** — `GET /admin/consumer-spend-velocity` per-consumer spend rate with credits/hour, depletion forecast, and velocity ranking
+- **Namespace Activity** — `GET /admin/namespace-activity` per-namespace activity metrics with key counts, spend, calls, credits remaining for multi-tenant visibility
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3699,6 +3700,26 @@ curl http://localhost:3000/admin/consumer-spend-velocity -H "X-Admin-Key: YOUR_A
 ```
 
 Per-consumer spend velocity analysis. Per-consumer: total spent, credits remaining, credits per hour rate, and estimated hours until depletion. Zero-spend consumers have `creditsPerHour: 0` and `hoursUntilDepleted: null`. Summary identifies the fastest spender. Excludes revoked/suspended keys. Sorted by spend rate descending. Read-only.
+
+### Namespace Activity
+
+```bash
+curl http://localhost:3000/admin/namespace-activity -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "namespaces": [
+    { "namespace": "production", "keyCount": 5, "totalSpent": 1200, "totalCalls": 240, "creditsRemaining": 3800 },
+    { "namespace": "staging", "keyCount": 2, "totalSpent": 80, "totalCalls": 16, "creditsRemaining": 920 },
+    { "namespace": "default", "keyCount": 1, "totalSpent": 0, "totalCalls": 0, "creditsRemaining": 100 }
+  ],
+  "summary": { "totalNamespaces": 3, "topNamespace": "production" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-namespace activity breakdown for multi-tenant visibility. Per-namespace: key count, total spend, total calls, credits remaining. Keys without a namespace are grouped as "default". Summary identifies the top namespace by spend. Excludes revoked/suspended keys. Sorted by totalSpent descending. Read-only.
 
 ### IP Allowlisting
 
