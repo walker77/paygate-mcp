@@ -892,6 +892,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/capacity':
+        if (req.method === 'GET') return this.handleCapacityPlanning(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1482,6 +1487,7 @@ export class PayGateServer {
         usageForecasting: 'GET /admin/forecast — Usage forecasting with per-key depletion estimates, system-wide consumption trends, per-tool breakdown, and at-risk key identification (requires X-Admin-Key)',
         complianceReport: 'GET /admin/compliance — Compliance report with key governance, access control coverage, audit trail completeness, recommendations, and overall compliance score (requires X-Admin-Key)',
         slaMonitoring: 'GET /admin/sla — SLA monitoring with success rates, denial breakdowns, per-tool availability, uptime tracking, and denial reason aggregation (requires X-Admin-Key)',
+        capacityPlanning: 'GET /admin/capacity — Capacity planning with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6364,6 +6370,100 @@ export class PayGateServer {
         startedAt: new Date(this.startedAt).toISOString(),
         uptimeSeconds: Math.floor(uptimeMs / 1000),
       },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/capacity — Capacity Planning ─────────────────────────────────
+
+  private handleCapacityPlanning(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const events = this.gate.meter.getEvents();
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active);
+
+    // ── Summary ──
+    const totalCreditsAllocated = activeRecords.reduce((sum, r) => sum + r.credits + (r.totalSpent || 0), 0);
+    const totalCreditsSpent = activeRecords.reduce((sum, r) => sum + (r.totalSpent || 0), 0);
+    const totalCreditsRemaining = activeRecords.reduce((sum, r) => sum + r.credits, 0);
+    const utilizationPct = totalCreditsAllocated > 0
+      ? Math.round(totalCreditsSpent / totalCreditsAllocated * 100)
+      : 0;
+
+    // ── Burn rate ──
+    const allowedEvents = events.filter(e => e.allowed);
+    const totalCalls = allowedEvents.length;
+    const totalCreditsFromEvents = allowedEvents.reduce((sum, e) => sum + (e.creditsCharged || 0), 0);
+    const creditsPerCall = totalCalls > 0 ? Math.round(totalCreditsFromEvents / totalCalls * 100) / 100 : 0;
+
+    // ── Top consumers (by credits spent) ──
+    const topConsumers = activeRecords
+      .filter(r => (r.totalSpent || 0) > 0)
+      .map(r => ({
+        keyName: r.name,
+        creditsSpent: r.totalSpent || 0,
+        creditsRemaining: r.credits,
+        callCount: r.totalCalls || 0,
+      }))
+      .sort((a, b) => b.creditsSpent - a.creditsSpent)
+      .slice(0, 10);
+
+    // ── Per-namespace breakdown ──
+    const nsMap = new Map<string, { allocated: number; spent: number; remaining: number; keys: number }>();
+    for (const r of activeRecords) {
+      const ns = r.namespace || 'default';
+      if (!nsMap.has(ns)) nsMap.set(ns, { allocated: 0, spent: 0, remaining: 0, keys: 0 });
+      const n = nsMap.get(ns)!;
+      n.allocated += r.credits + (r.totalSpent || 0);
+      n.spent += r.totalSpent || 0;
+      n.remaining += r.credits;
+      n.keys++;
+    }
+    const byNamespace: Record<string, { allocated: number; spent: number; remaining: number; keys: number; utilizationPct: number }> = {};
+    for (const [ns, stats] of nsMap) {
+      byNamespace[ns] = {
+        ...stats,
+        utilizationPct: stats.allocated > 0 ? Math.round(stats.spent / stats.allocated * 100) : 0,
+      };
+    }
+
+    // ── Recommendations ──
+    const recommendations: string[] = [];
+    if (utilizationPct >= 90) {
+      recommendations.push(`System utilization is at ${utilizationPct}% — top up credits immediately to avoid service disruption`);
+    } else if (utilizationPct >= 75) {
+      recommendations.push(`System utilization is at ${utilizationPct}% — consider adding more credits soon`);
+    }
+
+    const depleted = activeRecords.filter(r => r.credits <= 0 && (r.totalSpent || 0) > 0);
+    if (depleted.length > 0) {
+      recommendations.push(`${depleted.length} key(s) have zero remaining credits and need top-up`);
+    }
+
+    const lowCredit = activeRecords.filter(r => {
+      const alloc = r.credits + (r.totalSpent || 0);
+      return alloc > 0 && r.credits > 0 && r.credits / alloc <= 0.1;
+    });
+    if (lowCredit.length > 0) {
+      recommendations.push(`${lowCredit.length} key(s) have less than 10% credits remaining`);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalCreditsAllocated,
+        totalCreditsSpent,
+        totalCreditsRemaining,
+        utilizationPct,
+        burnRate: {
+          creditsPerCall,
+          totalCalls,
+        },
+      },
+      topConsumers,
+      byNamespace,
+      recommendations,
       generatedAt: new Date().toISOString(),
     }));
   }

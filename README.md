@@ -122,6 +122,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
 - **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
 - **SLA Monitoring** — `GET /admin/sla` tracks service level metrics: success rates, denial breakdowns by reason, per-tool availability and error rates, uptime tracking, sorted by call volume
+- **Capacity Planning** — `GET /admin/capacity` system capacity analysis with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2815,6 +2816,32 @@ curl http://localhost:3000/admin/sla -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Service level metrics: overall success rate, denial breakdown by canonical reason (insufficient_credits, rate_limited, quota_exceeded, acl_denied, spending_limit, key_suspended, key_expired), per-tool availability sorted by call volume, and server uptime tracking. Read-only.
+
+### Capacity Planning
+
+```bash
+curl http://localhost:3000/admin/capacity -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": {
+    "totalCreditsAllocated": 10000, "totalCreditsSpent": 3500, "totalCreditsRemaining": 6500,
+    "utilizationPct": 35,
+    "burnRate": { "creditsPerCall": 10, "totalCalls": 350 }
+  },
+  "topConsumers": [
+    { "keyName": "heavy-user", "creditsSpent": 2000, "creditsRemaining": 500, "callCount": 200 }
+  ],
+  "byNamespace": {
+    "prod": { "allocated": 8000, "spent": 3000, "remaining": 5000, "keys": 3, "utilizationPct": 37 }
+  },
+  "recommendations": ["1 key(s) have less than 10% credits remaining"],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+System capacity analysis: overall credit utilization, burn rate (credits/call), top 10 consumers ranked by spend, per-namespace breakdown, and scaling recommendations for high utilization (>=75%) or depleted keys. Read-only.
 
 ### IP Allowlisting
 
