@@ -1037,6 +1037,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/peak-usage':
+        if (req.method === 'GET') return this.handlePeakUsage(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1656,6 +1661,7 @@ export class PayGateServer {
         creditUtilization: 'GET /admin/credit-utilization — Credit utilization rate across active keys with utilization bands and over/under-provisioning detection (requires X-Admin-Key)',
         namespaceRevenue: 'GET /admin/namespace-revenue — Revenue breakdown by namespace with spend, call counts, key counts, and percentage breakdown (requires X-Admin-Key)',
         groupRevenue: 'GET /admin/group-revenue — Revenue breakdown by key group with spend, call counts, key counts, and percentage breakdown (requires X-Admin-Key)',
+        peakUsage: 'GET /admin/peak-usage — Traffic patterns by hour-of-day with requests, credits, consumers per hour for capacity planning (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8491,6 +8497,68 @@ export class PayGateServer {
         totalGroups: groups.length,
         totalRevenue,
         topGroup: groups[0]?.group || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/peak-usage — Traffic patterns by hour of day ─────────────────
+
+  private handlePeakUsage(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    if (this.requestLog.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        hours: [],
+        summary: { totalRequests: 0, peakHour: null, peakRequests: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const hourMap = new Map<number, { requests: number; allowed: number; denied: number; credits: number; consumers: Set<string> }>();
+
+    for (const entry of this.requestLog) {
+      const hour = new Date(entry.timestamp).getUTCHours();
+      let data = hourMap.get(hour);
+      if (!data) {
+        data = { requests: 0, allowed: 0, denied: 0, credits: 0, consumers: new Set() };
+        hourMap.set(hour, data);
+      }
+      data.requests += 1;
+      if (entry.status === 'allowed') {
+        data.allowed += 1;
+        data.credits += entry.credits || 0;
+      } else if (entry.status === 'denied') {
+        data.denied += 1;
+      }
+      data.consumers.add(entry.key);
+    }
+
+    const totalRequests = this.requestLog.length;
+
+    const hours = Array.from(hourMap.entries())
+      .map(([hour, data]) => ({
+        hour,
+        requests: data.requests,
+        allowed: data.allowed,
+        denied: data.denied,
+        credits: data.credits,
+        uniqueConsumers: data.consumers.size,
+        percentage: totalRequests > 0 ? Math.round((data.requests / totalRequests) * 100) : 0,
+      }))
+      .sort((a, b) => a.hour - b.hour);
+
+    const peak = hours.reduce((max, h) => h.requests > max.requests ? h : max, hours[0]);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      hours,
+      summary: {
+        totalRequests,
+        peakHour: peak.hour,
+        peakRequests: peak.requests,
       },
       generatedAt: new Date().toISOString(),
     }));
