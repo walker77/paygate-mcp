@@ -107,6 +107,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Batch Dry Run** — `POST /requests/dry-run/batch` simulates multiple tool calls at once — aggregate credit check, per-tool ACL validation, spending limit, returns per-tool results with total credits required and credits-after
 - **Tool Availability** — `GET /tools/available?key=...` returns per-key tool availability with pricing, affordability (canAfford), ACL enforcement (accessible/denyReason), and per-tool + global rate limit status
 - **Key Dashboard** — `GET /keys/dashboard?key=...` consolidated single-endpoint view with metadata, balance, health score, spending velocity, rate limits, quotas, usage summary, and recent activity timeline
+- **Admin Notifications** — `GET /admin/notifications` scans all keys for actionable issues: expired/expiring keys, zero credits, credit depletion velocity, suspended keys, high error rates, and rate limit pressure — with severity filtering and priority sorting
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2359,6 +2360,74 @@ curl "http://localhost:3402/keys/dashboard?key=pg_..." \
 ```
 
 Combines metadata (status/namespace/group/tags), balance (credits/spent/allocated/spendingLimit), health score (0-100 composite), spending velocity with depletion forecast, rate limit and quota status, usage summary, and last 10 audit events. Supports alias keys. Works on suspended/revoked/expired keys. Read-only.
+
+### Admin Notifications
+
+Get actionable notifications about keys that need attention:
+
+```bash
+# Get all notifications
+curl http://localhost:3402/admin/notifications \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by severity
+curl "http://localhost:3402/admin/notifications?severity=critical" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "total": 4,
+  "critical": 2,
+  "warning": 1,
+  "info": 1,
+  "notifications": [
+    {
+      "severity": "critical",
+      "category": "zero_credits",
+      "message": "Key has zero credits remaining",
+      "key": "pg_c815...09a6",
+      "keyName": "production-agent"
+    },
+    {
+      "severity": "critical",
+      "category": "key_expiring_soon",
+      "message": "Key expires within 8 hours",
+      "key": "pg_a3f1...b2e4",
+      "keyName": "staging-agent",
+      "details": { "expiresAt": "2026-02-27T08:00:00.000Z", "hoursRemaining": 7.5 }
+    },
+    {
+      "severity": "warning",
+      "category": "credits_depleting",
+      "message": "Credits will deplete in ~18 hours at current rate",
+      "key": "pg_d7e2...f1a3",
+      "keyName": "batch-worker",
+      "details": { "credits": 90, "creditsPerHour": 5.1, "estimatedHoursRemaining": 17.6 }
+    },
+    {
+      "severity": "info",
+      "category": "key_suspended",
+      "message": "Key is suspended",
+      "key": "pg_b4c9...e8d5",
+      "keyName": "deprecated-agent"
+    }
+  ]
+}
+```
+
+**Notification categories:**
+- `key_expired` (critical) — Key has passed its expiry date
+- `key_expiring_soon` (critical <24h, warning <7d) — Key approaching expiry
+- `zero_credits` (critical) — Key has no credits remaining
+- `credits_depleting` (critical <6h, warning <24h) — Spending velocity predicts depletion
+- `key_suspended` (info) — Key is suspended
+- `high_error_rate` (critical ≥50%, warning ≥25%) — High denial rate (min 10 calls)
+- `rate_limit_pressure` (warning ≥90%) — Rate limit nearly exhausted
+
+Notifications are sorted by severity (critical first). Revoked keys are excluded. A single key can appear in multiple notifications (e.g., zero credits AND expiring soon). Filter with `?severity=critical|warning|info`. Read-only.
 
 ### IP Allowlisting
 

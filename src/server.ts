@@ -817,6 +817,11 @@ export class PayGateServer {
         return this.handleRevokeAdminKey(req, res);
       case '/admin/events':
         return this.handleAdminEventStream(req, res);
+      case '/admin/notifications':
+        if (req.method === 'GET') return this.handleAdminNotifications(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1392,6 +1397,7 @@ export class PayGateServer {
         toolStats: 'GET /tools/stats — Per-tool call counts, success rates, latency, credits, and top consumers (requires X-Admin-Key)',
         toolAvailability: 'GET /tools/available?key=... — Per-key tool availability with pricing, affordability, and rate limit status (requires X-Admin-Key)',
         keyDashboard: 'GET /keys/dashboard?key=... — Consolidated key overview with metadata, balance, health, velocity, rate limits, quotas, and recent activity (requires X-Admin-Key)',
+        adminNotifications: 'GET /admin/notifications — Actionable notifications for expiring keys, low credits, high error rates, and rate limit pressure (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4643,6 +4649,158 @@ export class PayGateServer {
         this.adminEventKeepAliveTimer = null;
       }
     });
+  }
+
+  // ─── /admin/notifications — Actionable notifications ──────────────────────
+
+  private handleAdminNotifications(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const severityFilter = params.get('severity'); // critical, warning, info, or null for all
+
+    interface Notification {
+      severity: 'critical' | 'warning' | 'info';
+      category: string;
+      message: string;
+      key?: string;
+      keyName?: string;
+      details?: Record<string, unknown>;
+    }
+    const notifications: Notification[] = [];
+
+    // Scan all keys for issues
+    const allRecords = this.gate.store.getAllRecords();
+
+    for (const record of allRecords) {
+      const maskedKey = record.key.slice(0, 7) + '...' + record.key.slice(-4);
+      const keyName = record.name || undefined;
+
+      // Skip revoked keys
+      if (!record.active) continue;
+
+      // ── Expiry checks ──
+      if (record.expiresAt) {
+        const msToExpiry = new Date(record.expiresAt).getTime() - Date.now();
+        const hoursToExpiry = msToExpiry / 3_600_000;
+        if (msToExpiry <= 0) {
+          notifications.push({
+            severity: 'critical', category: 'key_expired',
+            message: `Key has expired`,
+            key: maskedKey, keyName,
+            details: { expiresAt: record.expiresAt },
+          });
+        } else if (hoursToExpiry <= 24) {
+          notifications.push({
+            severity: 'critical', category: 'key_expiring_soon',
+            message: `Key expires within ${Math.ceil(hoursToExpiry)} hours`,
+            key: maskedKey, keyName,
+            details: { expiresAt: record.expiresAt, hoursRemaining: Math.round(hoursToExpiry * 10) / 10 },
+          });
+        } else if (hoursToExpiry <= 168) {
+          notifications.push({
+            severity: 'warning', category: 'key_expiring_soon',
+            message: `Key expires within ${Math.ceil(hoursToExpiry / 24)} days`,
+            key: maskedKey, keyName,
+            details: { expiresAt: record.expiresAt, daysRemaining: Math.round(hoursToExpiry / 24 * 10) / 10 },
+          });
+        }
+      }
+
+      // ── Credit checks ──
+      if (record.credits <= 0) {
+        notifications.push({
+          severity: 'critical', category: 'zero_credits',
+          message: `Key has zero credits remaining`,
+          key: maskedKey, keyName,
+        });
+      } else {
+        // Check spending velocity for depletion
+        const velocity = this.creditLedger.getSpendingVelocity(record.key, record.credits, 24);
+        if (velocity.creditsPerHour > 0) {
+          const hoursLeft = velocity.estimatedHoursRemaining ?? Infinity;
+          if (hoursLeft <= 6) {
+            notifications.push({
+              severity: 'critical', category: 'credits_depleting',
+              message: `Credits will deplete in ~${Math.ceil(hoursLeft)} hours at current rate`,
+              key: maskedKey, keyName,
+              details: { credits: record.credits, creditsPerHour: velocity.creditsPerHour, estimatedHoursRemaining: Math.round(hoursLeft * 10) / 10 },
+            });
+          } else if (hoursLeft <= 24) {
+            notifications.push({
+              severity: 'warning', category: 'credits_depleting',
+              message: `Credits will deplete in ~${Math.ceil(hoursLeft)} hours at current rate`,
+              key: maskedKey, keyName,
+              details: { credits: record.credits, creditsPerHour: velocity.creditsPerHour, estimatedHoursRemaining: Math.round(hoursLeft * 10) / 10 },
+            });
+          }
+        }
+      }
+
+      // ── Suspended key ──
+      if (record.suspended) {
+        notifications.push({
+          severity: 'info', category: 'key_suspended',
+          message: `Key is suspended`,
+          key: maskedKey, keyName,
+        });
+      }
+
+      // ── Error rate check ──
+      const keyUsage = this.gate.meter.getKeyUsage(record.key);
+      if (keyUsage.totalCalls >= 10) {
+        const errorRate = keyUsage.totalDenied / keyUsage.totalCalls;
+        if (errorRate >= 0.5) {
+          notifications.push({
+            severity: 'critical', category: 'high_error_rate',
+            message: `${Math.round(errorRate * 100)}% error rate (${keyUsage.totalDenied}/${keyUsage.totalCalls} denied)`,
+            key: maskedKey, keyName,
+            details: { errorRate: Math.round(errorRate * 1000) / 1000, totalCalls: keyUsage.totalCalls, totalDenied: keyUsage.totalDenied },
+          });
+        } else if (errorRate >= 0.25) {
+          notifications.push({
+            severity: 'warning', category: 'high_error_rate',
+            message: `${Math.round(errorRate * 100)}% error rate (${keyUsage.totalDenied}/${keyUsage.totalCalls} denied)`,
+            key: maskedKey, keyName,
+            details: { errorRate: Math.round(errorRate * 1000) / 1000, totalCalls: keyUsage.totalCalls, totalDenied: keyUsage.totalDenied },
+          });
+        }
+      }
+
+      // ── Rate limit pressure ──
+      const rateStatus = this.gate.rateLimiter.getStatus(record.key);
+      if (rateStatus.limit > 0) {
+        const utilization = rateStatus.used / rateStatus.limit;
+        if (utilization >= 0.9) {
+          notifications.push({
+            severity: 'warning', category: 'rate_limit_pressure',
+            message: `${Math.round(utilization * 100)}% rate limit utilization (${rateStatus.used}/${rateStatus.limit})`,
+            key: maskedKey, keyName,
+            details: { used: rateStatus.used, limit: rateStatus.limit, remaining: rateStatus.remaining },
+          });
+        }
+      }
+    }
+
+    // Apply severity filter
+    let filtered = notifications;
+    if (severityFilter) {
+      filtered = notifications.filter(n => n.severity === severityFilter);
+    }
+
+    // Sort: critical first, then warning, then info
+    const severityOrder = { critical: 0, warning: 1, info: 2 };
+    filtered.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      total: filtered.length,
+      critical: filtered.filter(n => n.severity === 'critical').length,
+      warning: filtered.filter(n => n.severity === 'warning').length,
+      info: filtered.filter(n => n.severity === 'info').length,
+      notifications: filtered,
+    }));
   }
 
   // ─── /keys/notes — Timestamped notes on API keys ─────────────────────────
