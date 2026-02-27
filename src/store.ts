@@ -12,12 +12,15 @@ import { randomBytes } from 'crypto';
 import { writeFileSync, readFileSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { ApiKeyRecord, QuotaConfig } from './types';
+import { Logger } from './logger';
 
 export class KeyStore {
   private keys = new Map<string, ApiKeyRecord>();
   /** Reverse index: alias → key */
   private aliases = new Map<string, string>();
   private readonly statePath: string | null;
+  /** Structured logger (set by PayGateServer after construction) */
+  logger: Logger = new Logger({ component: 'paygate' });
 
   constructor(statePath?: string) {
     this.statePath = statePath || null;
@@ -850,7 +853,7 @@ export class KeyStore {
       renameSync(tmpPath, this.statePath);
     } catch (err) {
       // Log but don't crash — persistence is best-effort
-      console.error(`[paygate] Failed to save state: ${(err as Error).message}`);
+      this.logger.error(`Failed to save state: ${(err as Error).message}`);
     }
   }
 
@@ -865,7 +868,7 @@ export class KeyStore {
       const data: Array<[string, ApiKeyRecord]> = JSON.parse(json);
 
       if (!Array.isArray(data)) {
-        console.error('[paygate] Invalid state file format, starting fresh.');
+        this.logger.error('Invalid state file format, starting fresh.');
         return;
       }
 
@@ -900,9 +903,9 @@ export class KeyStore {
       // Rebuild alias index from loaded keys
       this.rebuildAliasIndex();
 
-      console.log(`[paygate] Loaded ${this.keys.size} key(s) from ${this.statePath}`);
+      this.logger.info(`Loaded ${this.keys.size} key(s) from ${this.statePath}`);
     } catch (err) {
-      console.error(`[paygate] Failed to load state: ${(err as Error).message}`);
+      this.logger.error(`Failed to load state: ${(err as Error).message}`);
     }
   }
 }

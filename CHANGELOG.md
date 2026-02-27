@@ -1,5 +1,20 @@
 # Changelog
 
+## 8.69.0 (2026-02-27)
+
+### Structured Logging
+- **Logger class** (`src/logger.ts`) — zero-dependency structured logging with levels (`debug`, `info`, `warn`, `error`, `silent`) and formats (`text`, `json`)
+- **Text format**: `[paygate] message` / `[paygate:redis] message` — human-readable for development
+- **JSON format**: `{"ts":"...","level":"info","component":"paygate","msg":"..."}` — machine-parseable for log aggregators (Datadog, ELK, CloudWatch)
+- **Child loggers**: hierarchical component names (`paygate:redis`, `paygate:oauth`) for filtering
+- **38 operational `console.*` calls replaced** across 5 source files (server.ts, redis-sync.ts, store.ts, key-templates.ts, oauth.ts)
+- **CLI flags**: `--log-level` and `--log-format` with env var support (`PAYGATE_LOG_LEVEL`, `PAYGATE_LOG_FORMAT`)
+- **Config file support**: `logLevel` and `logFormat` fields in `paygate.config.json`
+- **Exported API**: `Logger`, `parseLogLevel`, `parseLogFormat`, `VALID_LOG_LEVELS`, `VALID_LOG_FORMATS` + types
+- 44 new tests (construction, text/JSON output, level filtering, child loggers, integration with PayGateServer)
+
+---
+
 ## 8.68.0 (2026-02-27)
 
 ### CI/CD

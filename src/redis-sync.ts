@@ -21,6 +21,7 @@ import { KeyStore } from './store';
 import { ApiKeyRecord, QuotaConfig, UsageEvent } from './types';
 import { KeyGroupManager, KeyGroupRecord } from './groups';
 import { randomBytes } from 'crypto';
+import { Logger } from './logger';
 
 const KEY_PREFIX = 'pg:key:';
 const KEY_SET = 'pg:keys';
@@ -127,6 +128,8 @@ export class RedisSync {
   onTokenRevoked?: (fingerprint: string, expiresAt: string, revokedAt: string, reason?: string) => void;
   /** Optional KeyGroupManager for group sync (wired by server when groups are used) */
   groupManager?: KeyGroupManager;
+  /** Structured logger (set by PayGateServer after construction) */
+  logger: Logger = new Logger({ component: 'paygate:redis' });
 
   constructor(redis: RedisClient, store: KeyStore, syncIntervalMs = 5000) {
     this.redis = redis;
@@ -143,7 +146,7 @@ export class RedisSync {
   async init(subscriberOpts?: RedisClientOptions): Promise<void> {
     await this.redis.connect();
     await this.redis.ping();
-    console.log('[paygate:redis] Connected to Redis');
+    this.logger.info('Connected to Redis');
 
     await this.loadFromRedis();
     await this.loadGroupsFromRedis();
@@ -151,10 +154,10 @@ export class RedisSync {
     // Start periodic refresh (fallback for missed pub/sub messages)
     this.syncInterval = setInterval(() => {
       this.loadFromRedis().catch(err => {
-        console.error('[paygate:redis] Sync error:', err.message);
+        this.logger.error(`Sync error: ${err.message}`);
       });
       this.loadGroupsFromRedis().catch(err => {
-        console.error('[paygate:redis] Group sync error:', err.message);
+        this.logger.error(`Group sync error: ${err.message}`);
       });
     }, this.syncMs);
 
@@ -193,9 +196,9 @@ export class RedisSync {
         this.handlePubSubMessage(message);
       });
       this.pubsubActive = true;
-      console.log(`[paygate:redis] Pub/sub active (instance: ${this.instanceId.slice(0, 8)})`);
+      this.logger.info(`Pub/sub active (instance: ${this.instanceId.slice(0, 8)})`);
     } catch (err) {
-      console.error(`[paygate:redis] Pub/sub setup failed: ${(err as Error).message}`);
+      this.logger.error(`Pub/sub setup failed: ${(err as Error).message}`);
       // Non-fatal: periodic sync is still running as fallback
     }
   }
@@ -209,7 +212,7 @@ export class RedisSync {
       const fullEvent: PubSubEvent = { ...event, instanceId: this.instanceId };
       await this.redis.publish(PG_CHANNEL, JSON.stringify(fullEvent));
     } catch (err) {
-      console.error(`[paygate:redis] Publish error: ${(err as Error).message}`);
+      this.logger.error(`Publish error: ${(err as Error).message}`);
     }
   }
 
@@ -291,7 +294,7 @@ export class RedisSync {
       const localKeys = (this.store as any).keys as Map<string, ApiKeyRecord>;
       localKeys.set(record.key, record);
     } catch (err) {
-      console.error(`[paygate:redis] Single key refresh error: ${(err as Error).message}`);
+      this.logger.error(`Single key refresh error: ${(err as Error).message}`);
     }
   }
 
@@ -319,7 +322,7 @@ export class RedisSync {
       // Notify other instances
       await this.publishEvent({ type: 'key_updated', key: record.key });
     } catch (err) {
-      console.error(`[paygate:redis] Save key error: ${(err as Error).message}`);
+      this.logger.error(`Save key error: ${(err as Error).message}`);
     }
   }
 
@@ -339,7 +342,7 @@ export class RedisSync {
         await this.redis.command('SADD', KEY_SET, key);
       }
     } catch (err) {
-      console.error(`[paygate:redis] SaveAll error: ${(err as Error).message}`);
+      this.logger.error(`SaveAll error: ${(err as Error).message}`);
     }
   }
 
@@ -379,7 +382,7 @@ export class RedisSync {
       }
       return false;
     } catch (err) {
-      console.error(`[paygate:redis] Atomic deduct error: ${(err as Error).message}`);
+      this.logger.error(`Atomic deduct error: ${(err as Error).message}`);
       // Fallback to local deduction if Redis is temporarily unavailable
       return this.store.deductCredits(apiKey, amount);
     }
@@ -412,7 +415,7 @@ export class RedisSync {
       }
       return false;
     } catch (err) {
-      console.error(`[paygate:redis] Atomic topup error: ${(err as Error).message}`);
+      this.logger.error(`Atomic topup error: ${(err as Error).message}`);
       return this.store.addCredits(apiKey, amount);
     }
   }
@@ -427,7 +430,7 @@ export class RedisSync {
       // Notify other instances
       await this.publishEvent({ type: 'key_revoked', key: apiKey });
     } catch (err) {
-      console.error(`[paygate:redis] Revoke error: ${(err as Error).message}`);
+      this.logger.error(`Revoke error: ${(err as Error).message}`);
     }
     return localResult;
   }
@@ -444,7 +447,7 @@ export class RedisSync {
       // Trim to max 100k events (same as local UsageMeter)
       await this.redis.command('LTRIM', USAGE_LIST, '-100000', '-1');
     } catch (err) {
-      console.error(`[paygate:redis] Usage record error: ${(err as Error).message}`);
+      this.logger.error(`Usage record error: ${(err as Error).message}`);
     }
   }
 
@@ -459,7 +462,7 @@ export class RedisSync {
       if (since) return events.filter(e => e.timestamp >= since);
       return events;
     } catch (err) {
-      console.error(`[paygate:redis] Usage get error: ${(err as Error).message}`);
+      this.logger.error(`Usage get error: ${(err as Error).message}`);
       return [];
     }
   }
@@ -529,7 +532,7 @@ export class RedisSync {
         resetInMs: Math.max(0, resetInMs),
       };
     } catch (err) {
-      console.error(`[paygate:redis] Rate check error: ${(err as Error).message}`);
+      this.logger.error(`Rate check error: ${(err as Error).message}`);
       // Fallback: allow on Redis error (fail-open for rate limiting)
       return { allowed: true, remaining: maxCalls - 1, resetInMs: windowMs };
     }
@@ -565,10 +568,10 @@ export class RedisSync {
       }
 
       if (loaded > 0) {
-        console.log(`[paygate:redis] Synced ${loaded} key(s) from Redis`);
+        this.logger.info(`Synced ${loaded} key(s) from Redis`);
       }
     } catch (err) {
-      console.error(`[paygate:redis] Load error: ${(err as Error).message}`);
+      this.logger.error(`Load error: ${(err as Error).message}`);
     }
   }
 
@@ -584,7 +587,7 @@ export class RedisSync {
       await this.redis.hset(redisKey, ...this.recordToHash(record));
       await this.redis.command('SADD', KEY_SET, key);
     }
-    console.log(`[paygate:redis] Pushed ${localKeys.size} local key(s) to Redis`);
+    this.logger.info(`Pushed ${localKeys.size} local key(s) to Redis`);
   }
 
   // ─── Serialization ─────────────────────────────────────────────────────────
@@ -664,7 +667,7 @@ export class RedisSync {
       await this.redis.command('SADD', GROUP_SET, group.id);
       await this.publishEvent({ type: 'group_updated', key: group.id });
     } catch (err) {
-      console.error(`[paygate:redis] Save group error: ${(err as Error).message}`);
+      this.logger.error(`Save group error: ${(err as Error).message}`);
     }
   }
 
@@ -677,7 +680,7 @@ export class RedisSync {
       await this.redis.command('SREM', GROUP_SET, groupId);
       await this.publishEvent({ type: 'group_deleted', key: groupId });
     } catch (err) {
-      console.error(`[paygate:redis] Delete group error: ${(err as Error).message}`);
+      this.logger.error(`Delete group error: ${(err as Error).message}`);
     }
   }
 
@@ -701,7 +704,7 @@ export class RedisSync {
       }
       await this.publishEvent({ type: 'group_assignment_changed', key: '' });
     } catch (err) {
-      console.error(`[paygate:redis] Save assignments error: ${(err as Error).message}`);
+      this.logger.error(`Save assignments error: ${(err as Error).message}`);
     }
   }
 
@@ -742,10 +745,10 @@ export class RedisSync {
       this.groupManager.load({ groups, assignments });
 
       if (groups.length > 0) {
-        console.log(`[paygate:redis] Synced ${groups.length} group(s) from Redis`);
+        this.logger.info(`Synced ${groups.length} group(s) from Redis`);
       }
     } catch (err) {
-      console.error(`[paygate:redis] Load groups error: ${(err as Error).message}`);
+      this.logger.error(`Load groups error: ${(err as Error).message}`);
     }
   }
 
@@ -771,7 +774,7 @@ export class RedisSync {
       await this.redis.hset(GROUP_ASSIGN_KEY, ...fields);
     }
 
-    console.log(`[paygate:redis] Pushed ${serialized.groups.length} local group(s) to Redis`);
+    this.logger.info(`Pushed ${serialized.groups.length} local group(s) to Redis`);
   }
 
   // ─── Group Serialization ───────────────────────────────────────────────────

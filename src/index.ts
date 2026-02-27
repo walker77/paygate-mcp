@@ -63,6 +63,8 @@ export { PluginManager } from './plugin';
 export type { PayGatePlugin, PluginGateContext, PluginToolContext, PluginGateOverride, PluginInfo } from './plugin';
 export { KeyGroupManager } from './groups';
 export type { KeyGroupRecord, KeyGroupInfo, ResolvedPolicy } from './groups';
+export { Logger, parseLogLevel, parseLogFormat, VALID_LOG_LEVELS, VALID_LOG_FORMATS } from './logger';
+export type { LogLevel, LogFormat, LoggerOptions } from './logger';
 
 export type {
   PayGateConfig,

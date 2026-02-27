@@ -15,6 +15,7 @@
 import { writeFileSync, readFileSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { QuotaConfig } from './types';
+import { Logger } from './logger';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,8 @@ const MAX_TEMPLATES = 100;
 export class KeyTemplateManager {
   private templates = new Map<string, KeyTemplate>();
   private readonly filePath: string | null;
+  /** Structured logger (set by PayGateServer after construction) */
+  logger: Logger = new Logger({ component: 'paygate' });
 
   constructor(filePath?: string) {
     this.filePath = filePath || null;
@@ -150,7 +153,7 @@ export class KeyTemplateManager {
       writeFileSync(tmpPath, json, 'utf-8');
       renameSync(tmpPath, this.filePath);
     } catch (err) {
-      console.error(`[paygate] Failed to save templates: ${(err as Error).message}`);
+      this.logger.error(`Failed to save templates: ${(err as Error).message}`);
     }
   }
 
@@ -165,9 +168,9 @@ export class KeyTemplateManager {
           this.templates.set(name, template);
         }
       }
-      console.log(`[paygate] Loaded ${this.templates.size} template(s) from ${this.filePath}`);
+      this.logger.info(`Loaded ${this.templates.size} template(s) from ${this.filePath}`);
     } catch (err) {
-      console.error(`[paygate] Failed to load templates: ${(err as Error).message}`);
+      this.logger.error(`Failed to load templates: ${(err as Error).message}`);
     }
   }
 }

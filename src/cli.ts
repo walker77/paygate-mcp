@@ -79,6 +79,8 @@ function printUsage(): void {
     --header <k:v>         Custom response header (repeatable, e.g. "X-Frame-Options:DENY")
     --trusted-proxies <s>  Trusted proxy IPs/CIDRs, comma-separated (e.g. "10.0.0.0/8,172.16.0.0/12")
     --dry-run              Start, discover tools, print pricing table, then exit
+    --log-level <s>        Log level: debug, info, warn, error, silent (default: info)
+    --log-format <s>       Log format: text (human-readable) or json (structured) (default: text)
 
   ENVIRONMENT VARIABLES (override defaults, overridden by CLI flags):
     PAYGATE_SERVER         MCP server command (same as --server)
@@ -102,6 +104,8 @@ function printUsage(): void {
     PAYGATE_CORS_ORIGIN    CORS allowed origin(s), comma-separated (same as --cors-origin)
     PAYGATE_CUSTOM_HEADERS Custom response headers, comma-separated k:v (same as --header)
     PAYGATE_TRUSTED_PROXIES Trusted proxy IPs/CIDRs, comma-separated (same as --trusted-proxies)
+    PAYGATE_LOG_LEVEL      Log level (same as --log-level)
+    PAYGATE_LOG_FORMAT     Log format (same as --log-format)
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -192,6 +196,10 @@ interface ConfigFile {
   customHeaders?: Record<string, string>;
   /** Trusted proxy IPs/CIDRs for accurate X-Forwarded-For extraction */
   trustedProxies?: string[];
+  /** Log level: debug, info, warn, error, silent */
+  logLevel?: string;
+  /** Log format: text or json */
+  logFormat?: string;
 }
 
 // ─── Env Var Helpers ─────────────────────────────────────────────────────────
@@ -230,6 +238,8 @@ export const ENV_VAR_MAP: Record<string, string> = {
   PAYGATE_CORS_ORIGIN: '--cors-origin (CORS allowed origin(s), comma-separated)',
   PAYGATE_CUSTOM_HEADERS: '--header (custom response headers, comma-separated k:v)',
   PAYGATE_TRUSTED_PROXIES: '--trusted-proxies (trusted proxy IPs/CIDRs, comma-separated)',
+  PAYGATE_LOG_LEVEL: '--log-level (log level: debug/info/warn/error/silent)',
+  PAYGATE_LOG_FORMAT: '--log-format (log format: text/json)',
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -333,6 +343,8 @@ async function main(): Promise<void> {
       const corsOriginFlag = flags['cors-origin'] || env('PAYGATE_CORS_ORIGIN');
       const headerFlag = flags['header'] || env('PAYGATE_CUSTOM_HEADERS');
       const trustedProxiesFlag = flags['trusted-proxies'] || env('PAYGATE_TRUSTED_PROXIES');
+      const logLevelFlag = flags['log-level'] || env('PAYGATE_LOG_LEVEL');
+      const logFormatFlag = flags['log-format'] || env('PAYGATE_LOG_FORMAT');
 
       const port = parseInt(portFlag || String(fileConfig.port || 3402), 10);
       const price = parseInt(priceFlag || String(fileConfig.defaultCreditsPerCall || 1), 10);
@@ -378,6 +390,10 @@ async function main(): Promise<void> {
         ? trustedProxiesFlag.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0)
         : fileConfig.trustedProxies;
 
+      // Log level/format: CLI > env > config > defaults
+      const logLevel = (logLevelFlag || fileConfig.logLevel || 'info') as any;
+      const logFormat = (logFormatFlag || fileConfig.logFormat || 'text') as any;
+
       const server = new PayGateServer({
         serverCommand,
         serverArgs,
@@ -396,6 +412,8 @@ async function main(): Promise<void> {
         cors: corsConfig,
         customHeaders,
         trustedProxies,
+        logLevel,
+        logFormat,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Wire config file path for hot-reload support

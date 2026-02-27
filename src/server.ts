@@ -19,6 +19,7 @@ import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG } from './types';
 import { validateConfig, ValidatableConfig } from './config-validator';
+import { Logger, parseLogLevel, parseLogFormat } from './logger';
 
 /** Read version from package.json at runtime */
 const PKG_VERSION = (() => {
@@ -153,6 +154,8 @@ interface RequestHandler {
 import { JsonRpcResponse } from './types';
 
 export class PayGateServer {
+  /** Structured logger for operational messages */
+  readonly logger: Logger;
   readonly gate: Gate;
   /** Single-server proxy (when not in multi-server mode) */
   readonly proxy: ProxyBackend | null;
@@ -268,6 +271,11 @@ export class PayGateServer {
     redisUrl?: string,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.logger = new Logger({
+      level: parseLogLevel(this.config.logLevel),
+      format: parseLogFormat(this.config.logFormat),
+      component: 'paygate',
+    });
     this.bootstrapAdminKey = adminKey || `admin_${require('crypto').randomBytes(16).toString('hex')}`;
 
     // Admin key manager with file persistence (separate from API key state)
@@ -276,6 +284,7 @@ export class PayGateServer {
     this.adminKeys.bootstrap(this.bootstrapAdminKey);
 
     this.gate = new Gate(this.config, statePath);
+    this.gate.store.logger = this.logger;
 
     // Multi-server mode: use Router
     if (servers && servers.length > 0) {
@@ -302,6 +311,7 @@ export class PayGateServer {
         refreshTokenTtl: this.config.oauth.refreshTokenTtl,
         scopes: this.config.oauth.scopes,
       }, oauthStatePath);
+      this.oauth.logger = this.logger.child('oauth');
     }
 
     // Session manager for SSE streaming
@@ -427,6 +437,7 @@ export class PayGateServer {
     // Key template manager for reusable key creation presets
     const templatesStatePath = statePath ? statePath.replace(/\.json$/, '-templates.json') : undefined;
     this.templates = new KeyTemplateManager(templatesStatePath);
+    this.templates.logger = this.logger;
     this.creditLedger = new CreditLedger();
     this.metrics.registerGauge('paygate_templates_total', 'Number of key templates', () => {
       return this.templates.count;
@@ -443,6 +454,7 @@ export class PayGateServer {
       const redisOpts = parseRedisUrl(redisUrl);
       const redisClient = new RedisClient(redisOpts);
       const sync = new RedisSync(redisClient, this.gate.store);
+      sync.logger = this.logger.child('redis');
       // Store opts for pub/sub subscriber connection
       (sync as any)._subscriberOpts = redisOpts;
       (this as any).redisSync = sync;
@@ -493,7 +505,7 @@ export class PayGateServer {
     if (this.redisSync) {
       const subOpts = (this.redisSync as any)._subscriberOpts;
       await this.redisSync.init(subOpts);
-      console.log('[paygate] Redis distributed state enabled');
+      this.logger.info('Redis distributed state enabled');
     }
 
     await this.handler.start();
@@ -11754,7 +11766,7 @@ export class PayGateServer {
   async gracefulStop(timeoutMs = 30_000): Promise<void> {
     if (this.draining) return; // already draining
     this.draining = true;
-    console.log(`[paygate] Draining — waiting for ${this.inflight} in-flight request(s)…`);
+    this.logger.info(`Draining — waiting for ${this.inflight} in-flight request(s)`);
 
     // Stop accepting new TCP connections immediately
     if (this.server) {
@@ -11770,7 +11782,7 @@ export class PayGateServer {
           return;
         }
         if (Date.now() - drainStart >= timeoutMs) {
-          console.warn(`[paygate] Drain timeout (${timeoutMs}ms) — ${this.inflight} request(s) still in-flight, force-stopping`);
+          this.logger.warn(`Drain timeout (${timeoutMs}ms) — ${this.inflight} request(s) still in-flight, force-stopping`);
           resolve();
           return;
         }
@@ -11779,7 +11791,7 @@ export class PayGateServer {
       check();
     });
 
-    console.log('[paygate] Drained — tearing down resources');
+    this.logger.info('Drained — tearing down resources');
     // Plugin lifecycle: onStop (reverse order)
     if (this.plugins.count > 0) {
       await this.plugins.executeStop();

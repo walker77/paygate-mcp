@@ -122,6 +122,10 @@ export interface PayGateConfig {
   trustedProxies?: string[];
   /** Custom response headers applied to all HTTP responses. */
   customHeaders?: Record<string, string>;
+  /** Minimum log level: 'debug' | 'info' | 'warn' | 'error' | 'silent'. Default: 'info'. */
+  logLevel?: 'debug' | 'info' | 'warn' | 'error' | 'silent';
+  /** Log output format: 'text' (human-readable) | 'json' (structured). Default: 'text'. */
+  logFormat?: 'text' | 'json';
   /** CORS configuration. Default: allow all origins (*). */
   cors?: {
     /** Allowed origin(s). Use '*' for all, or specify exact origins. Default: '*'. */

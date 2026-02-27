@@ -19,6 +19,7 @@
 import { randomBytes, createHash } from 'crypto';
 import { writeFileSync, readFileSync, mkdirSync, renameSync, existsSync } from 'fs';
 import { dirname } from 'path';
+import { Logger } from './logger';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,8 @@ export class OAuthProvider {
   private tokens = new Map<string, OAuthTokenRecord>();
   private readonly config: OAuthConfig;
   private readonly statePath: string | null;
+  /** Structured logger (set by PayGateServer after construction) */
+  logger: Logger = new Logger({ component: 'paygate:oauth' });
 
   constructor(config?: Partial<OAuthConfig>, statePath?: string) {
     // Filter out undefined values so defaults are preserved
@@ -474,7 +477,7 @@ export class OAuthProvider {
       writeFileSync(tmpPath, json, 'utf-8');
       renameSync(tmpPath, this.statePath);
     } catch (err) {
-      console.error(`[paygate:oauth] Failed to save state: ${(err as Error).message}`);
+      this.logger.error(`Failed to save state: ${(err as Error).message}`);
     }
   }
 
@@ -497,9 +500,9 @@ export class OAuthProvider {
         }
       }
 
-      console.log(`[paygate:oauth] Loaded ${this.clients.size} client(s), ${this.tokens.size} token(s)`);
+      this.logger.info(`Loaded ${this.clients.size} client(s), ${this.tokens.size} token(s)`);
     } catch (err) {
-      console.error(`[paygate:oauth] Failed to load state: ${(err as Error).message}`);
+      this.logger.error(`Failed to load state: ${(err as Error).message}`);
     }
   }
 }
