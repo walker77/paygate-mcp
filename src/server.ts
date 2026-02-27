@@ -1067,6 +1067,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/hourly-traffic':
+        if (req.method === 'GET') return this.handleHourlyTraffic(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1692,6 +1697,7 @@ export class PayGateServer {
         creditAllocation: 'GET /admin/credit-allocation — Credit allocation summary with tier breakdown, totals, and average allocation across active keys (requires X-Admin-Key)',
         dailySummary: 'GET /admin/daily-summary — Daily rollup of requests, credits spent, new keys, errors, and unique consumers for trend analysis (requires X-Admin-Key)',
         keyRanking: 'GET /admin/key-ranking — Key leaderboard ranked by spend, calls, or credits remaining with configurable sorting (requires X-Admin-Key)',
+        hourlyTraffic: 'GET /admin/hourly-traffic — Granular per-hour request counts with allowed/denied breakdown, credits, consumers, and tools (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8706,6 +8712,94 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/hourly-traffic — Granular per-hour metrics ───────────────────
+
+  private handleHourlyTraffic(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    if (this.requestLog.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        hours: [],
+        summary: {
+          totalRequests: 0,
+          totalCredits: 0,
+          busiestHour: null,
+          busiestHourRequests: 0,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Group by hour bucket (YYYY-MM-DDTHH:00:00Z)
+    const hourMap = new Map<string, {
+      requests: number;
+      allowed: number;
+      denied: number;
+      credits: number;
+      consumers: Set<string>;
+      tools: Set<string>;
+    }>();
+
+    for (const entry of this.requestLog) {
+      const ts = new Date(entry.timestamp);
+      const hourKey = ts.toISOString().slice(0, 13) + ':00:00Z';
+      let h = hourMap.get(hourKey);
+      if (!h) {
+        h = { requests: 0, allowed: 0, denied: 0, credits: 0, consumers: new Set(), tools: new Set() };
+        hourMap.set(hourKey, h);
+      }
+      h.requests++;
+      if (entry.status === 'allowed') {
+        h.allowed++;
+        h.credits += entry.credits || 0;
+      } else {
+        h.denied++;
+      }
+      h.consumers.add(entry.key);
+      if (entry.tool) h.tools.add(entry.tool);
+    }
+
+    // Build hours array sorted by timestamp descending
+    const hours = Array.from(hourMap.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([timestamp, h]) => ({
+        timestamp,
+        requests: h.requests,
+        allowed: h.allowed,
+        denied: h.denied,
+        credits: h.credits,
+        uniqueConsumers: h.consumers.size,
+        uniqueTools: h.tools.size,
+      }));
+
+    const totalRequests = hours.reduce((s, h) => s + h.requests, 0);
+    const totalCredits = hours.reduce((s, h) => s + h.credits, 0);
+
+    // Find busiest hour
+    let busiestHour = hours[0]?.timestamp || null;
+    let busiestHourRequests = 0;
+    for (const h of hours) {
+      if (h.requests > busiestHourRequests) {
+        busiestHour = h.timestamp;
+        busiestHourRequests = h.requests;
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      hours,
+      summary: {
+        totalRequests,
+        totalCredits,
+        busiestHour,
+        busiestHourRequests,
       },
       generatedAt: new Date().toISOString(),
     }));

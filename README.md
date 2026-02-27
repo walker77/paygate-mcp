@@ -157,6 +157,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Allocation Summary** — `GET /admin/credit-allocation` credit allocation across active keys with tier breakdown (1-100, 101-500, 501+), totals, and average allocation
 - **Daily Summary** — `GET /admin/daily-summary` daily rollup of requests, credits spent, new keys, errors, unique consumers and tools for trend analysis
 - **Key Ranking** — `GET /admin/key-ranking` leaderboard of active keys ranked by spend, calls, or credits remaining with configurable sorting
+- **Hourly Traffic** — `GET /admin/hourly-traffic` granular per-hour request counts with allowed/denied breakdown, credits, consumers, tools, and busiest hour
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3637,6 +3638,25 @@ curl http://localhost:3000/admin/key-ranking -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Key leaderboard ranked by configurable metric. Default sorts by `totalSpent` descending. Use `?sortBy=totalCalls` or `?sortBy=creditsRemaining` for alternative rankings. Each entry includes rank number, name, spend, calls, and credits remaining. Excludes revoked/suspended keys. Read-only.
+
+### Hourly Traffic
+
+```bash
+curl http://localhost:3000/admin/hourly-traffic -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "hours": [
+    { "timestamp": "2025-01-15T14:00:00Z", "requests": 45, "allowed": 42, "denied": 3, "credits": 210, "uniqueConsumers": 12, "uniqueTools": 5 },
+    { "timestamp": "2025-01-15T13:00:00Z", "requests": 30, "allowed": 28, "denied": 2, "credits": 140, "uniqueConsumers": 8, "uniqueTools": 4 }
+  ],
+  "summary": { "totalRequests": 75, "totalCredits": 350, "busiestHour": "2025-01-15T14:00:00Z", "busiestHourRequests": 45 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Granular per-hour request metrics. Per-hour: total requests, allowed/denied breakdown, credits spent, unique consumers, and unique tools. Summary includes totals and identifies the busiest hour. Sorted by timestamp descending (most recent first). Read-only.
 
 ### IP Allowlisting
 
