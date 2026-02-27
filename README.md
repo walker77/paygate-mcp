@@ -98,6 +98,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Admin Event Stream** — `GET /admin/events` SSE endpoint streams real-time audit events to admin clients — tool calls, denials, key operations, maintenance changes, all with optional `?types=` filter for event type filtering, keepalive pings, multi-client support
 - **Key Notes** — `POST /keys/notes` adds timestamped notes to API keys, `GET /keys/notes?key=...` lists notes, `DELETE /keys/notes?key=...&index=N` removes notes — max 50 per key, 1000 char limit, works on suspended/revoked keys, alias support, audit trail
 - **Scheduled Actions** — `POST /keys/schedule` creates future-dated actions (revoke/suspend/topup) on API keys, `GET /keys/schedule` lists pending schedules with optional `?key=` filter, `DELETE /keys/schedule?id=...` cancels a schedule — max 20 per key, alias support, background execution timer, audit trail
+- **Key Activity Timeline** — `GET /keys/activity?key=...` returns a unified chronological feed of audit events and usage events for a specific key — newest first, optional `?since=` and `?limit=` filters, alias support
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2001,6 +2002,37 @@ curl -X DELETE "http://localhost:3402/keys/schedule?id=sched_1" \
 ```
 
 Supported actions: `revoke`, `suspend`, `topup` (requires `params.credits`). Max 20 schedules per key. Supports aliases. Background timer checks every 10 seconds. All create/execute/cancel operations recorded in audit trail (`schedule.created` / `schedule.executed` / `schedule.cancelled`).
+
+### Key Activity Timeline
+
+Get a unified chronological feed of all events for a specific key — audit events (creation, suspension, notes, etc.) and usage events (tool calls, denials) merged into one timeline:
+
+```bash
+# Get activity for a key (newest first, default limit 50)
+curl "http://localhost:3402/keys/activity?key=pg_..." -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# With filters
+curl "http://localhost:3402/keys/activity?key=pg_...&limit=20&since=2025-03-15T00:00:00Z" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_abc1...2345",
+  "name": "my-agent",
+  "total": 42,
+  "limit": 50,
+  "events": [
+    { "timestamp": "2025-03-16T10:30:00Z", "source": "usage", "type": "tool.call", "message": "Called search (5 credits)", "metadata": { "tool": "search", "creditsCharged": 5, "allowed": true } },
+    { "timestamp": "2025-03-16T09:00:00Z", "source": "audit", "type": "key.note_added", "message": "Note added to key", "metadata": { "key": "pg_abc1...2345" } },
+    { "timestamp": "2025-03-15T14:00:00Z", "source": "audit", "type": "key.created", "message": "Key created: my-agent", "metadata": { "keyMasked": "pg_abc1...2345" } }
+  ]
+}
+```
+
+Max 200 events per request. Supports aliases. Works on suspended and revoked keys.
 
 ### IP Allowlisting
 

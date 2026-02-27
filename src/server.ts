@@ -595,6 +595,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed' }));
         return;
+      case '/keys/activity':
+        if (req.method === 'GET') return this.handleKeyActivity(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       case '/keys/rotate':
         return this.handleRotateKey(req, res);
       case '/keys/acl':
@@ -1261,6 +1266,7 @@ export class PayGateServer {
         adminEvents: 'GET /admin/events — Real-time SSE stream of server events (requires X-Admin-Key, Accept: text/event-stream)',
         keyNotes: 'GET /keys/notes?key=... — List notes + POST to add + DELETE to remove (requires X-Admin-Key)',
         keySchedule: 'GET /keys/schedule?key=... — List schedules + POST to create + DELETE to cancel (requires X-Admin-Key)',
+        keyActivity: 'GET /keys/activity?key=... — Unified activity timeline for a key (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4675,6 +4681,105 @@ export class PayGateServer {
         // Log error but don't crash
       }
     }
+  }
+
+  // ─── /keys/activity — Unified activity timeline for a key ────────────────
+
+  private handleKeyActivity(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keyParam = params.get('key');
+
+    if (!keyParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required query parameter: key' }));
+      return;
+    }
+
+    const record = this.gate.store.resolveKeyRaw(keyParam);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const since = params.get('since') || undefined;
+    const limit = Math.min(200, Math.max(1, parseInt(params.get('limit') || '50', 10) || 50));
+    const maskedKey = maskKeyForAudit(record.key);
+
+    // 1. Collect audit events for this key
+    // Audit events store masked keys in metadata.key or metadata.keyMasked
+    const auditResult = this.audit.query({
+      since,
+      limit: 1000, // Grab up to 1000 to merge
+    });
+    const keyAuditEvents = auditResult.events.filter(e => {
+      // Check metadata.key or metadata.keyMasked (both patterns are used)
+      for (const field of ['key', 'keyMasked', 'sourceKey', 'destKey'] as const) {
+        const val = e.metadata?.[field];
+        if (val && typeof val === 'string' && val === maskedKey) return true;
+      }
+      // Check actor field (gate events use masked key as actor)
+      if (e.actor === maskedKey) return true;
+      return false;
+    });
+
+    // 2. Collect usage events for this key
+    const usageEvents = this.gate.meter.getEvents(since).filter(e => e.apiKey === record.key);
+
+    // 3. Merge into unified timeline
+    const timeline: Array<{
+      timestamp: string;
+      source: 'audit' | 'usage';
+      type: string;
+      message: string;
+      metadata: Record<string, unknown>;
+    }> = [];
+
+    for (const e of keyAuditEvents) {
+      timeline.push({
+        timestamp: e.timestamp,
+        source: 'audit',
+        type: e.type,
+        message: e.message,
+        metadata: e.metadata,
+      });
+    }
+
+    for (const e of usageEvents) {
+      timeline.push({
+        timestamp: e.timestamp,
+        source: 'usage',
+        type: e.allowed ? 'tool.call' : 'tool.denied',
+        message: e.allowed
+          ? `Called ${e.tool} (${e.creditsCharged} credits)`
+          : `Denied ${e.tool}: ${e.denyReason || 'unknown'}`,
+        metadata: {
+          tool: e.tool,
+          creditsCharged: e.creditsCharged,
+          allowed: e.allowed,
+          denyReason: e.denyReason,
+          durationMs: e.durationMs,
+        },
+      });
+    }
+
+    // Sort by timestamp descending (newest first)
+    timeline.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+    // Apply limit
+    const page = timeline.slice(0, limit);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      key: maskedKey,
+      name: record.name,
+      total: timeline.length,
+      limit,
+      events: page,
+    }));
   }
 
   // ─── /config/reload — Hot reload configuration from file ─────────────────
