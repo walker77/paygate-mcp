@@ -236,6 +236,8 @@ export class WebhookEmitter {
   private _pausedAt: string | null = null;
   /** Number of events buffered while paused */
   private _pauseBufferCount = 0;
+  /** Whether to re-check SSRF at delivery time (defense against DNS rebinding) */
+  private readonly ssrfCheckOnDelivery: boolean;
 
   constructor(url: string, options?: {
     secret?: string | null;
@@ -245,6 +247,8 @@ export class WebhookEmitter {
     baseDelayMs?: number;
     maxDeadLetters?: number;
     maxDeliveryLog?: number;
+    /** Enable delivery-time SSRF re-check (DNS rebinding defense). Default: true. */
+    ssrfCheckOnDelivery?: boolean;
   }) {
     this.url = url;
     this.secret = options?.secret || null;
@@ -255,6 +259,7 @@ export class WebhookEmitter {
     this.baseDelayMs = options?.baseDelayMs ?? 1000;
     this.maxDeadLetters = options?.maxDeadLetters ?? 1000;
     this.maxDeliveryLog = options?.maxDeliveryLog ?? 500;
+    this.ssrfCheckOnDelivery = options?.ssrfCheckOnDelivery ?? true;
 
     this.timer = setInterval(() => this.flush(), this.flushIntervalMs);
     if (this.timer.unref) this.timer.unref();
@@ -619,14 +624,31 @@ export class WebhookEmitter {
       return;
     }
 
-    // Note: SSRF protection is enforced at the admin API entry points
-    // (webhook filter create/update, webhook test endpoint, config validator).
-    // Delivery-time checks are intentionally omitted to allow localhost
-    // webhook URLs in development and testing environments.
-
     const maskedUrl = WebhookEmitter.maskUrl(this.url);
     const startTime = Date.now();
     const eventTypesArr = WebhookEmitter.eventTypes(events);
+
+    // SSRF re-validation at delivery time — prevents DNS rebinding attacks
+    // where a hostname passes initial validation but later resolves to a private IP.
+    // This is a defense-in-depth measure complementing creation-time checks.
+    // Can be disabled via ssrfCheckOnDelivery: false for dev/test environments with localhost webhooks.
+    const ssrfError = this.ssrfCheckOnDelivery ? checkSsrf(this.url) : null;
+    if (ssrfError) {
+      const errorMsg = `SSRF blocked at delivery: ${ssrfError}`;
+      this.addDeadLetter(events, attempt, errorMsg, firstAttempt);
+      this.recordDelivery({
+        timestamp: new Date().toISOString(),
+        url: maskedUrl,
+        statusCode: 0,
+        success: false,
+        responseTime: 0,
+        attempt,
+        error: errorMsg,
+        eventCount: events.length,
+        eventTypes: eventTypesArr,
+      });
+      return;
+    }
 
     const headers: Record<string, string | number> = {
       'Content-Type': 'application/json',
@@ -720,6 +742,16 @@ export class WebhookEmitter {
         error: 'Timeout (10s)',
         eventCount: events.length,
         eventTypes: eventTypesArr,
+      });
+    });
+
+    // Socket-level idle timeout — prevents slow-loris attacks where the server
+    // accepts the connection but sends response data byte-by-byte to tie up resources.
+    // Separate from the request-level timeout above which covers total time.
+    req.on('socket', (socket) => {
+      socket.setTimeout(5_000); // 5s socket idle timeout
+      socket.once('timeout', () => {
+        socket.destroy();
       });
     });
 

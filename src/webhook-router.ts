@@ -33,20 +33,25 @@ export class WebhookRouter {
   private rules: WebhookFilterRule[] = [];
   /** Global config for new emitters. */
   private readonly maxRetries: number;
+  /** Whether to re-check SSRF at delivery time (DNS rebinding defense). */
+  private readonly ssrfCheckOnDelivery: boolean;
 
   constructor(options: {
     defaultUrl?: string | null;
     defaultSecret?: string | null;
     maxRetries?: number;
     filters?: WebhookFilterRule[];
+    ssrfCheckOnDelivery?: boolean;
   } = {}) {
     this.maxRetries = options.maxRetries ?? 5;
+    this.ssrfCheckOnDelivery = options.ssrfCheckOnDelivery ?? true;
 
     // Default emitter
     if (options.defaultUrl) {
       this.defaultEmitter = new WebhookEmitter(options.defaultUrl, {
         secret: options.defaultSecret || null,
         maxRetries: this.maxRetries,
+        ssrfCheckOnDelivery: this.ssrfCheckOnDelivery,
       });
     } else {
       this.defaultEmitter = null;
@@ -212,6 +217,7 @@ export class WebhookRouter {
       emitter = new WebhookEmitter(url, {
         secret,
         maxRetries: this.maxRetries,
+        ssrfCheckOnDelivery: this.ssrfCheckOnDelivery,
       });
       this.emitters.set(url, emitter);
     }

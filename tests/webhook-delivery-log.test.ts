@@ -103,6 +103,7 @@ describe('GET /webhooks/log (with webhook)', () => {
       serverArgs: ECHO_ARGS,
       webhookUrl: `http://127.0.0.1:${receiver.port}/webhook`,
       webhookSecret: 'log-test-secret',
+      webhookSsrfAtDelivery: false,
     });
     const info = await server.start();
     port = info.port;
@@ -228,6 +229,7 @@ describe('GET /webhooks/log (failing receiver)', () => {
       serverArgs: ECHO_ARGS,
       webhookUrl: `http://127.0.0.1:${failingReceiver.port}/webhook`,
       webhookMaxRetries: 0, // No retries — fail immediately to dead letter
+      webhookSsrfAtDelivery: false,
     });
     const info = await server.start();
     port = info.port;

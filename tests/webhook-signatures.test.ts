@@ -191,6 +191,7 @@ describe('Signed Webhooks E2E', () => {
     const emitter = new WebhookEmitter(`http://127.0.0.1:${receiverPort}/webhook`, {
       secret,
       flushIntervalMs: 999999, // Manual flush
+      ssrfCheckOnDelivery: false,
     });
 
     emitter.emit({
@@ -205,8 +206,8 @@ describe('Signed Webhooks E2E', () => {
     emitter.flush();
     emitter.destroy();
 
-    // Wait for the HTTP request to arrive
-    await new Promise(r => setTimeout(r, 200));
+    // Wait for the HTTP request to arrive (socket setup + delivery)
+    await new Promise(r => setTimeout(r, 500));
 
     expect(receiver.requests.length).toBeGreaterThanOrEqual(1);
     const req = receiver.requests[receiver.requests.length - 1];
@@ -228,6 +229,7 @@ describe('Signed Webhooks E2E', () => {
   it('does not send signature header when no secret', async () => {
     const emitter = new WebhookEmitter(`http://127.0.0.1:${receiverPort}/webhook`, {
       flushIntervalMs: 999999,
+      ssrfCheckOnDelivery: false,
     });
 
     const beforeCount = receiver.requests.length;
@@ -255,6 +257,7 @@ describe('Signed Webhooks E2E', () => {
     const emitter = new WebhookEmitter(`http://127.0.0.1:${receiverPort}/webhook`, {
       secret: 'test_secret',
       flushIntervalMs: 999999,
+      ssrfCheckOnDelivery: false,
     });
 
     const beforeCount = receiver.requests.length;
@@ -280,6 +283,7 @@ describe('Signed Webhooks E2E', () => {
   it('mixed usage + admin events in same batch', async () => {
     const emitter = new WebhookEmitter(`http://127.0.0.1:${receiverPort}/webhook`, {
       flushIntervalMs: 999999,
+      ssrfCheckOnDelivery: false,
     });
 
     const beforeCount = receiver.requests.length;
@@ -329,6 +333,7 @@ describe('Webhook Server Integration', () => {
       defaultCreditsPerCall: 2,
       webhookUrl: `http://127.0.0.1:${receiverPort}/webhook`,
       webhookSecret: 'srv_webhook_secret_123',
+      webhookSsrfAtDelivery: false,
     });
     const info = await server.start();
     port = info.port;

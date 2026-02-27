@@ -129,6 +129,7 @@ describe('WebhookEmitter retry queue', () => {
       const emitter = new WebhookEmitter(`http://localhost:${serverPort}/hook`, {
         batchSize: 10,
         flushIntervalMs: 60000,
+        ssrfCheckOnDelivery: false,
       });
 
       emitter.emit(makeEvent());
@@ -174,6 +175,7 @@ describe('WebhookEmitter retry queue', () => {
         batchSize: 10,
         flushIntervalMs: 60000,
         baseDelayMs: 100, // Fast retry for test
+        ssrfCheckOnDelivery: false,
       });
 
       emitter.emit(makeEvent());
@@ -212,12 +214,13 @@ describe('WebhookEmitter retry queue', () => {
         flushIntervalMs: 60000,
         maxRetries: 2,
         baseDelayMs: 100, // Very fast for testing
+        ssrfCheckOnDelivery: false,
       });
 
       emitter.emit(makeEvent({ tool: 'dead-letter-test' }));
       emitter.flush();
 
-      // Wait for all retries to exhaust (100ms + 200ms + margin)
+      // Wait for all retries to exhaust (retry queue polls every 1s, needs 2 retry cycles + margin)
       setTimeout(() => {
         const deadLetters = emitter.getDeadLetters();
         expect(deadLetters.length).toBe(1);
@@ -232,7 +235,7 @@ describe('WebhookEmitter retry queue', () => {
 
         emitter.destroy();
         mockServer.close(done);
-      }, 3000);
+      }, 5000);
     });
   }, 15000);
 
@@ -256,6 +259,7 @@ describe('WebhookEmitter retry queue', () => {
         flushIntervalMs: 60000,
         maxRetries: 1,
         baseDelayMs: 100,
+        ssrfCheckOnDelivery: false,
       });
 
       emitter.emit(makeEvent());
@@ -312,6 +316,7 @@ describe('WebhookEmitter retry queue', () => {
         batchSize: 10,
         flushIntervalMs: 60000,
         maxRetries: 0,
+        ssrfCheckOnDelivery: false,
       });
 
       emitter.emit(makeEvent());

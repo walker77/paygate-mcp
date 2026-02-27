@@ -659,6 +659,9 @@ export class PayGateServer {
             this.logger.error('Unhandled request error', { error: msg, url: sanitizeLogUrl(req.url), method: req.method });
             this.sendError(res, 500, 'Internal server error');
           }
+          // Destroy the request stream to close the connection cleanly — prevents
+          // hanging when Content-Length exceeds actual body (pre-check rejection)
+          if (!req.destroyed) req.destroy();
         }
       });
 
@@ -12145,6 +12148,16 @@ export class PayGateServer {
 
   private readBody(req: IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
+      // Pre-check Content-Length to reject obviously oversized requests
+      // before reading any body data — saves bandwidth and CPU on large payloads.
+      // Do NOT destroy the request here — let the error propagate to the catch handler
+      // which sends a proper 413 HTTP response before closing.
+      const declaredLength = parseInt(req.headers['content-length'] || '0', 10);
+      if (declaredLength > MAX_BODY_SIZE) {
+        reject(new Error('Request body too large'));
+        return;
+      }
+
       let body = '';
       let size = 0;
       let settled = false;

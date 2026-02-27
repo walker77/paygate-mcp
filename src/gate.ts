@@ -59,6 +59,7 @@ export class Gate {
         defaultSecret: config.webhookSecret || null,
         maxRetries: config.webhookMaxRetries ?? 5,
         filters: config.webhookFilters || [],
+        ssrfCheckOnDelivery: config.webhookSsrfAtDelivery ?? true,
       });
       this.webhook = this.webhookRouter.defaultWebhook;
     } else {
@@ -875,6 +876,7 @@ export class Gate {
           defaultSecret: this.config.webhookSecret || null,
           maxRetries: this.config.webhookMaxRetries ?? 5,
           filters: this.config.webhookFilters || [],
+          ssrfCheckOnDelivery: this.config.webhookSsrfAtDelivery ?? true,
         });
         this.webhook = this.webhookRouter.defaultWebhook;
       } else {

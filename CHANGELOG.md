@@ -1,5 +1,26 @@
 # Changelog
 
+## 8.94.0 (2026-02-27)
+
+### Delivery & Request Hardening
+- **Content-Length pre-check**: `readBody()` now rejects requests early if `Content-Length` exceeds the 1MB body limit
+  - Returns 413 Payload Too Large before reading any body data
+  - Prevents memory exhaustion from multi-GB declared Content-Length headers
+- **DNS rebinding SSRF prevention**: Webhook delivery now re-validates the destination URL against private/reserved IP ranges at send time
+  - Defense-in-depth against DNS rebinding attacks where a hostname passes creation-time validation but later resolves to a private IP
+  - Configurable via `webhookSsrfAtDelivery` config option (default: `true`); disable for dev/test environments with localhost webhooks
+  - Blocked deliveries are dead-lettered with clear error messages
+- **Webhook socket-level idle timeout**: Added 5-second socket idle timeout on webhook delivery requests
+  - Prevents slow-loris attacks where the receiver accepts connections but drips data byte-by-byte
+  - Separate from the 10-second request-level timeout — targets socket-layer stalls
+- **Audit metadata size cap**: Audit log entries now cap metadata at 10KB and messages at 2000 characters
+  - Prevents memory exhaustion from tools returning massive metadata objects
+  - Oversized metadata replaced with `{ _truncated: true, _originalSize: N }`
+  - Non-serializable metadata safely handled with `{ _error: 'Metadata not serializable' }`
+- 10 new tests covering Content-Length pre-check, audit caps, delivery-time SSRF, and socket timeout
+
+---
+
 ## 8.93.0 (2026-02-27)
 
 ### Response & Logging Hardening

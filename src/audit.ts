@@ -178,13 +178,25 @@ export class AuditLogger {
    * Log an audit event.
    */
   log(type: AuditEventType, actor: string, message: string, metadata: Record<string, unknown> = {}): AuditEvent {
+    // Cap metadata size to prevent memory exhaustion from deeply nested/large objects.
+    // Serialization check — if metadata exceeds 10KB, replace with truncation notice.
+    let safeMeta = metadata;
+    try {
+      const serialized = JSON.stringify(metadata);
+      if (serialized.length > 10_240) {
+        safeMeta = { _truncated: true, _originalSize: serialized.length };
+      }
+    } catch {
+      safeMeta = { _error: 'Metadata not serializable' };
+    }
+
     const event: AuditEvent = {
       id: this.nextId++,
       timestamp: new Date().toISOString(),
       type,
       actor,
-      message,
-      metadata,
+      message: message.slice(0, 2000), // Cap message length
+      metadata: safeMeta,
     };
 
     this.events.push(event);

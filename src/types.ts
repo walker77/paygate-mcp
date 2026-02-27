@@ -86,6 +86,8 @@ export interface PayGateConfig {
   webhookSecret: string | null;
   /** Maximum retries for failed webhook deliveries. Default: 5. */
   webhookMaxRetries?: number;
+  /** Re-check SSRF at delivery time (DNS rebinding defense). Default: true. Set false for localhost webhooks in dev/test. */
+  webhookSsrfAtDelivery?: boolean;
   /** Webhook filter rules for routing events to different destinations. */
   webhookFilters?: WebhookFilterRule[];
   /** Refund credits when downstream tool call fails. Default: false. */

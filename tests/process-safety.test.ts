@@ -201,8 +201,8 @@ describe('Process Safety', () => {
       req.end();
     });
 
-    // Should get 500 (body too large triggers error in handler) or connection reset
-    expect([0, 500]).toContain(response);
+    // Should get 413 (Content-Length pre-check), 500, or connection reset
+    expect([0, 413, 500]).toContain(response);
   });
 
   // ─── Disabled timeout (0) ─────────────────────────────────────────────────
