@@ -4822,55 +4822,59 @@ export class PayGateServer {
     });
   }
 
-  private handleSetMaintenance(req: IncomingMessage, res: ServerResponse): void {
+  private async handleSetMaintenance(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') {
       this.sendError(res, 405, 'Method not allowed');
       return;
     }
     if (!this.checkAdmin(req, res)) return;
 
-    let body = '';
-    req.on('data', (chunk: Buffer) => { body += chunk; });
-    req.on('end', () => {
-      let params: { enabled?: boolean; message?: string };
-      try {
-        params = JSON.parse(body);
-      } catch {
-        this.sendError(res, 400, 'Invalid JSON body');
-        return;
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      this.sendError(res, 413, err instanceof Error ? err.message : 'Request body too large');
+      return;
+    }
+
+    let params: { enabled?: boolean; message?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON body');
+      return;
+    }
+
+    if (typeof params.enabled !== 'boolean') {
+      this.sendError(res, 400, 'Missing required field: enabled (boolean)');
+      return;
+    }
+
+    const wasEnabled = this.maintenanceMode;
+    this.maintenanceMode = params.enabled;
+
+    if (params.enabled) {
+      this.maintenanceMessage = sanitizeString(params.message) || 'Server is under maintenance';
+      this.maintenanceSince = new Date().toISOString();
+      if (!wasEnabled) {
+        this.audit.log('maintenance.enabled', 'admin', `Maintenance mode enabled: ${this.maintenanceMessage}`, {
+          message: this.maintenanceMessage,
+        });
       }
-
-      if (typeof params.enabled !== 'boolean') {
-        this.sendError(res, 400, 'Missing required field: enabled (boolean)');
-        return;
+    } else {
+      if (wasEnabled) {
+        this.audit.log('maintenance.disabled', 'admin', 'Maintenance mode disabled', {
+          since: this.maintenanceSince,
+        });
       }
+      this.maintenanceMessage = 'Server is under maintenance';
+      this.maintenanceSince = null;
+    }
 
-      const wasEnabled = this.maintenanceMode;
-      this.maintenanceMode = params.enabled;
-
-      if (params.enabled) {
-        this.maintenanceMessage = sanitizeString(params.message) || 'Server is under maintenance';
-        this.maintenanceSince = new Date().toISOString();
-        if (!wasEnabled) {
-          this.audit.log('maintenance.enabled', 'admin', `Maintenance mode enabled: ${this.maintenanceMessage}`, {
-            message: this.maintenanceMessage,
-          });
-        }
-      } else {
-        if (wasEnabled) {
-          this.audit.log('maintenance.disabled', 'admin', 'Maintenance mode disabled', {
-            since: this.maintenanceSince,
-          });
-        }
-        this.maintenanceMessage = 'Server is under maintenance';
-        this.maintenanceSince = null;
-      }
-
-      this.sendJson(res, 200, {
-        enabled: this.maintenanceMode,
-        message: this.maintenanceMode ? this.maintenanceMessage : undefined,
-        since: this.maintenanceSince,
-      });
+    this.sendJson(res, 200, {
+      enabled: this.maintenanceMode,
+      message: this.maintenanceMode ? this.maintenanceMessage : undefined,
+      since: this.maintenanceSince,
     });
   }
 
@@ -9719,62 +9723,66 @@ export class PayGateServer {
     this.sendJson(res, 200, { key: maskKeyForAudit(record.key), notes, count: notes.length });
   }
 
-  private handleAddNote(req: IncomingMessage, res: ServerResponse): void {
+  private async handleAddNote(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res)) return;
 
-    let body = '';
-    req.on('data', (chunk: Buffer) => { body += chunk; });
-    req.on('end', () => {
-      let params: { key?: string; text?: string };
-      try {
-        params = JSON.parse(body);
-      } catch {
-        this.sendError(res, 400, 'Invalid JSON body');
-        return;
-      }
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      this.sendError(res, 413, err instanceof Error ? err.message : 'Request body too large');
+      return;
+    }
 
-      if (!params.key || typeof params.key !== 'string') {
-        this.sendError(res, 400, 'Missing required field: key');
-        return;
-      }
-      if (!params.text || typeof params.text !== 'string' || !params.text.trim()) {
-        this.sendError(res, 400, 'Missing required field: text (non-empty string)');
-        return;
-      }
-      if (params.text.length > 1000) {
-        this.sendError(res, 400, 'Note text must be 1000 characters or less');
-        return;
-      }
+    let params: { key?: string; text?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON body');
+      return;
+    }
 
-      const record = this.gate.store.resolveKeyRaw(params.key);
-      if (!record) {
-        this.sendError(res, 404, 'Key not found');
-        return;
-      }
+    if (!params.key || typeof params.key !== 'string') {
+      this.sendError(res, 400, 'Missing required field: key');
+      return;
+    }
+    if (!params.text || typeof params.text !== 'string' || !params.text.trim()) {
+      this.sendError(res, 400, 'Missing required field: text (non-empty string)');
+      return;
+    }
+    if (params.text.length > 1000) {
+      this.sendError(res, 400, 'Note text must be 1000 characters or less');
+      return;
+    }
 
-      if (!record.notes) record.notes = [];
+    const record = this.gate.store.resolveKeyRaw(params.key);
+    if (!record) {
+      this.sendError(res, 404, 'Key not found');
+      return;
+    }
 
-      // Cap at 50 notes per key
-      if (record.notes.length >= 50) {
-        this.sendError(res, 400, 'Maximum 50 notes per key reached. Delete old notes first.');
-        return;
-      }
+    if (!record.notes) record.notes = [];
 
-      const note = {
-        timestamp: new Date().toISOString(),
-        author: 'admin',
-        text: params.text.trim(),
-      };
-      record.notes.push(note);
-      this.gate.store.save();
+    // Cap at 50 notes per key
+    if (record.notes.length >= 50) {
+      this.sendError(res, 400, 'Maximum 50 notes per key reached. Delete old notes first.');
+      return;
+    }
 
-      this.audit.log('key.note_added', 'admin', `Note added to key`, {
-        key: maskKeyForAudit(record.key),
-        text: note.text.slice(0, 100),
-      });
+    const note = {
+      timestamp: new Date().toISOString(),
+      author: 'admin',
+      text: params.text.trim(),
+    };
+    record.notes.push(note);
+    this.gate.store.save();
 
-      this.sendJson(res, 201, { note, count: record.notes.length });
+    this.audit.log('key.note_added', 'admin', `Note added to key`, {
+      key: maskKeyForAudit(record.key),
+      text: note.text.slice(0, 100),
     });
+
+    this.sendJson(res, 201, { note, count: record.notes.length });
   }
 
   private handleDeleteNote(req: IncomingMessage, res: ServerResponse): void {
@@ -9849,90 +9857,94 @@ export class PayGateServer {
     });
   }
 
-  private handleCreateSchedule(req: IncomingMessage, res: ServerResponse): void {
+  private async handleCreateSchedule(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res)) return;
 
-    let body = '';
-    req.on('data', (chunk: Buffer) => { body += chunk; });
-    req.on('end', () => {
-      let params: { key?: string; action?: string; executeAt?: string; params?: Record<string, unknown> };
-      try {
-        params = JSON.parse(body);
-      } catch {
-        this.sendError(res, 400, 'Invalid JSON body');
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      this.sendError(res, 413, err instanceof Error ? err.message : 'Request body too large');
+      return;
+    }
+
+    let params: { key?: string; action?: string; executeAt?: string; params?: Record<string, unknown> };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON body');
+      return;
+    }
+
+    if (!params.key || typeof params.key !== 'string') {
+      this.sendError(res, 400, 'Missing required field: key');
+      return;
+    }
+
+    const validActions = ['revoke', 'suspend', 'topup'];
+    if (!params.action || !validActions.includes(params.action)) {
+      this.sendError(res, 400, `Missing or invalid action. Must be one of: ${validActions.join(', ')}`);
+      return;
+    }
+
+    if (!params.executeAt || typeof params.executeAt !== 'string') {
+      this.sendError(res, 400, 'Missing required field: executeAt (ISO 8601 timestamp)');
+      return;
+    }
+
+    const executeTime = new Date(params.executeAt).getTime();
+    if (isNaN(executeTime)) {
+      this.sendError(res, 400, 'Invalid executeAt: must be a valid ISO 8601 timestamp');
+      return;
+    }
+
+    if (executeTime <= Date.now()) {
+      this.sendError(res, 400, 'executeAt must be in the future');
+      return;
+    }
+
+    // Topup requires credits param
+    if (params.action === 'topup') {
+      const credits = (params.params as any)?.credits;
+      if (!credits || typeof credits !== 'number' || credits <= 0) {
+        this.sendError(res, 400, 'topup action requires params.credits (positive number)');
         return;
       }
+    }
 
-      if (!params.key || typeof params.key !== 'string') {
-        this.sendError(res, 400, 'Missing required field: key');
-        return;
-      }
+    const record = this.gate.store.resolveKeyRaw(params.key);
+    if (!record) {
+      this.sendError(res, 404, 'Key not found');
+      return;
+    }
 
-      const validActions = ['revoke', 'suspend', 'topup'];
-      if (!params.action || !validActions.includes(params.action)) {
-        this.sendError(res, 400, `Missing or invalid action. Must be one of: ${validActions.join(', ')}`);
-        return;
-      }
+    // Max 20 schedules per key
+    const keySchedules = this.scheduledActions.filter(s => s.key === record.key);
+    if (keySchedules.length >= 20) {
+      this.sendError(res, 400, 'Maximum 20 scheduled actions per key');
+      return;
+    }
 
-      if (!params.executeAt || typeof params.executeAt !== 'string') {
-        this.sendError(res, 400, 'Missing required field: executeAt (ISO 8601 timestamp)');
-        return;
-      }
+    const schedule = {
+      id: `sched_${this.nextScheduleId++}`,
+      key: record.key,
+      action: params.action as 'revoke' | 'suspend' | 'topup',
+      executeAt: new Date(params.executeAt).toISOString(),
+      createdAt: new Date().toISOString(),
+      params: params.params,
+    };
+    this.scheduledActions.push(schedule);
 
-      const executeTime = new Date(params.executeAt).getTime();
-      if (isNaN(executeTime)) {
-        this.sendError(res, 400, 'Invalid executeAt: must be a valid ISO 8601 timestamp');
-        return;
-      }
+    this.audit.log('schedule.created', 'admin', `Scheduled ${params.action} on key`, {
+      scheduleId: schedule.id,
+      key: maskKeyForAudit(record.key),
+      action: params.action,
+      executeAt: schedule.executeAt,
+    });
 
-      if (executeTime <= Date.now()) {
-        this.sendError(res, 400, 'executeAt must be in the future');
-        return;
-      }
-
-      // Topup requires credits param
-      if (params.action === 'topup') {
-        const credits = (params.params as any)?.credits;
-        if (!credits || typeof credits !== 'number' || credits <= 0) {
-          this.sendError(res, 400, 'topup action requires params.credits (positive number)');
-          return;
-        }
-      }
-
-      const record = this.gate.store.resolveKeyRaw(params.key);
-      if (!record) {
-        this.sendError(res, 404, 'Key not found');
-        return;
-      }
-
-      // Max 20 schedules per key
-      const keySchedules = this.scheduledActions.filter(s => s.key === record.key);
-      if (keySchedules.length >= 20) {
-        this.sendError(res, 400, 'Maximum 20 scheduled actions per key');
-        return;
-      }
-
-      const schedule = {
-        id: `sched_${this.nextScheduleId++}`,
-        key: record.key,
-        action: params.action as 'revoke' | 'suspend' | 'topup',
-        executeAt: new Date(params.executeAt).toISOString(),
-        createdAt: new Date().toISOString(),
-        params: params.params,
-      };
-      this.scheduledActions.push(schedule);
-
-      this.audit.log('schedule.created', 'admin', `Scheduled ${params.action} on key`, {
-        scheduleId: schedule.id,
-        key: maskKeyForAudit(record.key),
-        action: params.action,
-        executeAt: schedule.executeAt,
-      });
-
-      this.sendJson(res, 201, {
-        ...schedule,
-        key: maskKeyForAudit(schedule.key),
-      });
+    this.sendJson(res, 201, {
+      ...schedule,
+      key: maskKeyForAudit(schedule.key),
     });
   }
 
@@ -10144,200 +10156,212 @@ export class PayGateServer {
     });
   }
 
-  private handleCreateReservation(req: IncomingMessage, res: ServerResponse): void {
+  private async handleCreateReservation(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res)) return;
 
-    let body = '';
-    req.on('data', (chunk: Buffer) => { body += chunk; });
-    req.on('end', () => {
-      let params: { key?: string; credits?: number; ttlSeconds?: number; memo?: string };
-      try {
-        params = JSON.parse(body);
-      } catch {
-        this.sendError(res, 400, 'Invalid JSON body');
-        return;
-      }
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      this.sendError(res, 413, err instanceof Error ? err.message : 'Request body too large');
+      return;
+    }
 
-      if (!params.key || typeof params.key !== 'string') {
-        this.sendError(res, 400, 'Missing required field: key');
-        return;
-      }
+    let params: { key?: string; credits?: number; ttlSeconds?: number; memo?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON body');
+      return;
+    }
 
-      if (!params.credits || typeof params.credits !== 'number' || params.credits <= 0) {
-        this.sendError(res, 400, 'Missing or invalid credits (must be positive number)');
-        return;
-      }
+    if (!params.key || typeof params.key !== 'string') {
+      this.sendError(res, 400, 'Missing required field: key');
+      return;
+    }
 
-      const record = this.gate.store.resolveKeyRaw(params.key);
-      if (!record) {
-        this.sendError(res, 404, 'Key not found');
-        return;
-      }
+    if (!params.credits || typeof params.credits !== 'number' || params.credits <= 0) {
+      this.sendError(res, 400, 'Missing or invalid credits (must be positive number)');
+      return;
+    }
 
-      if (!record.active) {
-        this.sendError(res, 400, 'Key is revoked');
-        return;
-      }
+    const record = this.gate.store.resolveKeyRaw(params.key);
+    if (!record) {
+      this.sendError(res, 404, 'Key not found');
+      return;
+    }
 
-      if (record.suspended) {
-        this.sendError(res, 400, 'Key is suspended');
-        return;
-      }
+    if (!record.active) {
+      this.sendError(res, 400, 'Key is revoked');
+      return;
+    }
 
-      // Cleanup expired before checking availability
-      this.cleanupExpiredReservations();
+    if (record.suspended) {
+      this.sendError(res, 400, 'Key is suspended');
+      return;
+    }
 
-      // Calculate available credits (total - held)
-      const heldCredits = this.getHeldCredits(record.key);
-      const available = record.credits - heldCredits;
+    // Cleanup expired before checking availability
+    this.cleanupExpiredReservations();
 
-      if (params.credits > available) {
-        this.sendError(res, 400, 'Insufficient available credits', {
-          available,
-          held: heldCredits,
-          total: record.credits,
-          requested: params.credits,
-        });
-        return;
-      }
+    // Calculate available credits (total - held)
+    const heldCredits = this.getHeldCredits(record.key);
+    const available = record.credits - heldCredits;
 
-      // Max 50 active reservations per key
-      const keyReservations = [...this.creditReservations.values()].filter(r => r.key === record.key);
-      if (keyReservations.length >= 50) {
-        this.sendError(res, 400, 'Maximum 50 active reservations per key');
-        return;
-      }
-
-      const ttl = Math.min(3600, Math.max(10, params.ttlSeconds || 300)); // 10s – 1h, default 5m
-      const reservation = {
-        id: `rsv_${this.nextReservationId++}`,
-        key: record.key,
-        credits: params.credits,
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
-        memo: sanitizeString(params.memo),
-      };
-
-      this.creditReservations.set(reservation.id, reservation);
-
-      this.audit.log('credits.reserved', 'admin', `Reserved ${params.credits} credits`, {
-        reservationId: reservation.id,
-        key: maskKeyForAudit(record.key),
-        credits: params.credits,
-        ttlSeconds: ttl,
+    if (params.credits > available) {
+      this.sendError(res, 400, 'Insufficient available credits', {
+        available,
+        held: heldCredits,
+        total: record.credits,
+        requested: params.credits,
       });
+      return;
+    }
 
-      this.sendJson(res, 201, {
+    // Max 50 active reservations per key
+    const keyReservations = [...this.creditReservations.values()].filter(r => r.key === record.key);
+    if (keyReservations.length >= 50) {
+      this.sendError(res, 400, 'Maximum 50 active reservations per key');
+      return;
+    }
+
+    const ttl = Math.min(3600, Math.max(10, params.ttlSeconds || 300)); // 10s – 1h, default 5m
+    const reservation = {
+      id: `rsv_${this.nextReservationId++}`,
+      key: record.key,
+      credits: params.credits,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+      memo: sanitizeString(params.memo),
+    };
+
+    this.creditReservations.set(reservation.id, reservation);
+
+    this.audit.log('credits.reserved', 'admin', `Reserved ${params.credits} credits`, {
+      reservationId: reservation.id,
+      key: maskKeyForAudit(record.key),
+      credits: params.credits,
+      ttlSeconds: ttl,
+    });
+
+    this.sendJson(res, 201, {
+      ...reservation,
+      key: maskKeyForAudit(reservation.key),
+      available: available - params.credits,
+    });
+  }
+
+  private async handleCommitReservation(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      this.sendError(res, 413, err instanceof Error ? err.message : 'Request body too large');
+      return;
+    }
+
+    let params: { reservationId?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON body');
+      return;
+    }
+
+    if (!params.reservationId || typeof params.reservationId !== 'string') {
+      this.sendError(res, 400, 'Missing required field: reservationId');
+      return;
+    }
+
+    const reservation = this.creditReservations.get(params.reservationId);
+    if (!reservation) {
+      this.sendError(res, 404, 'Reservation not found (may have expired)');
+      return;
+    }
+
+    // Check if expired
+    if (new Date(reservation.expiresAt).getTime() <= Date.now()) {
+      this.creditReservations.delete(params.reservationId);
+      this.sendError(res, 400, 'Reservation has expired');
+      return;
+    }
+
+    const record = this.gate.store.resolveKeyRaw(reservation.key);
+    if (!record) {
+      this.creditReservations.delete(params.reservationId);
+      this.sendError(res, 404, 'Key not found');
+      return;
+    }
+
+    // Deduct credits
+    record.credits = Math.max(0, record.credits - reservation.credits);
+    this.gate.store.save();
+
+    // Remove reservation
+    this.creditReservations.delete(params.reservationId);
+
+    this.audit.log('credits.committed', 'admin', `Committed reservation: ${reservation.credits} credits deducted`, {
+      reservationId: reservation.id,
+      key: maskKeyForAudit(record.key),
+      credits: reservation.credits,
+      remainingCredits: record.credits,
+    });
+
+    this.sendJson(res, 200, {
+      committed: {
         ...reservation,
         key: maskKeyForAudit(reservation.key),
-        available: available - params.credits,
-      });
+      },
+      remainingCredits: record.credits,
     });
   }
 
-  private handleCommitReservation(req: IncomingMessage, res: ServerResponse): void {
+  private async handleReleaseReservation(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.checkAdmin(req, res)) return;
 
-    let body = '';
-    req.on('data', (chunk: Buffer) => { body += chunk; });
-    req.on('end', () => {
-      let params: { reservationId?: string };
-      try {
-        params = JSON.parse(body);
-      } catch {
-        this.sendError(res, 400, 'Invalid JSON body');
-        return;
-      }
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      this.sendError(res, 413, err instanceof Error ? err.message : 'Request body too large');
+      return;
+    }
 
-      if (!params.reservationId || typeof params.reservationId !== 'string') {
-        this.sendError(res, 400, 'Missing required field: reservationId');
-        return;
-      }
+    let params: { reservationId?: string };
+    try {
+      params = JSON.parse(body);
+    } catch {
+      this.sendError(res, 400, 'Invalid JSON body');
+      return;
+    }
 
-      const reservation = this.creditReservations.get(params.reservationId);
-      if (!reservation) {
-        this.sendError(res, 404, 'Reservation not found (may have expired)');
-        return;
-      }
+    if (!params.reservationId || typeof params.reservationId !== 'string') {
+      this.sendError(res, 400, 'Missing required field: reservationId');
+      return;
+    }
 
-      // Check if expired
-      if (new Date(reservation.expiresAt).getTime() <= Date.now()) {
-        this.creditReservations.delete(params.reservationId);
-        this.sendError(res, 400, 'Reservation has expired');
-        return;
-      }
+    const reservation = this.creditReservations.get(params.reservationId);
+    if (!reservation) {
+      this.sendError(res, 404, 'Reservation not found (may have expired)');
+      return;
+    }
 
-      const record = this.gate.store.resolveKeyRaw(reservation.key);
-      if (!record) {
-        this.creditReservations.delete(params.reservationId);
-        this.sendError(res, 404, 'Key not found');
-        return;
-      }
+    // Remove reservation (release the hold)
+    this.creditReservations.delete(params.reservationId);
 
-      // Deduct credits
-      record.credits = Math.max(0, record.credits - reservation.credits);
-      this.gate.store.save();
-
-      // Remove reservation
-      this.creditReservations.delete(params.reservationId);
-
-      this.audit.log('credits.committed', 'admin', `Committed reservation: ${reservation.credits} credits deducted`, {
-        reservationId: reservation.id,
-        key: maskKeyForAudit(record.key),
-        credits: reservation.credits,
-        remainingCredits: record.credits,
-      });
-
-      this.sendJson(res, 200, {
-        committed: {
-          ...reservation,
-          key: maskKeyForAudit(reservation.key),
-        },
-        remainingCredits: record.credits,
-      });
+    this.audit.log('credits.released', 'admin', `Released reservation: ${reservation.credits} credits freed`, {
+      reservationId: reservation.id,
+      key: maskKeyForAudit(reservation.key),
+      credits: reservation.credits,
     });
-  }
 
-  private handleReleaseReservation(req: IncomingMessage, res: ServerResponse): void {
-    if (!this.checkAdmin(req, res)) return;
-
-    let body = '';
-    req.on('data', (chunk: Buffer) => { body += chunk; });
-    req.on('end', () => {
-      let params: { reservationId?: string };
-      try {
-        params = JSON.parse(body);
-      } catch {
-        this.sendError(res, 400, 'Invalid JSON body');
-        return;
-      }
-
-      if (!params.reservationId || typeof params.reservationId !== 'string') {
-        this.sendError(res, 400, 'Missing required field: reservationId');
-        return;
-      }
-
-      const reservation = this.creditReservations.get(params.reservationId);
-      if (!reservation) {
-        this.sendError(res, 404, 'Reservation not found (may have expired)');
-        return;
-      }
-
-      // Remove reservation (release the hold)
-      this.creditReservations.delete(params.reservationId);
-
-      this.audit.log('credits.released', 'admin', `Released reservation: ${reservation.credits} credits freed`, {
-        reservationId: reservation.id,
+    this.sendJson(res, 200, {
+      released: {
+        ...reservation,
         key: maskKeyForAudit(reservation.key),
-        credits: reservation.credits,
-      });
-
-      this.sendJson(res, 200, {
-        released: {
-          ...reservation,
-          key: maskKeyForAudit(reservation.key),
-        },
-      });
+      },
     });
   }
 

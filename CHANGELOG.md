@@ -1,5 +1,18 @@
 # Changelog
 
+## 8.85.0 (2026-02-27)
+
+### Admin Endpoint Body Size Enforcement
+- **Fixed 6 admin endpoints with unprotected body readers** — `handleSetMaintenance`, `handleAddNote`, `handleCreateSchedule`, `handleCreateReservation`, `handleCommitReservation`, and `handleReleaseReservation` all used inline `req.on('data')` without size limits
+- These bypassed the protected `readBody()` method that enforces `MAX_BODY_SIZE` (1 MB), timeout protection, and proper listener cleanup
+- An attacker could send multi-GB payloads to any of these endpoints to exhaust server memory (DoS)
+- All 6 endpoints now use `readBody()` with consistent 413 error responses for oversized bodies
+- Converted all 6 handlers from callback-style `void` to `async/await Promise<void>` for cleaner control flow
+- Zero remaining inline `req.on('data')` body readers in the codebase
+- 12 new tests (oversized body rejection + normal operation verification for all 6 endpoints)
+
+---
+
 ## 8.84.0 (2026-02-27)
 
 ### JSON-RPC 2.0 Envelope Validation
