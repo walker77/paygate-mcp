@@ -475,15 +475,25 @@ async function main(): Promise<void> {
 
       // Handle graceful shutdown (drain in-flight requests, then teardown)
       let shuttingDown = false;
-      const shutdown = async () => {
+      const shutdown = async (reason?: string) => {
         if (shuttingDown) return; // prevent double-signal
         shuttingDown = true;
-        console.log('\nGraceful shutdown initiated…');
+        console.log(`\nGraceful shutdown initiated${reason ? ` (${reason})` : ''}…`);
         await server.gracefulStop(30_000);
-        process.exit(0);
+        process.exit(reason ? 1 : 0);
       };
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
+      process.on('SIGINT', () => shutdown());
+      process.on('SIGTERM', () => shutdown());
+
+      // Global error handlers — prevent silent crashes in production
+      process.on('unhandledRejection', (reason: unknown) => {
+        console.error('[paygate] Unhandled promise rejection:', reason);
+        shutdown('unhandled rejection');
+      });
+      process.on('uncaughtException', (error: Error) => {
+        console.error('[paygate] Uncaught exception:', error);
+        shutdown('uncaught exception');
+      });
 
       try {
         const result = await server.start();

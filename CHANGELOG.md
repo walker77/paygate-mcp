@@ -1,5 +1,17 @@
 # Changelog
 
+## 8.73.0 (2026-02-27)
+
+### Process Safety & Socket Hardening
+- **Global error handlers** — `unhandledRejection` and `uncaughtException` trigger graceful shutdown with logging instead of silent crashes
+- **Socket-level error handling** — `server.on('clientError')` logs and cleanly closes malformed HTTP connections (protocol violations, invalid headers)
+- **Body read timeout** — `readBody()` now enforces a timeout (reuses `requestTimeoutMs`, default 30s) to prevent slow-loris body-dripping attacks
+- Body read uses settled guard to prevent double-resolve on edge cases
+- Server survives concurrent malformed requests without resource leaks
+- 8 new tests (malformed HTTP, body timeout, oversized body, concurrent attacks, resilience)
+
+---
+
 ## 8.72.0 (2026-02-27)
 
 ### Startup Summary

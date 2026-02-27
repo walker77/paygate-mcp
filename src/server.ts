@@ -539,6 +539,18 @@ export class PayGateServer {
         this.server.maxRequestsPerSocket = this.config.maxRequestsPerSocket;     // Limit pipelined requests per socket
       }
 
+      // Socket-level error handler — log malformed HTTP requests and protocol violations
+      this.server.on('clientError', (err: Error, socket: any) => {
+        this.logger.warn('Client error (malformed request)', {
+          error: err.message,
+          code: (err as any).code,
+        });
+        // Send a minimal 400 and destroy the socket if still writable
+        if (socket.writable && !socket.destroyed) {
+          socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+        }
+      });
+
       this.server.listen(this.config.port, () => {
         const addr = this.server!.address();
         const actualPort = typeof addr === 'object' && addr ? addr.port : this.config.port;
@@ -11762,17 +11774,45 @@ export class PayGateServer {
     return new Promise((resolve, reject) => {
       let body = '';
       let size = 0;
+      let settled = false;
+
+      // Body read timeout — prevents slow-loris attacks that drip data byte-by-byte
+      const bodyTimeout = this.config.requestTimeoutMs ?? 30_000;
+      const timer = bodyTimeout > 0 ? setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          req.destroy();
+          reject(new Error('Request body read timeout'));
+        }
+      }, bodyTimeout) : null;
+
       req.on('data', (chunk: Buffer) => {
         size += chunk.length;
         if (size > MAX_BODY_SIZE) {
-          req.destroy();
-          reject(new Error('Request body too large'));
+          if (!settled) {
+            settled = true;
+            if (timer) clearTimeout(timer);
+            req.destroy();
+            reject(new Error('Request body too large'));
+          }
           return;
         }
         body += chunk.toString();
       });
-      req.on('end', () => resolve(body));
-      req.on('error', reject);
+      req.on('end', () => {
+        if (!settled) {
+          settled = true;
+          if (timer) clearTimeout(timer);
+          resolve(body);
+        }
+      });
+      req.on('error', (err) => {
+        if (!settled) {
+          settled = true;
+          if (timer) clearTimeout(timer);
+          reject(err);
+        }
+      });
     });
   }
 
