@@ -1,5 +1,20 @@
 # Changelog
 
+## 8.89.0 (2026-02-27)
+
+### Numeric Input Bounds Enforcement
+- **All numeric admin inputs now clamped to sane upper bounds** — prevents absurd values from propagating through the system
+- Credits: capped at 1 billion (`MAX_CREDITS = 1_000_000_000`) — applies to key creation, topup, transfer, bulk ops, reservations, scheduled actions
+- Quota limits: capped at 1 billion (`MAX_QUOTA_LIMIT`) — dailyCallLimit, monthlyCallLimit, dailyCreditLimit, monthlyCreditLimit across all endpoints
+- Spending limits: capped at 1 billion (`MAX_SPENDING_LIMIT`) — key spending limits and group maxSpendingLimit
+- Auto-topup: threshold/amount capped at 100 million (`MAX_TOPUP_AMOUNT`), maxDaily at 1 billion
+- Rate limits: capped at 100,000 (`MAX_RATE_LIMIT`) requests per minute in group policies
+- Group defaultCredits and team budgets also clamped
+- Uses existing `clampInt()` for consistent enforcement (same as export pagination)
+- 13 new tests covering credit clamping, quota clamping, auto-topup clamping, spending limit clamping, bulk ops, reservations, and passthrough for reasonable values
+
+---
+
 ## 8.88.0 (2026-02-27)
 
 ### Export Response Caps

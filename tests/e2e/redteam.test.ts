@@ -425,8 +425,8 @@ describe('RED TEAM — PayGate Security', () => {
         body: { name: 'big-credits', credits: Number.MAX_SAFE_INTEGER },
       });
       expect(res.status).toBe(201);
-      // The key should work but not overflow
-      expect(res.body.credits).toBe(Number.MAX_SAFE_INTEGER);
+      // Credits are clamped to MAX_CREDITS (1 billion) to prevent absurd values
+      expect(res.body.credits).toBe(1_000_000_000);
     });
 
     it('should handle JSON injection in tool names', async () => {

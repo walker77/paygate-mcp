@@ -76,6 +76,18 @@ function safeJsonParse<T = unknown>(text: string): T {
 /** Max length for user-supplied string fields (names, reasons, messages, memos) */
 const MAX_STRING_FIELD = 500;
 
+/**
+ * Upper bounds for numeric admin inputs.
+ * Prevents absurd values that could cause issues in downstream systems,
+ * audit log bloat, or unexpected behavior in quota/credit arithmetic.
+ */
+const MAX_CREDITS = 1_000_000_000;          // 1 billion credits
+const MAX_QUOTA_LIMIT = 1_000_000_000;      // 1 billion calls/credits per period
+const MAX_SPENDING_LIMIT = 1_000_000_000;   // 1 billion credits lifetime cap
+const MAX_TOPUP_AMOUNT = 100_000_000;       // 100 million credits per auto-topup
+const MAX_TOPUP_THRESHOLD = 100_000_000;    // 100 million credits threshold
+const MAX_RATE_LIMIT = 100_000;             // 100k requests per window
+
 /** Truncate user-supplied strings to MAX_STRING_FIELD to prevent log injection and memory abuse. */
 function sanitizeString(value: string | undefined | null, maxLen = MAX_STRING_FIELD): string {
   if (!value) return '';
@@ -2098,12 +2110,14 @@ export class PayGateServer {
     }
 
     const name = String(params.name || 'unnamed').slice(0, 200);
-    const credits = Math.floor(Number(params.credits ?? tpl?.credits ?? 100));
+    const rawCredits = Math.floor(Number(params.credits ?? tpl?.credits ?? 100));
 
-    if (!Number.isFinite(credits) || credits <= 0) {
+    if (!Number.isFinite(rawCredits) || rawCredits <= 0) {
       this.sendError(res, 400, 'Credits must be a positive integer');
       return;
     }
+
+    const credits = clampInt(rawCredits, 1, MAX_CREDITS);
 
     // Calculate expiry: expiresIn (seconds) takes priority over expiresAt (ISO date), template TTL is fallback
     let expiresAt: string | null = null;
@@ -2125,10 +2139,10 @@ export class PayGateServer {
     let quota = undefined;
     if (params.quota) {
       quota = {
-        dailyCallLimit: Math.max(0, Math.floor(Number(params.quota.dailyCallLimit) || 0)),
-        monthlyCallLimit: Math.max(0, Math.floor(Number(params.quota.monthlyCallLimit) || 0)),
-        dailyCreditLimit: Math.max(0, Math.floor(Number(params.quota.dailyCreditLimit) || 0)),
-        monthlyCreditLimit: Math.max(0, Math.floor(Number(params.quota.monthlyCreditLimit) || 0)),
+        dailyCallLimit: clampInt(Number(params.quota.dailyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+        monthlyCallLimit: clampInt(Number(params.quota.monthlyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+        dailyCreditLimit: clampInt(Number(params.quota.dailyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
+        monthlyCreditLimit: clampInt(Number(params.quota.monthlyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
       };
     } else if (tpl?.quota) {
       quota = { ...tpl.quota };
@@ -2273,11 +2287,12 @@ export class PayGateServer {
       return;
     }
 
-    const credits = Math.floor(Number(params.credits));
-    if (!Number.isFinite(credits) || credits <= 0) {
+    const rawCredits = Number(params.credits);
+    if (!Number.isFinite(rawCredits) || rawCredits <= 0) {
       this.sendError(res, 400, 'Credits must be a positive integer');
       return;
     }
+    const credits = clampInt(rawCredits, 1, MAX_CREDITS);
 
     // Resolve alias to actual key
     const resolved = this.gate.store.resolveKey(params.key);
@@ -2343,11 +2358,12 @@ export class PayGateServer {
       return;
     }
 
-    const credits = Math.floor(Number(params.credits));
-    if (!Number.isFinite(credits) || credits <= 0) {
+    const rawXferCredits = Number(params.credits);
+    if (!Number.isFinite(rawXferCredits) || rawXferCredits <= 0) {
       this.sendError(res, 400, 'Credits must be a positive integer');
       return;
     }
+    const credits = clampInt(rawXferCredits, 1, MAX_CREDITS);
 
     // Validate source key exists and has enough credits
     const sourceRecord = this.gate.store.resolveKey(params.from);
@@ -2459,7 +2475,7 @@ export class PayGateServer {
         switch (op.action) {
           case 'create': {
             const name = String(op.name || 'unnamed').slice(0, 200);
-            const credits = Math.max(0, Math.floor(Number(op.credits) || 100));
+            const credits = clampInt(Number(op.credits) || 100, 0, MAX_CREDITS);
             if (credits <= 0) {
               results.push({ index: i, action: 'create', success: false, error: 'Credits must be positive' });
               break;
@@ -2484,7 +2500,8 @@ export class PayGateServer {
           }
           case 'topup': {
             const key = op.key as string;
-            const amount = Math.floor(Number(op.credits));
+            const rawAmount = Number(op.credits);
+            const amount = Number.isFinite(rawAmount) ? clampInt(rawAmount, 0, MAX_CREDITS) : NaN;
             if (!key) {
               results.push({ index: i, action: 'topup', success: false, error: 'Missing key' });
               break;
@@ -3183,10 +3200,10 @@ export class PayGateServer {
     }
 
     const quota = {
-      dailyCallLimit: Math.max(0, Math.floor(Number(params.dailyCallLimit) || 0)),
-      monthlyCallLimit: Math.max(0, Math.floor(Number(params.monthlyCallLimit) || 0)),
-      dailyCreditLimit: Math.max(0, Math.floor(Number(params.dailyCreditLimit) || 0)),
-      monthlyCreditLimit: Math.max(0, Math.floor(Number(params.monthlyCreditLimit) || 0)),
+      dailyCallLimit: clampInt(Number(params.dailyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+      monthlyCallLimit: clampInt(Number(params.monthlyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+      dailyCreditLimit: clampInt(Number(params.dailyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
+      monthlyCreditLimit: clampInt(Number(params.monthlyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
     };
 
     const success = this.gate.store.setQuota(params.key, quota);
@@ -4146,10 +4163,10 @@ export class PayGateServer {
       return;
     }
 
-    // Validate params
-    const threshold = Math.max(0, Math.floor(Number(params.threshold) || 0));
-    const amount = Math.max(0, Math.floor(Number(params.amount) || 0));
-    const maxDaily = Math.max(0, Math.floor(Number(params.maxDaily) || 0));
+    // Validate params (clamp to reasonable upper bounds)
+    const threshold = clampInt(Number(params.threshold) || 0, 0, MAX_TOPUP_THRESHOLD);
+    const amount = clampInt(Number(params.amount) || 0, 0, MAX_TOPUP_AMOUNT);
+    const maxDaily = clampInt(Number(params.maxDaily) || 0, 0, MAX_TOPUP_AMOUNT * 10);
 
     if (threshold <= 0) {
       this.sendError(res, 400, 'threshold must be a positive integer');
@@ -4259,7 +4276,7 @@ export class PayGateServer {
       return;
     }
 
-    const limit = Math.max(0, Math.floor(Number(params.spendingLimit) || 0));
+    const limit = clampInt(Number(params.spendingLimit) || 0, 0, MAX_SPENDING_LIMIT);
     record.spendingLimit = limit;
     this.gate.store.save();
     this.syncKeyMutation(params.key);
@@ -9930,13 +9947,14 @@ export class PayGateServer {
       return;
     }
 
-    // Topup requires credits param
+    // Topup requires credits param (clamp to MAX_CREDITS)
     if (params.action === 'topup') {
       const credits = (params.params as any)?.credits;
       if (!credits || typeof credits !== 'number' || credits <= 0) {
         this.sendError(res, 400, 'topup action requires params.credits (positive number)');
         return;
       }
+      (params.params as any).credits = clampInt(credits, 1, MAX_CREDITS);
     }
 
     const record = this.gate.store.resolveKeyRaw(params.key);
@@ -10211,6 +10229,8 @@ export class PayGateServer {
       this.sendError(res, 400, 'Missing or invalid credits (must be positive number)');
       return;
     }
+    // Clamp credits to max bound
+    params.credits = clampInt(params.credits, 1, MAX_CREDITS);
 
     const record = this.gate.store.resolveKeyRaw(params.key);
     if (!record) {
@@ -10490,10 +10510,10 @@ export class PayGateServer {
     if (fileConfig.globalQuota !== undefined) {
       const q = fileConfig.globalQuota as Record<string, number>;
       patch.globalQuota = {
-        dailyCallLimit: Math.max(0, Math.floor(Number(q.dailyCallLimit) || 0)),
-        monthlyCallLimit: Math.max(0, Math.floor(Number(q.monthlyCallLimit) || 0)),
-        dailyCreditLimit: Math.max(0, Math.floor(Number(q.dailyCreditLimit) || 0)),
-        monthlyCreditLimit: Math.max(0, Math.floor(Number(q.monthlyCreditLimit) || 0)),
+        dailyCallLimit: clampInt(Number(q.dailyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+        monthlyCallLimit: clampInt(Number(q.monthlyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+        dailyCreditLimit: clampInt(Number(q.dailyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
+        monthlyCreditLimit: clampInt(Number(q.monthlyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
       };
     }
     if (fileConfig.alertRules !== undefined) {
@@ -11099,7 +11119,7 @@ export class PayGateServer {
     const team = this.teams.createTeam({
       name: sanitizeString(params.name as string) || 'unnamed',
       description: sanitizeString(params.description as string) || undefined,
-      budget: params.budget as number | undefined,
+      budget: params.budget ? clampInt(Number(params.budget), 0, MAX_CREDITS) : undefined,
       quota: params.quota as any,
       tags: params.tags as Record<string, string> | undefined,
     });
@@ -11139,7 +11159,7 @@ export class PayGateServer {
     const success = this.teams.updateTeam(params.teamId as string, {
       name: params.name ? sanitizeString(params.name as string) : undefined,
       description: params.description !== undefined ? (sanitizeString(params.description as string) || undefined) : undefined,
-      budget: params.budget as number | undefined,
+      budget: params.budget !== undefined ? clampInt(Number(params.budget), 0, MAX_CREDITS) : undefined,
       quota: params.quota as any,
       tags: params.tags as Record<string, string | null> | undefined,
     });
@@ -11487,17 +11507,17 @@ export class PayGateServer {
         description: sanitizeString(params.description as string) || undefined,
         allowedTools: params.allowedTools as string[] | undefined,
         deniedTools: params.deniedTools as string[] | undefined,
-        rateLimitPerMin: params.rateLimitPerMin as number | undefined,
+        rateLimitPerMin: params.rateLimitPerMin ? clampInt(Number(params.rateLimitPerMin), 0, MAX_RATE_LIMIT) : undefined,
         toolPricing: params.toolPricing as Record<string, { creditsPerCall: number; creditsPerKbInput?: number }> | undefined,
         quota: params.quota ? {
-          dailyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCallLimit) || 0)),
-          monthlyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCallLimit) || 0)),
-          dailyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCreditLimit) || 0)),
-          monthlyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCreditLimit) || 0)),
+          dailyCallLimit: clampInt(Number((params.quota as any).dailyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+          monthlyCallLimit: clampInt(Number((params.quota as any).monthlyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+          dailyCreditLimit: clampInt(Number((params.quota as any).dailyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
+          monthlyCreditLimit: clampInt(Number((params.quota as any).monthlyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
         } : undefined,
         ipAllowlist: params.ipAllowlist as string[] | undefined,
-        defaultCredits: params.defaultCredits as number | undefined,
-        maxSpendingLimit: params.maxSpendingLimit as number | undefined,
+        defaultCredits: params.defaultCredits ? clampInt(Number(params.defaultCredits), 0, MAX_CREDITS) : undefined,
+        maxSpendingLimit: params.maxSpendingLimit ? clampInt(Number(params.maxSpendingLimit), 0, MAX_SPENDING_LIMIT) : undefined,
         tags: params.tags as Record<string, string> | undefined,
       });
 
@@ -11537,17 +11557,17 @@ export class PayGateServer {
         description: params.description !== undefined ? (sanitizeString(params.description as string) || undefined) : undefined,
         allowedTools: params.allowedTools as string[] | undefined,
         deniedTools: params.deniedTools as string[] | undefined,
-        rateLimitPerMin: params.rateLimitPerMin as number | undefined,
+        rateLimitPerMin: params.rateLimitPerMin ? clampInt(Number(params.rateLimitPerMin), 0, MAX_RATE_LIMIT) : undefined,
         toolPricing: params.toolPricing as Record<string, { creditsPerCall: number }> | undefined,
         quota: params.quota === null ? null : params.quota ? {
-          dailyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCallLimit) || 0)),
-          monthlyCallLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCallLimit) || 0)),
-          dailyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).dailyCreditLimit) || 0)),
-          monthlyCreditLimit: Math.max(0, Math.floor(Number((params.quota as any).monthlyCreditLimit) || 0)),
+          dailyCallLimit: clampInt(Number((params.quota as any).dailyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+          monthlyCallLimit: clampInt(Number((params.quota as any).monthlyCallLimit) || 0, 0, MAX_QUOTA_LIMIT),
+          dailyCreditLimit: clampInt(Number((params.quota as any).dailyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
+          monthlyCreditLimit: clampInt(Number((params.quota as any).monthlyCreditLimit) || 0, 0, MAX_QUOTA_LIMIT),
         } : undefined,
         ipAllowlist: params.ipAllowlist as string[] | undefined,
-        defaultCredits: params.defaultCredits as number | undefined,
-        maxSpendingLimit: params.maxSpendingLimit as number | undefined,
+        defaultCredits: params.defaultCredits ? clampInt(Number(params.defaultCredits), 0, MAX_CREDITS) : undefined,
+        maxSpendingLimit: params.maxSpendingLimit ? clampInt(Number(params.maxSpendingLimit), 0, MAX_SPENDING_LIMIT) : undefined,
         tags: params.tags as Record<string, string> | undefined,
       });
 
