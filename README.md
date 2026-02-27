@@ -164,6 +164,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Consumer Risk Score** — `GET /admin/consumer-risk-score` per-consumer risk scoring based on utilization with risk levels (low/medium/high/critical)
 - **Revenue Forecast** — `GET /admin/revenue-forecast` projected revenue with hourly/daily/weekly/monthly forecasts capped by remaining credits
+- **Credit Waste Analysis** — `GET /admin/credit-waste` per-key credit waste analysis with utilization metrics and waste percentage
 - **Group Activity** — `GET /admin/group-activity` per-group activity metrics with key counts, spend, calls, credits remaining for policy-template analytics
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
@@ -3776,6 +3777,25 @@ curl http://localhost:3000/admin/revenue-forecast -H "X-Admin-Key: YOUR_ADMIN_KE
 ```
 
 Projected revenue based on current spend trends. Forecasts for next hour, day, week, and month are extrapolated from aggregate credits/hour rate and capped by total remaining credits. Includes current totals and active key count. Zero-spend systems show zero forecasts. Excludes revoked/suspended keys. Read-only.
+
+### Credit Waste Analysis
+
+```bash
+curl http://localhost:3000/admin/credit-waste -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "keys": [
+    { "name": "unused-key", "creditsAllocated": 1000, "creditsUsed": 0, "creditsRemaining": 1000, "wastePercent": 100 },
+    { "name": "active-key", "creditsAllocated": 500, "creditsUsed": 350, "creditsRemaining": 150, "wastePercent": 30 }
+  ],
+  "summary": { "totalAllocated": 1500, "totalWasted": 1150, "averageWastePercent": 65 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-key credit waste analysis showing allocated vs used credits. Waste percent = remaining / allocated × 100 (100% = fully unused, 0% = fully utilized). Summary includes total allocated credits, total wasted (remaining), and average waste percentage. Sorted by wastePercent descending (biggest wasters first). Excludes revoked/suspended keys. Read-only.
 
 ### Group Activity
 

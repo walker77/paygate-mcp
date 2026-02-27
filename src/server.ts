@@ -1107,6 +1107,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/credit-waste':
+        if (req.method === 'GET') return this.handleCreditWaste(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1739,6 +1744,7 @@ export class PayGateServer {
         creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
         consumerRiskScore: 'GET /admin/consumer-risk-score — Per-consumer risk scoring based on utilization, spend velocity, and credit depletion proximity with risk levels (requires X-Admin-Key)',
         revenueForecast: 'GET /admin/revenue-forecast — Projected revenue with hourly/daily/weekly/monthly forecasts based on current spend trends, capped by remaining credits (requires X-Admin-Key)',
+        creditWaste: 'GET /admin/credit-waste — Per-key credit waste analysis with utilization metrics and waste percentage (requires X-Admin-Key)',
         groupActivity: 'GET /admin/group-activity — Per-group activity metrics with key counts, spend, calls, credits remaining for policy-template-based analytics (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
@@ -8760,6 +8766,55 @@ export class PayGateServer {
   }
 
   // ─── /admin/group-activity — Per-group activity metrics ──────────────────
+
+  private handleCreditWaste(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        keys: [],
+        summary: { totalAllocated: 0, totalWasted: 0, averageWastePercent: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const keys = activeRecords.map(rec => {
+      const creditsAllocated = rec.credits + rec.totalSpent;
+      const creditsUsed = rec.totalSpent;
+      const creditsRemaining = rec.credits;
+      const wastePercent = creditsAllocated > 0
+        ? Math.round((creditsRemaining / creditsAllocated) * 100)
+        : 0;
+
+      return {
+        name: rec.name || rec.key.slice(0, 12),
+        creditsAllocated,
+        creditsUsed,
+        creditsRemaining,
+        wastePercent,
+      };
+    });
+
+    keys.sort((a, b) => b.wastePercent - a.wastePercent);
+
+    const totalAllocated = keys.reduce((s, k) => s + k.creditsAllocated, 0);
+    const totalWasted = keys.reduce((s, k) => s + k.creditsRemaining, 0);
+    const averageWastePercent = keys.length > 0
+      ? Math.round(keys.reduce((s, k) => s + k.wastePercent, 0) / keys.length)
+      : 0;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      keys,
+      summary: { totalAllocated, totalWasted, averageWastePercent },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
 
   private handleGroupActivity(_req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(_req, res)) return;
