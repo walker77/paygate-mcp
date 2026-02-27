@@ -221,6 +221,17 @@ export class PayGateServer {
   private scheduleTimer: ReturnType<typeof setInterval> | null = null;
   /** Auto-incrementing schedule ID counter */
   private nextScheduleId = 1;
+  /** Credit reservations (holds) */
+  private creditReservations: Map<string, {
+    id: string;
+    key: string;
+    credits: number;
+    createdAt: string;
+    expiresAt: string;
+    memo?: string;
+  }> = new Map();
+  /** Auto-incrementing reservation ID counter */
+  private nextReservationId = 1;
   /** Number of in-flight /mcp requests */
   private inflight = 0;
   /** Config file path for hot reload (null if not using config file) */
@@ -599,6 +610,22 @@ export class PayGateServer {
         if (req.method === 'GET') return this.handleKeyActivity(req, res);
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
+      case '/keys/reserve':
+        if (req.method === 'GET') return this.handleListReservations(req, res);
+        if (req.method === 'POST') return this.handleCreateReservation(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      case '/keys/reserve/commit':
+        if (req.method === 'POST') return this.handleCommitReservation(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+        return;
+      case '/keys/reserve/release':
+        if (req.method === 'POST') return this.handleReleaseReservation(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
         return;
       case '/keys/rotate':
         return this.handleRotateKey(req, res);
@@ -1267,6 +1294,7 @@ export class PayGateServer {
         keyNotes: 'GET /keys/notes?key=... — List notes + POST to add + DELETE to remove (requires X-Admin-Key)',
         keySchedule: 'GET /keys/schedule?key=... — List schedules + POST to create + DELETE to cancel (requires X-Admin-Key)',
         keyActivity: 'GET /keys/activity?key=... — Unified activity timeline for a key (requires X-Admin-Key)',
+        creditReservations: 'POST /keys/reserve to hold credits, POST /keys/reserve/commit to deduct, POST /keys/reserve/release to release, GET /keys/reserve to list (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4780,6 +4808,276 @@ export class PayGateServer {
       limit,
       events: page,
     }));
+  }
+
+  // ─── /keys/reserve — Credit reservations (hold, commit, release) ─────────
+
+  private handleListReservations(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keyParam = params.get('key');
+
+    // Clean up expired reservations first
+    this.cleanupExpiredReservations();
+
+    let reservations = [...this.creditReservations.values()];
+    if (keyParam) {
+      const record = this.gate.store.resolveKeyRaw(keyParam);
+      if (!record) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key not found' }));
+        return;
+      }
+      reservations = reservations.filter(r => r.key === record.key);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      reservations: reservations.map(r => ({
+        ...r,
+        key: maskKeyForAudit(r.key),
+      })),
+      count: reservations.length,
+      totalHeld: reservations.reduce((sum, r) => sum + r.credits, 0),
+    }));
+  }
+
+  private handleCreateReservation(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk; });
+    req.on('end', () => {
+      let params: { key?: string; credits?: number; ttlSeconds?: number; memo?: string };
+      try {
+        params = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+
+      if (!params.key || typeof params.key !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: key' }));
+        return;
+      }
+
+      if (!params.credits || typeof params.credits !== 'number' || params.credits <= 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing or invalid credits (must be positive number)' }));
+        return;
+      }
+
+      const record = this.gate.store.resolveKeyRaw(params.key);
+      if (!record) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key not found' }));
+        return;
+      }
+
+      if (!record.active) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key is revoked' }));
+        return;
+      }
+
+      if (record.suspended) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key is suspended' }));
+        return;
+      }
+
+      // Cleanup expired before checking availability
+      this.cleanupExpiredReservations();
+
+      // Calculate available credits (total - held)
+      const heldCredits = this.getHeldCredits(record.key);
+      const available = record.credits - heldCredits;
+
+      if (params.credits > available) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'Insufficient available credits',
+          available,
+          held: heldCredits,
+          total: record.credits,
+          requested: params.credits,
+        }));
+        return;
+      }
+
+      // Max 50 active reservations per key
+      const keyReservations = [...this.creditReservations.values()].filter(r => r.key === record.key);
+      if (keyReservations.length >= 50) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Maximum 50 active reservations per key' }));
+        return;
+      }
+
+      const ttl = Math.min(3600, Math.max(10, params.ttlSeconds || 300)); // 10s – 1h, default 5m
+      const reservation = {
+        id: `rsv_${this.nextReservationId++}`,
+        key: record.key,
+        credits: params.credits,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+        memo: params.memo?.slice(0, 200),
+      };
+
+      this.creditReservations.set(reservation.id, reservation);
+
+      this.audit.log('credits.reserved', 'admin', `Reserved ${params.credits} credits`, {
+        reservationId: reservation.id,
+        key: maskKeyForAudit(record.key),
+        credits: params.credits,
+        ttlSeconds: ttl,
+      });
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...reservation,
+        key: maskKeyForAudit(reservation.key),
+        available: available - params.credits,
+      }));
+    });
+  }
+
+  private handleCommitReservation(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk; });
+    req.on('end', () => {
+      let params: { reservationId?: string };
+      try {
+        params = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+
+      if (!params.reservationId || typeof params.reservationId !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: reservationId' }));
+        return;
+      }
+
+      const reservation = this.creditReservations.get(params.reservationId);
+      if (!reservation) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Reservation not found (may have expired)' }));
+        return;
+      }
+
+      // Check if expired
+      if (new Date(reservation.expiresAt).getTime() <= Date.now()) {
+        this.creditReservations.delete(params.reservationId);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Reservation has expired' }));
+        return;
+      }
+
+      const record = this.gate.store.resolveKeyRaw(reservation.key);
+      if (!record) {
+        this.creditReservations.delete(params.reservationId);
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Key not found' }));
+        return;
+      }
+
+      // Deduct credits
+      record.credits = Math.max(0, record.credits - reservation.credits);
+      this.gate.store.save();
+
+      // Remove reservation
+      this.creditReservations.delete(params.reservationId);
+
+      this.audit.log('credits.committed', 'admin', `Committed reservation: ${reservation.credits} credits deducted`, {
+        reservationId: reservation.id,
+        key: maskKeyForAudit(record.key),
+        credits: reservation.credits,
+        remainingCredits: record.credits,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        committed: {
+          ...reservation,
+          key: maskKeyForAudit(reservation.key),
+        },
+        remainingCredits: record.credits,
+      }));
+    });
+  }
+
+  private handleReleaseReservation(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => { body += chunk; });
+    req.on('end', () => {
+      let params: { reservationId?: string };
+      try {
+        params = JSON.parse(body);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        return;
+      }
+
+      if (!params.reservationId || typeof params.reservationId !== 'string') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required field: reservationId' }));
+        return;
+      }
+
+      const reservation = this.creditReservations.get(params.reservationId);
+      if (!reservation) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Reservation not found (may have expired)' }));
+        return;
+      }
+
+      // Remove reservation (release the hold)
+      this.creditReservations.delete(params.reservationId);
+
+      this.audit.log('credits.released', 'admin', `Released reservation: ${reservation.credits} credits freed`, {
+        reservationId: reservation.id,
+        key: maskKeyForAudit(reservation.key),
+        credits: reservation.credits,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        released: {
+          ...reservation,
+          key: maskKeyForAudit(reservation.key),
+        },
+      }));
+    });
+  }
+
+  /** Get total held credits for a key across all active reservations. */
+  private getHeldCredits(key: string): number {
+    let held = 0;
+    for (const r of this.creditReservations.values()) {
+      if (r.key === key) held += r.credits;
+    }
+    return held;
+  }
+
+  /** Remove expired reservations. */
+  private cleanupExpiredReservations(): void {
+    const now = Date.now();
+    for (const [id, r] of this.creditReservations) {
+      if (new Date(r.expiresAt).getTime() <= now) {
+        this.creditReservations.delete(id);
+      }
+    }
   }
 
   // ─── /config/reload — Hot reload configuration from file ─────────────────

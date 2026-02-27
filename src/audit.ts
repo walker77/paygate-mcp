@@ -94,7 +94,11 @@ export type AuditEventType =
   // Scheduled actions
   | 'schedule.created'
   | 'schedule.executed'
-  | 'schedule.cancelled';
+  | 'schedule.cancelled'
+  // Credit reservations
+  | 'credits.reserved'
+  | 'credits.committed'
+  | 'credits.released';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

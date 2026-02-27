@@ -99,6 +99,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Notes** — `POST /keys/notes` adds timestamped notes to API keys, `GET /keys/notes?key=...` lists notes, `DELETE /keys/notes?key=...&index=N` removes notes — max 50 per key, 1000 char limit, works on suspended/revoked keys, alias support, audit trail
 - **Scheduled Actions** — `POST /keys/schedule` creates future-dated actions (revoke/suspend/topup) on API keys, `GET /keys/schedule` lists pending schedules with optional `?key=` filter, `DELETE /keys/schedule?id=...` cancels a schedule — max 20 per key, alias support, background execution timer, audit trail
 - **Key Activity Timeline** — `GET /keys/activity?key=...` returns a unified chronological feed of audit events and usage events for a specific key — newest first, optional `?since=` and `?limit=` filters, alias support
+- **Credit Reservations** — `POST /keys/reserve` holds credits, `POST /keys/reserve/commit` deducts held credits, `POST /keys/reserve/release` frees the hold, `GET /keys/reserve` lists active reservations — prevents overcommit, configurable TTL (10s–1h), max 50 per key, auto-expiry, audit trail
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2033,6 +2034,46 @@ curl "http://localhost:3402/keys/activity?key=pg_...&limit=20&since=2025-03-15T0
 ```
 
 Max 200 events per request. Supports aliases. Works on suspended and revoked keys.
+
+### Credit Reservations
+
+Pre-reserve credits before executing expensive operations. Prevents overcommit in concurrent scenarios:
+
+```bash
+# Reserve 500 credits (hold for 5 min default, or set ttlSeconds)
+curl -X POST http://localhost:3402/keys/reserve \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "credits": 500, "ttlSeconds": 300, "memo": "Batch job #42"}'
+
+# Commit — deducts the held credits
+curl -X POST http://localhost:3402/keys/reserve/commit \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"reservationId": "rsv_1"}'
+
+# Release — frees the hold without deducting
+curl -X POST http://localhost:3402/keys/reserve/release \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"reservationId": "rsv_1"}'
+
+# List active reservations (optional ?key= filter)
+curl "http://localhost:3402/keys/reserve" -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response (reserve):**
+
+```json
+{
+  "id": "rsv_1",
+  "key": "pg_abc1...2345",
+  "credits": 500,
+  "createdAt": "2025-03-16T10:30:00Z",
+  "expiresAt": "2025-03-16T10:35:00Z",
+  "memo": "Batch job #42",
+  "available": 500
+}
+```
+
+TTL range: 10s to 1h (default 5 min). Max 50 reservations per key. Expired reservations auto-cleanup. Alias support. Rejects revoked/suspended keys. Audit trail (`credits.reserved` / `credits.committed` / `credits.released`).
 
 ### IP Allowlisting
 
