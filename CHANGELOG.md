@@ -1,5 +1,18 @@
 # Changelog
 
+## 8.78.0 (2026-02-27)
+
+### Bootstrap Admin Key Rotation
+- **`POST /admin/keys/rotate-bootstrap`** — rotate the bootstrap admin key without server restart, eliminating a security gap where the initial admin key was immutable
+- Generates a new `admin_` prefixed key, revokes the old one, and updates the server's internal reference in a single atomic operation
+- Only the current bootstrap key holder (super_admin) can trigger rotation; other super_admins get a clear error
+- Supports successive rotations (rotate → rotate → rotate) for key cycling workflows
+- Audit trail via `admin_key.bootstrap_rotated` event (both audit log and webhook)
+- Returns new key in response with security reminder to store it securely
+- 14 new tests (unit: rotate/revoke/validate/error cases/successive rotations; integration: HTTP endpoint, method enforcement, role enforcement, double rotation)
+
+---
+
 ## 8.77.0 (2026-02-27)
 
 ### Timing-Safe Admin Key Authentication

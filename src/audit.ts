@@ -67,6 +67,7 @@ export type AuditEventType =
   // Admin key management
   | 'admin_key.created'
   | 'admin_key.revoked'
+  | 'admin_key.bootstrap_rotated'
   // Key groups
   | 'group.created'
   | 'group.updated'

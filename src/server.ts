@@ -166,7 +166,7 @@ export class PayGateServer {
   /** Admin key manager (multiple keys with role-based permissions) */
   readonly adminKeys: AdminKeyManager;
   /** The bootstrap admin key (from constructor or auto-generated) */
-  private readonly bootstrapAdminKey: string;
+  private bootstrapAdminKey: string;
   private stripeHandler: StripeWebhookHandler | null = null;
   /** OAuth 2.1 provider (null if OAuth is not enabled) */
   readonly oauth: OAuthProvider | null = null;
@@ -904,6 +904,8 @@ export class PayGateServer {
         break;
       case '/admin/keys/revoke':
         return this.handleRevokeAdminKey(req, res);
+      case '/admin/keys/rotate-bootstrap':
+        return this.handleRotateBootstrapKey(req, res);
       case '/admin/events':
         return this.handleAdminEventStream(req, res);
       case '/admin/notifications':
@@ -11675,6 +11677,41 @@ export class PayGateServer {
     });
 
     this.sendJson(res, 200, { revoked: true });
+  }
+
+  private async handleRotateBootstrapKey(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') {
+      this.sendError(res, 405, 'Method not allowed. Use POST.');
+      return;
+    }
+    if (!this.checkAdmin(req, res, 'super_admin')) return;
+
+    const callerKey = req.headers['x-admin-key'] as string;
+    const result = this.adminKeys.rotateBootstrap(callerKey);
+
+    if ('error' in result) {
+      this.sendError(res, 400, result.error);
+      return;
+    }
+
+    // Update the server's bootstrap key reference
+    this.bootstrapAdminKey = result.newKey;
+
+    const callerMasked = callerKey.slice(0, 7) + '...' + callerKey.slice(-4);
+    const newMasked = result.newKey.slice(0, 7) + '...' + result.newKey.slice(-4);
+
+    this.audit.log('admin_key.bootstrap_rotated', callerMasked, `Bootstrap admin key rotated → ${newMasked}`, {
+      newKeyMasked: newMasked,
+    });
+    this.emitWebhookAdmin('admin_key.bootstrap_rotated', callerMasked, {
+      newKeyMasked: newMasked,
+    });
+
+    this.sendJson(res, 200, {
+      rotated: true,
+      newKey: result.newKey,
+      message: 'Bootstrap admin key rotated. The old key is now revoked. Store the new key securely.',
+    });
   }
 
   // ─── /keys/templates — CRUD ────────────────────────────────────────────────

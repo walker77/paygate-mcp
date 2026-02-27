@@ -108,6 +108,38 @@ export class AdminKeyManager {
     this.save();
   }
 
+  /**
+   * Rotate the bootstrap admin key without server restart.
+   * Generates a new bootstrap key, revokes the old one, and persists.
+   * Returns the new key, or null if oldKey is not the current bootstrap.
+   */
+  rotateBootstrap(oldKey: string): { newKey: string } | { error: string } {
+    const oldRecord = this.keys.get(oldKey);
+    if (!oldRecord) return { error: 'Admin key not found' };
+    if (!oldRecord.active) return { error: 'Admin key is already revoked' };
+    if (oldRecord.createdBy !== 'bootstrap') return { error: 'Key is not the bootstrap admin key' };
+
+    // Generate new bootstrap key
+    const newKey = `admin_${randomBytes(16).toString('hex')}`;
+    const newRecord: AdminKeyRecord = {
+      key: newKey,
+      name: 'Bootstrap Admin',
+      role: 'super_admin',
+      createdAt: new Date().toISOString(),
+      createdBy: 'bootstrap',
+      active: true,
+      lastUsedAt: null,
+    };
+
+    // Add new key first (so there's always at least one super_admin)
+    this.keys.set(newKey, newRecord);
+    // Revoke old key
+    oldRecord.active = false;
+    this.save();
+
+    return { newKey };
+  }
+
   // ─── Validation ──────────────────────────────────────────────────────────
 
   /**
