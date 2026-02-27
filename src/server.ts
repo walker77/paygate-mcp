@@ -902,6 +902,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/latency':
+        if (req.method === 'GET') return this.handleLatencyAnalysis(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1494,6 +1499,7 @@ export class PayGateServer {
         slaMonitoring: 'GET /admin/sla — SLA monitoring with success rates, denial breakdowns, per-tool availability, uptime tracking, and denial reason aggregation (requires X-Admin-Key)',
         capacityPlanning: 'GET /admin/capacity — Capacity planning with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations (requires X-Admin-Key)',
         dependencyMap: 'GET /admin/dependencies — Tool-to-key dependency map with tool usage popularity, unique key counts, per-key tool lists, and used/unused tool identification (requires X-Admin-Key)',
+        latencyAnalysis: 'GET /admin/latency — Per-tool response time metrics with avg/p95/min/max, slowest tools ranking, and per-key latency breakdown (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6538,6 +6544,93 @@ export class PayGateServer {
       },
       toolUsage,
       keyToolMap,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/latency — Tool Latency Analysis ─────────────────────────────
+
+  private handleLatencyAnalysis(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    // Only count allowed calls from request log
+    const allowed = this.requestLog.filter(e => e.status === 'allowed');
+
+    if (allowed.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        summary: { totalCalls: 0, avgDurationMs: 0, minDurationMs: 0, maxDurationMs: 0, p95DurationMs: 0 },
+        byTool: [],
+        slowestTools: [],
+        byKey: [],
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // ── Summary across all tools ──
+    const allDurations = allowed.map(e => e.durationMs);
+    const totalCalls = allowed.length;
+    const avgDurationMs = Math.round(allDurations.reduce((a, b) => a + b, 0) / totalCalls);
+    const minDurationMs = Math.min(...allDurations);
+    const maxDurationMs = Math.max(...allDurations);
+    const p95DurationMs = this.percentile(allDurations, 95);
+
+    // ── Per-tool breakdown ──
+    const toolMap = new Map<string, number[]>();
+    for (const e of allowed) {
+      if (!toolMap.has(e.tool)) toolMap.set(e.tool, []);
+      toolMap.get(e.tool)!.push(e.durationMs);
+    }
+
+    const byTool = Array.from(toolMap.entries())
+      .map(([tool, durations]) => ({
+        tool,
+        totalCalls: durations.length,
+        avgDurationMs: Math.round(durations.reduce((a, b) => a + b, 0) / durations.length),
+        minDurationMs: Math.min(...durations),
+        maxDurationMs: Math.max(...durations),
+        p95DurationMs: this.percentile(durations, 95),
+      }))
+      .sort((a, b) => b.avgDurationMs - a.avgDurationMs);
+
+    // ── Slowest tools (top 10) ──
+    const slowestTools = byTool.slice(0, 10).map(t => ({
+      tool: t.tool,
+      avgDurationMs: t.avgDurationMs,
+      totalCalls: t.totalCalls,
+    }));
+
+    // ── Per-key breakdown ──
+    // Build masked-key → name lookup from store
+    const maskedToName = new Map<string, string>();
+    for (const rec of this.gate.store.getAllRecords()) {
+      maskedToName.set(maskKeyForAudit(rec.key), rec.name);
+    }
+
+    const keyMap = new Map<string, { keyName: string; durations: number[] }>();
+    for (const e of allowed) {
+      const keyName = maskedToName.get(e.key) || e.key;
+      if (!keyMap.has(keyName)) keyMap.set(keyName, { keyName, durations: [] });
+      keyMap.get(keyName)!.durations.push(e.durationMs);
+    }
+
+    const byKey = Array.from(keyMap.values())
+      .map(k => ({
+        keyName: k.keyName,
+        totalCalls: k.durations.length,
+        avgDurationMs: Math.round(k.durations.reduce((a, b) => a + b, 0) / k.durations.length),
+        minDurationMs: Math.min(...k.durations),
+        maxDurationMs: Math.max(...k.durations),
+      }))
+      .sort((a, b) => b.avgDurationMs - a.avgDurationMs);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: { totalCalls, avgDurationMs, minDurationMs, maxDurationMs, p95DurationMs },
+      byTool,
+      slowestTools,
+      byKey,
       generatedAt: new Date().toISOString(),
     }));
   }

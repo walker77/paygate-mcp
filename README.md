@@ -124,6 +124,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SLA Monitoring** — `GET /admin/sla` tracks service level metrics: success rates, denial breakdowns by reason, per-tool availability and error rates, uptime tracking, sorted by call volume
 - **Capacity Planning** — `GET /admin/capacity` system capacity analysis with credit burn rates, utilization percentages, top consumers, per-namespace breakdown, and scaling recommendations
 - **Key Dependency Map** — `GET /admin/dependencies` tool-to-key relationship map with tool usage popularity, unique key counts per tool, per-key tool lists, and used/unused tool identification
+- **Tool Latency Analysis** — `GET /admin/latency` per-tool response time metrics with avg/p95/min/max durations, slowest tools ranking, and per-key latency breakdown
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2866,6 +2867,31 @@ curl http://localhost:3000/admin/dependencies -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Tool-to-key relationship map: shows which tools each key uses, tool popularity ranked by total calls, unique key counts per tool, and identifies orphaned tools (available but unused). Useful for understanding tool adoption and pruning unused capabilities. Read-only.
+
+### Tool Latency Analysis
+
+```bash
+curl http://localhost:3000/admin/latency -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalCalls": 200, "avgDurationMs": 45, "minDurationMs": 8, "maxDurationMs": 312, "p95DurationMs": 120 },
+  "byTool": [
+    { "tool": "translate", "totalCalls": 80, "avgDurationMs": 65, "minDurationMs": 20, "maxDurationMs": 312, "p95DurationMs": 150 },
+    { "tool": "search", "totalCalls": 120, "avgDurationMs": 32, "minDurationMs": 8, "maxDurationMs": 95, "p95DurationMs": 78 }
+  ],
+  "slowestTools": [
+    { "tool": "translate", "avgDurationMs": 65, "totalCalls": 80 }
+  ],
+  "byKey": [
+    { "keyName": "heavy-user", "totalCalls": 150, "avgDurationMs": 48, "minDurationMs": 8, "maxDurationMs": 312 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-tool response time metrics: average, p95, min, and max durations for each tool sorted by slowest average first, top 10 slowest tools ranking, per-key latency breakdown, and global summary. Only counts successful (allowed) calls. Read-only.
 
 ### IP Allowlisting
 
