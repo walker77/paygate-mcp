@@ -4935,6 +4935,23 @@ The config file is validated before applying changes — invalid configs are rej
 
 ## Deployment
 
+### One-Click Deploy
+
+Deploy PayGate to your preferred cloud platform:
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/template/paygate-mcp?referralCode=paygate)
+
+**Render:**
+```
+https://render.com/deploy?repo=https://github.com/walker77/paygate-mcp
+```
+
+**Fly.io:**
+```bash
+fly launch --image ghcr.io/walker77/paygate-mcp:latest --name my-paygate
+fly secrets set PAYGATE_ADMIN_KEY=your-admin-key PAYGATE_REMOTE_URL=https://your-mcp-server.com/mcp
+```
+
 ### Docker
 
 ```bash

@@ -151,6 +151,8 @@ export interface PayGateConfig {
   adminRateLimit?: number;
   /** Session creation rate limit per IP (sessions/min). 0 = unlimited. Default: 60. */
   sessionRateLimit?: number;
+  /** Bill task creation (tasks/send) as tool calls. Default: false. When true, tasks/send is not free. */
+  billTaskCreation?: boolean;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────
@@ -194,7 +196,14 @@ export const DEFAULT_CONFIG: PayGateConfig = {
   defaultCreditsPerCall: 1,
   toolPricing: {},
   globalRateLimitPerMin: 60,
-  freeMethods: ['initialize', 'initialized', 'ping', 'notifications/initialized', 'tools/list', 'resources/list', 'prompts/list'],
+  freeMethods: [
+    'initialize', 'initialized', 'ping', 'notifications/initialized',
+    'tools/list', 'resources/list', 'prompts/list',
+    // MCP 2025-11-25: Tasks (long-running operations) — management methods are free
+    'tasks/list', 'tasks/get', 'tasks/cancel',
+    // MCP 2025-11-25: Elicitation (agent asks user for input) — free
+    'elicitation/create',
+  ],
   shadowMode: false,
   webhookUrl: null,
   webhookSecret: null,

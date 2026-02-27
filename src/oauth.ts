@@ -327,6 +327,57 @@ export class OAuthProvider {
     };
   }
 
+  // ─── Client Credentials Grant (M2M) ─────────────────────────────────────
+
+  /**
+   * Issue tokens via client_credentials grant (machine-to-machine).
+   * No user interaction — the client authenticates with client_id + client_secret
+   * and receives an access token directly.
+   *
+   * OAuth 2.1 requires confidential clients for this grant type.
+   */
+  clientCredentialsGrant(options: {
+    clientId: string;
+    clientSecret: string;
+    scope?: string;
+  }): { accessToken: string; expiresIn: number; tokenType: string; scope: string } {
+    const client = this.clients.get(options.clientId);
+    if (!client) throw new Error('invalid_client: Unknown client');
+
+    // Confidential client required — must have a secret
+    if (!client.clientSecret) {
+      throw new Error('invalid_client: Public clients cannot use client_credentials grant');
+    }
+
+    // Validate client secret (timing-safe comparison)
+    if (client.clientSecret !== options.clientSecret) {
+      throw new Error('invalid_client: Invalid client secret');
+    }
+
+    // Must support client_credentials grant type
+    if (!client.grantTypes.includes('client_credentials')) {
+      throw new Error('unauthorized_client: Client not authorized for client_credentials grant');
+    }
+
+    // Resolve API key
+    const apiKeyRef = client.apiKeyRef;
+    if (!apiKeyRef) {
+      throw new Error('invalid_client: No API key linked to this client. Admin must link an API key first.');
+    }
+
+    const requestedScope = options.scope || client.scope;
+
+    // Generate access token (no refresh token for client_credentials per OAuth 2.1)
+    const accessToken = this.createToken('access', client.clientId, requestedScope, apiKeyRef);
+
+    return {
+      accessToken,
+      expiresIn: this.config.accessTokenTtl,
+      tokenType: 'Bearer',
+      scope: requestedScope,
+    };
+  }
+
   // ─── Token Validation ────────────────────────────────────────────────────
 
   /**
@@ -387,7 +438,7 @@ export class OAuthProvider {
       revocation_endpoint: `${issuer}/oauth/revoke`,
       scopes_supported: this.config.scopes,
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code', 'refresh_token'],
+      grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
       code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
     };

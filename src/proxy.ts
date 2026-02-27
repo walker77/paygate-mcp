@@ -110,6 +110,7 @@ export class McpProxy extends EventEmitter {
       const decision = this.gate.evaluate(apiKey, toolCall, clientIp, scopedTokenTools);
 
       if (!decision.allowed) {
+        const creditsRequired = this.gate.getToolPrice(toolCall.name);
         return {
           jsonrpc: '2.0',
           id: request.id,
@@ -117,8 +118,9 @@ export class McpProxy extends EventEmitter {
             code: -32402,
             message: `Payment required: ${decision.reason}`,
             data: {
-              creditsRequired: this.gate.getToolPrice(toolCall.name),
+              creditsRequired,
               remainingCredits: decision.remainingCredits,
+              x402: { version: '1', scheme: 'credits', creditsRequired, creditsAvailable: decision.remainingCredits, topUpUrl: '/topup', pricingUrl: '/pricing', accepts: ['X-API-Key', 'Bearer'] },
             },
           },
         };
@@ -178,6 +180,7 @@ export class McpProxy extends EventEmitter {
     const batchResult = this.gate.evaluateBatch(apiKey, calls, clientIp, scopedTokenTools);
 
     if (!batchResult.allAllowed) {
+      const totalCreditsRequired = calls.reduce((sum, c) => sum + this.gate.getToolPrice(c.name, c.arguments), 0);
       return {
         jsonrpc: '2.0',
         id: batchId,
@@ -186,8 +189,9 @@ export class McpProxy extends EventEmitter {
           message: `Payment required: ${batchResult.reason}`,
           data: {
             failedIndex: batchResult.failedIndex,
-            totalCreditsRequired: calls.reduce((sum, c) => sum + this.gate.getToolPrice(c.name, c.arguments), 0),
+            totalCreditsRequired,
             remainingCredits: batchResult.remainingCredits,
+            x402: { version: '1', scheme: 'credits', creditsRequired: totalCreditsRequired, creditsAvailable: batchResult.remainingCredits, topUpUrl: '/topup', pricingUrl: '/pricing', accepts: ['X-API-Key', 'Bearer'] },
           },
         },
       };

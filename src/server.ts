@@ -4784,13 +4784,41 @@ export class PayGateServer {
           expires_in: result.expiresIn,
           scope: result.scope,
         }));
+      } else if (grantType === 'client_credentials') {
+        // Machine-to-machine: client authenticates with client_id + client_secret
+        if (!params.client_id || !params.client_secret) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid_request', error_description: 'client_id and client_secret are required' }));
+          return;
+        }
+
+        const result = this.oauth.clientCredentialsGrant({
+          clientId: params.client_id,
+          clientSecret: params.client_secret,
+          scope: params.scope,
+        });
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'Pragma': 'no-cache',
+        });
+        res.end(JSON.stringify({
+          access_token: result.accessToken,
+          token_type: result.tokenType,
+          expires_in: result.expiresIn,
+          scope: result.scope,
+        }));
       } else {
         this.sendError(res, 400, 'unsupported_grant_type');
       }
     } catch (err) {
       const rawMsg = (err as Error).message;
       this.logger.warn('OAuth token exchange failed', { error: rawMsg });
-      const errorCode = rawMsg.startsWith('invalid_grant') ? 'invalid_grant' : 'invalid_request';
+      const errorCode = rawMsg.startsWith('invalid_grant') ? 'invalid_grant'
+        : rawMsg.startsWith('invalid_client') ? 'invalid_client'
+        : rawMsg.startsWith('unauthorized_client') ? 'unauthorized_client'
+        : 'invalid_request';
       const safeMsg = safeErrorMessage(err, 'Token exchange failed');
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: errorCode, error_description: safeMsg }));

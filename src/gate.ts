@@ -677,6 +677,10 @@ export class Gate {
    * Check if a method is free (no auth required).
    */
   isFreeMethod(method: string): boolean {
+    // tasks/send is conditionally free: free by default, billable if config.billTaskCreation is true
+    if (method === 'tasks/send' && this.config.billTaskCreation) {
+      return false;
+    }
     return this.config.freeMethods.includes(method);
   }
 

@@ -27,6 +27,8 @@ export interface ToolPricingInfo {
   rateLimitPerMin: number;
   /** Pricing model: "flat" or "dynamic" */
   pricingModel: 'flat' | 'dynamic';
+  /** Whether this tool is free (zero credits). Helps agents skip payment flows. */
+  isFree: boolean;
 }
 
 export interface ServerPaymentMetadata {
@@ -54,6 +56,10 @@ export interface ServerPaymentMetadata {
   globalQuota: QuotaConfig | null;
   /** Total number of gated tools */
   toolCount: number;
+  /** Number of free tools (zero-credit). Helps agents estimate costs. */
+  freeToolCount: number;
+  /** x402 protocol compatibility hint */
+  x402Compatible: boolean;
 }
 
 export interface PricingResponse {
@@ -91,6 +97,12 @@ export class ToolRegistry {
     const authMethods = ['X-API-Key'];
     if (this.hasOAuth) authMethods.push('Bearer (OAuth 2.1)');
 
+    // Count free tools (those with explicit 0-credit pricing)
+    const freeToolCount = this.discoveredTools.filter(name => {
+      const override = this.config.toolPricing[name];
+      return override && override.creditsPerCall === 0;
+    }).length;
+
     return {
       specVersion: '2007-draft',
       serverName: this.config.name,
@@ -104,6 +116,8 @@ export class ToolRegistry {
       pricingEndpoint: '/pricing',
       globalQuota: this.config.globalQuota || null,
       toolCount: this.discoveredTools.length,
+      freeToolCount,
+      x402Compatible: true,
     };
   }
 
@@ -122,6 +136,7 @@ export class ToolRegistry {
       creditsPerKbInput,
       rateLimitPerMin,
       pricingModel: creditsPerKbInput > 0 ? 'dynamic' : 'flat',
+      isFree: creditsPerCall === 0 && creditsPerKbInput === 0,
     };
   }
 
@@ -153,6 +168,7 @@ export class ToolRegistry {
   /**
    * Build payment requirement data for -32402 error responses.
    * Helps agents understand what they need to do to afford the tool.
+   * Includes x402-compatible fields for cross-protocol interop.
    */
   buildPaymentRequired(toolName: string, creditsNeeded: number, creditsAvailable: number): Record<string, unknown> {
     const pricing = this.getToolPricing(toolName);
@@ -164,6 +180,16 @@ export class ToolRegistry {
       topUpEndpoint: '/topup',
       balanceEndpoint: '/balance',
       pricingEndpoint: '/pricing',
+      // x402-compatible recovery hints
+      x402: {
+        version: '1',
+        scheme: 'credits',
+        creditsRequired: creditsNeeded,
+        creditsAvailable,
+        topUpUrl: '/topup',
+        pricingUrl: '/pricing',
+        accepts: ['X-API-Key', 'Bearer'],
+      },
     };
   }
 }

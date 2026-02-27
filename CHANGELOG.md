@@ -1,5 +1,30 @@
 # Changelog
 
+## 8.96.0 (2026-02-27)
+
+### Protocol & Competitive Alignment
+- **OAuth `client_credentials` grant (M2M)**: Machine-to-machine authentication without user interaction
+  - Confidential clients authenticate with `client_id` + `client_secret`
+  - Issues access tokens directly (no auth code flow, no refresh token per OAuth 2.1)
+  - Validates client secret, grant type authorization, and linked API key
+  - Metadata endpoint includes `client_credentials` in `grant_types_supported`
+- **Free tool flag in pricing discovery**: `isFree: true/false` in `_pricing` metadata for each tool
+  - Agents can identify zero-cost tools before calling them, skipping payment flows
+  - `freeToolCount` added to `/.well-known/mcp-payment` server metadata
+- **x402-compatible payment recovery data**: All `-32402` errors now include `x402` block
+  - `version`, `scheme`, `creditsRequired`, `creditsAvailable`, `topUpUrl`, `pricingUrl`, `accepts`
+  - Enables cross-protocol interop with x402 payment agents
+  - `x402Compatible: true` added to server metadata
+  - Fixed http-proxy error code from -32000 to -32402 for consistency
+- **MCP 2025-11-25 Tasks support**: `tasks/list`, `tasks/get`, `tasks/cancel` added to default free methods
+  - `elicitation/create` also added as free (agent asks user for input)
+  - New `billTaskCreation` config option: when `true`, `tasks/send` requires payment
+- **One-click deploy**: Railway (`railway.json`), Render (`render.yaml`), and Fly.io templates added
+  - Deploy buttons in README for instant cloud deployment
+
+### Stats
+- 3,365 tests across 181 suites (29 new tests)
+
 ## 8.95.0 (2026-02-27)
 
 ### Output & Config Hardening
