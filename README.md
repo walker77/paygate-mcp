@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 150+ endpoints
+- [API Reference](#api-reference) — All 130+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
