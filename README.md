@@ -109,6 +109,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Dashboard** — `GET /keys/dashboard?key=...` consolidated single-endpoint view with metadata, balance, health score, spending velocity, rate limits, quotas, usage summary, and recent activity timeline
 - **Admin Notifications** — `GET /admin/notifications` scans all keys for actionable issues: expired/expiring keys, zero credits, credit depletion velocity, suspended keys, high error rates, and rate limit pressure — with severity filtering and priority sorting
 - **System Dashboard** — `GET /admin/dashboard` system-wide overview with key counts (active/suspended/revoked/expired), credit summary (allocated/spent/remaining), usage breakdown with deny reasons, top consumers, top tools, notification counts, and uptime
+- **Key Lifecycle Report** — `GET /admin/lifecycle` aggregated lifecycle trends with daily creation/revocation/suspension buckets, average key lifetime, and at-risk keys (expiring, expired, zero credits)
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2466,6 +2467,40 @@ curl http://localhost:3402/admin/dashboard \
 ```
 
 Combines key counts by state, credit allocation and spending totals, usage breakdown with deny reasons, top 10 consumers ranked by credits spent, top 10 tools ranked by call count, notification severity counts, and server uptime. Read-only.
+
+### Key Lifecycle Report
+
+Track key creation, revocation, suspension trends and identify at-risk keys:
+
+```bash
+# Full lifecycle report
+curl http://localhost:3402/admin/lifecycle \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+
+# Filter by date range
+curl "http://localhost:3402/admin/lifecycle?since=2026-02-01&until=2026-02-28" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "events": { "created": 25, "revoked": 3, "suspended": 5, "resumed": 4, "rotated": 2, "cloned": 1 },
+  "trends": [
+    { "date": "2026-02-25", "created": 5, "revoked": 1, "suspended": 2, "resumed": 1 },
+    { "date": "2026-02-26", "created": 8, "revoked": 0, "suspended": 1, "resumed": 2 },
+    { "date": "2026-02-27", "created": 12, "revoked": 2, "suspended": 2, "resumed": 1 }
+  ],
+  "averageLifetimeHours": 168.5,
+  "atRisk": [
+    { "key": "pg_c815...09a6", "name": "staging-agent", "risk": "expiring_soon", "details": { "expiresAt": "2026-03-01T...", "daysRemaining": 2.5 } },
+    { "key": "pg_a3f1...b2e4", "name": "batch-worker", "risk": "zero_credits", "details": { "credits": 0 } }
+  ]
+}
+```
+
+Shows aggregated lifecycle event counts, daily trend buckets (sorted chronologically), average key lifetime in hours (for revoked keys), and at-risk keys with their risk category (`expired`, `expiring_soon`, `zero_credits`). Supports `?since=` and `?until=` date filters. Excludes suspended and revoked keys from at-risk list. Read-only.
 
 ### IP Allowlisting
 

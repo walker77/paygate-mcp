@@ -827,6 +827,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/lifecycle':
+        if (req.method === 'GET') return this.handleKeyLifecycleReport(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1404,6 +1409,7 @@ export class PayGateServer {
         keyDashboard: 'GET /keys/dashboard?key=... — Consolidated key overview with metadata, balance, health, velocity, rate limits, quotas, and recent activity (requires X-Admin-Key)',
         adminNotifications: 'GET /admin/notifications — Actionable notifications for expiring keys, low credits, high error rates, and rate limit pressure (requires X-Admin-Key)',
         systemDashboard: 'GET /admin/dashboard — System-wide overview with key stats, credit summary, usage breakdown, top consumers, and uptime (requires X-Admin-Key)',
+        keyLifecycle: 'GET /admin/lifecycle — Key lifecycle report with creation/revocation/expiry trends, average lifetime, and at-risk keys (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -4916,6 +4922,110 @@ export class PayGateServer {
         uptimeSeconds,
         uptimeHours,
       },
+    }));
+  }
+
+  // ─── /admin/lifecycle — Key lifecycle report ──────────────────────────────
+
+  private handleKeyLifecycleReport(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const since = params.get('since') || undefined;
+    const until = params.get('until') || undefined;
+
+    // Query audit log for key lifecycle events
+    const createdEvents = this.audit.query({
+      types: ['key.created'], since, until, limit: 10_000,
+    }).events;
+    const revokedEvents = this.audit.query({
+      types: ['key.revoked'], since, until, limit: 10_000,
+    }).events;
+    const suspendedEvents = this.audit.query({
+      types: ['key.suspended'], since, until, limit: 10_000,
+    }).events;
+    const resumedEvents = this.audit.query({
+      types: ['key.resumed'], since, until, limit: 10_000,
+    }).events;
+    const rotatedEvents = this.audit.query({
+      types: ['key.rotated'], since, until, limit: 10_000,
+    }).events;
+    const clonedEvents = this.audit.query({
+      types: ['key.cloned'], since, until, limit: 10_000,
+    }).events;
+
+    // Build daily buckets for trends
+    const dayBuckets = new Map<string, { created: number; revoked: number; suspended: number; resumed: number }>();
+    const addToBucket = (events: typeof createdEvents, field: string) => {
+      for (const e of events) {
+        const day = e.timestamp.slice(0, 10); // YYYY-MM-DD
+        if (!dayBuckets.has(day)) dayBuckets.set(day, { created: 0, revoked: 0, suspended: 0, resumed: 0 });
+        (dayBuckets.get(day) as any)[field]++;
+      }
+    };
+    addToBucket(createdEvents, 'created');
+    addToBucket(revokedEvents, 'revoked');
+    addToBucket(suspendedEvents, 'suspended');
+    addToBucket(resumedEvents, 'resumed');
+
+    const trends = Array.from(dayBuckets.entries())
+      .map(([date, counts]) => ({ date, ...counts }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // Average key lifetime (for revoked keys that have creation metadata)
+    const now = Date.now();
+    const allRecords = this.gate.store.getAllRecords();
+    const lifetimes: number[] = [];
+    for (const record of allRecords) {
+      if (!record.active && record.createdAt) {
+        // Revoked key — estimate lifetime from created to now (or expiry)
+        const created = new Date(record.createdAt).getTime();
+        const end = record.expiresAt ? Math.min(new Date(record.expiresAt).getTime(), now) : now;
+        if (created > 0 && end > created) {
+          lifetimes.push(end - created);
+        }
+      }
+    }
+    const avgLifetimeHours = lifetimes.length > 0
+      ? Math.round(lifetimes.reduce((a, b) => a + b, 0) / lifetimes.length / 3_600_000 * 10) / 10
+      : null;
+
+    // At-risk keys: active keys expiring within 7 days or with zero credits
+    const atRiskKeys: Array<{ key: string; name?: string; risk: string; details: Record<string, unknown> }> = [];
+    for (const record of allRecords) {
+      if (!record.active) continue;
+      if (record.suspended) continue;
+      const maskedKey = record.key.slice(0, 7) + '...' + record.key.slice(-4);
+      const keyName = record.name || undefined;
+
+      if (record.credits <= 0) {
+        atRiskKeys.push({ key: maskedKey, name: keyName, risk: 'zero_credits', details: { credits: 0 } });
+      }
+      if (record.expiresAt) {
+        const msToExpiry = new Date(record.expiresAt).getTime() - now;
+        if (msToExpiry <= 0) {
+          atRiskKeys.push({ key: maskedKey, name: keyName, risk: 'expired', details: { expiresAt: record.expiresAt } });
+        } else if (msToExpiry <= 7 * 24 * 3_600_000) {
+          const daysLeft = Math.round(msToExpiry / 86_400_000 * 10) / 10;
+          atRiskKeys.push({ key: maskedKey, name: keyName, risk: 'expiring_soon', details: { expiresAt: record.expiresAt, daysRemaining: daysLeft } });
+        }
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      events: {
+        created: createdEvents.length,
+        revoked: revokedEvents.length,
+        suspended: suspendedEvents.length,
+        resumed: resumedEvents.length,
+        rotated: rotatedEvents.length,
+        cloned: clonedEvents.length,
+      },
+      trends,
+      averageLifetimeHours: avgLifetimeHours,
+      atRisk: atRiskKeys,
     }));
   }
 
