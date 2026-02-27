@@ -133,6 +133,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Group Performance** — `GET /admin/group-performance` per-group analytics with key counts, credit allocation/spending, call volume, utilization, and policy summary
 - **Request Volume Trends** — `GET /admin/request-trends` hourly time-series of request volume, success/failure counts, credit spend, avg duration, and peak hour identification
 - **Key Status Overview** — `GET /admin/key-status` key status dashboard with active/suspended/revoked/expired counts and keys needing attention (low credits, near expiry)
+- **Webhook Health** — `GET /admin/webhook-health` webhook delivery health overview with success rate, pending retries, dead letter count, pause status, and buffered events
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3079,6 +3080,33 @@ curl http://localhost:3000/admin/key-status -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Key status dashboard: active/suspended/revoked/expired counts with keys needing attention. Flags active keys with low credits (<=10) and near expiry (within 7 days). Read-only.
+
+### Webhook Health
+
+```bash
+curl http://localhost:3000/admin/webhook-health -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "configured": true,
+  "status": "healthy",
+  "delivery": {
+    "totalDelivered": 142,
+    "totalFailed": 3,
+    "totalRetries": 5,
+    "pendingRetries": 0,
+    "deadLetterCount": 1,
+    "bufferedEvents": 0,
+    "paused": false,
+    "pausedAt": null,
+    "successRate": 97.93
+  },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Webhook delivery health overview. Status is `healthy`, `retrying`, `degraded` (dead letters exist), `paused`, or `not_configured`. Includes success rate, pending retries, dead letter count, and buffered events. Read-only.
 
 ### IP Allowlisting
 

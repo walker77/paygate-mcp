@@ -947,6 +947,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/webhook-health':
+        if (req.method === 'GET') return this.handleWebhookHealth(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1548,6 +1553,7 @@ export class PayGateServer {
         groupPerformance: 'GET /admin/group-performance — Per-group analytics with key counts, credit allocation/spending, call volume, and utilization (requires X-Admin-Key)',
         requestTrends: 'GET /admin/request-trends — Hourly request volume time-series with success/failure counts, credit spend, and avg duration (requires X-Admin-Key)',
         keyStatus: 'GET /admin/key-status — Key status dashboard with active/suspended/revoked/expired counts and keys needing attention (requires X-Admin-Key)',
+        webhookHealth: 'GET /admin/webhook-health — Webhook delivery health overview with success rate, retries, dead letters, and pause status (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7208,6 +7214,60 @@ export class PayGateServer {
         expired,
       },
       needsAttention,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/webhook-health — Webhook delivery health overview ─────────────
+
+  private handleWebhookHealth(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const webhookConfigured = !!(this.config as any).webhookUrl || !!this.gate.webhookRouter;
+
+    if (!webhookConfigured || !this.gate.webhook) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        configured: false,
+        status: 'not_configured',
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const stats = this.gate.webhook.getRetryStats();
+
+    // Determine status
+    let status = 'healthy';
+    if (stats.paused) {
+      status = 'paused';
+    } else if (stats.deadLetterCount > 0) {
+      status = 'degraded';
+    } else if (stats.pendingRetries > 0) {
+      status = 'retrying';
+    }
+
+    // Calculate success rate
+    const totalAttempts = stats.totalDelivered + stats.totalFailed;
+    const successRate = totalAttempts > 0
+      ? Math.round((stats.totalDelivered / totalAttempts) * 10000) / 100
+      : 100;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      configured: true,
+      status,
+      delivery: {
+        totalDelivered: stats.totalDelivered,
+        totalFailed: stats.totalFailed,
+        totalRetries: stats.totalRetries,
+        pendingRetries: stats.pendingRetries,
+        deadLetterCount: stats.deadLetterCount,
+        bufferedEvents: stats.bufferedEvents,
+        paused: stats.paused,
+        pausedAt: stats.pausedAt,
+        successRate,
+      },
       generatedAt: new Date().toISOString(),
     }));
   }
