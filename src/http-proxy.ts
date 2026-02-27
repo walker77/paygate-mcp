@@ -246,12 +246,25 @@ export class HttpMcpProxy extends EventEmitter {
         timeout: 30_000,
       };
 
+      const MAX_RESPONSE_BODY = 10 * 1024 * 1024; // 10 MB response limit
+      let settled = false;
       const req = transport.request(options, (res) => {
         let body = '';
+        let bodySize = 0;
         res.on('data', (chunk: Buffer) => {
+          bodySize += chunk.length;
+          if (bodySize > MAX_RESPONSE_BODY) {
+            if (!settled) {
+              settled = true;
+              req.destroy();
+              reject(new Error(`Response body too large (>${MAX_RESPONSE_BODY} bytes)`));
+            }
+            return;
+          }
           body += chunk.toString();
         });
         res.on('end', () => {
+          if (settled) return;
           if (res.statusCode && res.statusCode >= 400) {
             reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 200)}`));
             return;
@@ -260,10 +273,18 @@ export class HttpMcpProxy extends EventEmitter {
         });
       });
 
-      req.on('error', reject);
+      req.on('error', (err) => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      });
       req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('Request timed out after 30s'));
+        if (!settled) {
+          settled = true;
+          req.destroy();
+          reject(new Error('Request timed out after 30s'));
+        }
       });
 
       req.write(payload);

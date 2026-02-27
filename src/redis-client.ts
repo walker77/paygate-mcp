@@ -539,11 +539,22 @@ export class RedisSubscriber {
    */
   private sendAndWait(...args: string[]): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Subscriber command timeout')), this.opts.commandTimeout);
-
       // Temporarily override data handler to capture one reply
-      const origHandler = this.socket!.listeners('data');
       this.socket!.removeAllListeners('data');
+
+      const reattachOriginal = () => {
+        // Always re-attach the subscription data handler after one-shot reply capture
+        this.socket!.removeListener('data', onData);
+        this.socket!.on('data', (c: Buffer) => {
+          this.buffer = Buffer.concat([this.buffer, c]);
+          this.processMessages();
+        });
+      };
+
+      const timer = setTimeout(() => {
+        reattachOriginal();
+        reject(new Error('Subscriber command timeout'));
+      }, this.opts.commandTimeout);
 
       let buf = Buffer.alloc(0);
       const onData = (chunk: Buffer) => {
@@ -551,12 +562,7 @@ export class RedisSubscriber {
         const result = this.parseOneReply(buf, 0);
         if (result !== null) {
           clearTimeout(timer);
-          this.socket!.removeListener('data', onData);
-          // Re-attach original data handler
-          this.socket!.on('data', (c: Buffer) => {
-            this.buffer = Buffer.concat([this.buffer, c]);
-            this.processMessages();
-          });
+          reattachOriginal();
           const [reply] = result;
           if (reply instanceof Error) {
             reject(reply);

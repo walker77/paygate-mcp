@@ -1,5 +1,15 @@
 # Changelog
 
+## 8.82.0 (2026-02-27)
+
+### Resource Leak Fixes
+- **Redis subscriber `sendAndWait()` listener leak** — timeout path now properly reattaches the original data listener via extracted `reattachOriginal()`, preventing permanent listener loss after command timeouts
+- **HTTP proxy response body limit** — added `MAX_RESPONSE_BODY` (10 MB) cap with `settled` guard to prevent unbounded memory growth from oversized remote server responses
+- **`readBody()` listener cleanup** — refactored to use named listener functions (`onData`, `onEnd`, `onError`) with explicit `cleanup()` that removes all listeners on every code path (success, timeout, oversize, error)
+- 7 new tests (oversized body handling, slow-loris timeout, rapid error burst, server resilience after error paths)
+
+---
+
 ## 8.81.0 (2026-02-27)
 
 ### Admin Query Parameter Hardening

@@ -11900,43 +11900,55 @@ export class PayGateServer {
       let size = 0;
       let settled = false;
 
+      const cleanup = () => {
+        req.removeListener('data', onData);
+        req.removeListener('end', onEnd);
+        req.removeListener('error', onError);
+        if (timer) clearTimeout(timer);
+      };
+
       // Body read timeout — prevents slow-loris attacks that drip data byte-by-byte
       const bodyTimeout = this.config.requestTimeoutMs ?? 30_000;
       const timer = bodyTimeout > 0 ? setTimeout(() => {
         if (!settled) {
           settled = true;
+          cleanup();
           req.destroy();
           reject(new Error('Request body read timeout'));
         }
       }, bodyTimeout) : null;
 
-      req.on('data', (chunk: Buffer) => {
+      const onData = (chunk: Buffer) => {
         size += chunk.length;
         if (size > MAX_BODY_SIZE) {
           if (!settled) {
             settled = true;
-            if (timer) clearTimeout(timer);
+            cleanup();
             req.destroy();
             reject(new Error('Request body too large'));
           }
           return;
         }
         body += chunk.toString();
-      });
-      req.on('end', () => {
+      };
+      const onEnd = () => {
         if (!settled) {
           settled = true;
-          if (timer) clearTimeout(timer);
+          cleanup();
           resolve(body);
         }
-      });
-      req.on('error', (err) => {
+      };
+      const onError = (err: Error) => {
         if (!settled) {
           settled = true;
-          if (timer) clearTimeout(timer);
+          cleanup();
           reject(err);
         }
-      });
+      };
+
+      req.on('data', onData);
+      req.on('end', onEnd);
+      req.on('error', onError);
     });
   }
 
