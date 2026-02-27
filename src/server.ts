@@ -1002,6 +1002,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-lifetime-value':
+        if (req.method === 'GET') return this.handleConsumerLifetimeValue(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1614,6 +1619,7 @@ export class PayGateServer {
         consumerSegmentation: 'GET /admin/consumer-segmentation — Consumer classification into power/regular/casual/dormant segments with per-segment metrics (requires X-Admin-Key)',
         creditDistribution: 'GET /admin/credit-distribution — Histogram of credit balances across active keys with configurable buckets and median calculation (requires X-Admin-Key)',
         responseTimeDistribution: 'GET /admin/response-time-distribution — Histogram of response times with latency buckets, percentiles p50/p95/p99, and performance analysis (requires X-Admin-Key)',
+        consumerLifetimeValue: 'GET /admin/consumer-lifetime-value — Per-consumer value metrics with spend, calls, tool diversity, and tier classification (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8023,6 +8029,78 @@ export class PayGateServer {
         p50: percentile(50),
         p95: percentile(95),
         p99: percentile(99),
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/consumer-lifetime-value — Per-consumer value analysis ────────
+
+  private handleConsumerLifetimeValue(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        consumers: [],
+        summary: { totalConsumers: 0, totalLifetimeValue: 0, avgLifetimeValue: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Build per-consumer tool sets from request log for diversity count
+    const consumerToolSets = new Map<string, Set<string>>();
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      let tools = consumerToolSets.get(entry.key);
+      if (!tools) {
+        tools = new Set();
+        consumerToolSets.set(entry.key, tools);
+      }
+      tools.add(entry.tool);
+    }
+
+    // Build consumer value list
+    const consumers = activeRecords
+      .filter(r => (r.totalSpent || 0) > 0)
+      .map(r => {
+        const spent = r.totalSpent || 0;
+        const calls = r.totalCalls || 0;
+        const maskedKey = r.key.slice(0, 7) + '...' + r.key.slice(-4);
+        const toolSet = consumerToolSets.get(maskedKey);
+
+        let tier: string;
+        if (spent >= 100) tier = 'high';
+        else if (spent >= 10) tier = 'medium';
+        else tier = 'low';
+
+        return {
+          name: r.name || maskedKey,
+          lifetimeValue: spent,
+          totalCalls: calls,
+          avgSpendPerCall: calls > 0 ? Math.round(spent / calls) : 0,
+          toolsUsed: toolSet ? toolSet.size : 0,
+          tier,
+        };
+      })
+      .sort((a, b) => b.lifetimeValue - a.lifetimeValue);
+
+    const totalLifetimeValue = consumers.reduce((s, c) => s + c.lifetimeValue, 0);
+    const top20 = consumers.slice(0, 20);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      consumers: top20,
+      summary: {
+        totalConsumers: activeRecords.length,
+        totalLifetimeValue,
+        avgLifetimeValue: activeRecords.length > 0
+          ? Math.round(totalLifetimeValue / activeRecords.length)
+          : 0,
       },
       generatedAt: new Date().toISOString(),
     }));

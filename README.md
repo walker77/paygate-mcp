@@ -144,6 +144,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Consumer Segmentation** — `GET /admin/consumer-segmentation` classifies API key consumers into power/regular/casual/dormant segments with per-segment metrics
 - **Credit Distribution** — `GET /admin/credit-distribution` histogram of credit balances across active keys with bucket ranges and median calculation
 - **Response Time Distribution** — `GET /admin/response-time-distribution` histogram of response times with latency buckets and p50/p95/p99 percentiles
+- **Consumer Lifetime Value** — `GET /admin/consumer-lifetime-value` per-consumer spend analysis with value tiers, tool diversity, and top spender rankings
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3363,6 +3364,26 @@ curl http://localhost:3000/admin/response-time-distribution -H "X-Admin-Key: YOU
 ```
 
 Histogram of response times across allowed tool calls. Buckets: 0–50ms, 51–100ms, 101–250ms, 251–500ms, 501–1000ms, 1001ms+. Includes percentile metrics (p50, p95, p99) and average response time. Only non-empty buckets are returned. Useful for SLA monitoring and performance optimization. Read-only.
+
+### Consumer Lifetime Value
+
+```bash
+curl http://localhost:3000/admin/consumer-lifetime-value -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "consumers": [
+    { "name": "enterprise-bot", "lifetimeValue": 2500, "totalCalls": 500, "avgSpendPerCall": 5, "toolsUsed": 8, "tier": "high" },
+    { "name": "dev-team", "lifetimeValue": 450, "totalCalls": 90, "avgSpendPerCall": 5, "toolsUsed": 4, "tier": "medium" },
+    { "name": "trial-user", "lifetimeValue": 5, "totalCalls": 1, "avgSpendPerCall": 5, "toolsUsed": 1, "tier": "low" }
+  ],
+  "summary": { "totalConsumers": 15, "totalLifetimeValue": 3200, "avgLifetimeValue": 213 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-consumer value analysis for active keys with usage. Value tiers: **high** (100+ credits spent), **medium** (10–99), **low** (<10). `toolsUsed` shows tool diversity. Top 20 consumers by lifetime value. Zero-spend consumers excluded from list. `avgLifetimeValue` uses all active keys as denominator. Read-only.
 
 ### IP Allowlisting
 
