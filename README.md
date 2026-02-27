@@ -103,6 +103,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Request Log** — `GET /requests` queryable log of every tool call with timing, credits charged, status (allowed/denied), deny reason, key, and request ID — filter by key/tool/status/since, pagination, summary statistics (totals + avg duration), 5000-entry ring buffer
 - **Tool Stats** — `GET /tools/stats` per-tool analytics: call counts, success rate, avg/p95 latency, credits consumed, deny reason breakdown, top 10 consumers — optional `?tool=` for detailed single-tool view, `?since=` filter
 - **Request Log Export** — `GET /requests/export` exports the full request log as JSON or CSV with Content-Disposition headers — filter by key/tool/status/since/until, combined time-window queries, no pagination limit
+- **Tool Call Dry Run** — `POST /requests/dry-run` simulates a tool call without executing — checks key validity, ACL, rate limits, credits, and spending limits, returns predicted outcome with credits-after calculation and rate limit status
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2234,6 +2235,43 @@ curl "http://localhost:3402/requests/export?tool=my_tool&status=denied&since=202
 | `until` | ISO 8601 end timestamp |
 
 Both formats include Content-Disposition headers for automatic file download. Unlike `/requests`, the export endpoint returns **all** matching entries (no pagination limit). CSV includes proper quoting for values with commas.
+
+### Tool Call Dry Run
+
+Simulate a tool call to check if it would be allowed — without deducting credits or incrementing rate limits:
+
+```bash
+curl -X POST http://localhost:3402/requests/dry-run \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{"key": "pg_...", "tool": "my_tool"}'
+```
+
+**Response (allowed):**
+
+```json
+{
+  "allowed": true,
+  "tool": "my_tool",
+  "creditsRequired": 5,
+  "creditsAvailable": 100,
+  "creditsAfter": 95,
+  "rateLimit": { "used": 3, "limit": 60, "remaining": 57, "resetInMs": 45000 }
+}
+```
+
+**Response (denied):**
+
+```json
+{
+  "allowed": false,
+  "reason": "insufficient_credits: need 5, have 2",
+  "tool": "my_tool",
+  "creditsRequired": 5,
+  "creditsAvailable": 2
+}
+```
+
+Checks key validity, suspension, tool ACL, rate limits, credit balance, and spending limits. Supports alias keys. Useful for agents that want to pre-flight check a call before committing.
 
 ### IP Allowlisting
 

@@ -719,6 +719,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/requests/dry-run':
+        if (req.method === 'POST') return this.handleRequestDryRun(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use POST.' }));
+        return;
       // ─── Registry / Discovery endpoints ──────────────────────────────
       case '/.well-known/mcp-payment':
         return this.handlePaymentMetadata(req, res);
@@ -1367,6 +1372,7 @@ export class PayGateServer {
         creditReservations: 'POST /keys/reserve to hold credits, POST /keys/reserve/commit to deduct, POST /keys/reserve/release to release, GET /keys/reserve to list (requires X-Admin-Key)',
         requestLog: 'GET /requests — Queryable log of tool call requests with timing, credits, status (requires X-Admin-Key)',
         requestLogExport: 'GET /requests/export — Export request log as JSON or CSV with filters (requires X-Admin-Key)',
+        requestDryRun: 'POST /requests/dry-run — Simulate a tool call without executing (requires X-Admin-Key)',
         toolStats: 'GET /tools/stats — Per-tool call counts, success rates, latency, credits, and top consumers (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
@@ -7064,6 +7070,150 @@ export class PayGateServer {
       totalCalls: entries.length,
       tools,
     }));
+  }
+
+  // ─── /requests/dry-run — Simulate a tool call without executing ─────────────
+
+  private async handleRequestDryRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+
+    try {
+      const raw = await this.readBody(req);
+      try {
+        const params = JSON.parse(raw);
+        const apiKey = params.key;
+        const toolName = params.tool;
+
+        if (!apiKey || typeof apiKey !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing required field: key' }));
+          return;
+        }
+
+        if (!toolName || typeof toolName !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing required field: tool' }));
+          return;
+        }
+
+        // Step 1: Key lookup (resolveKeyRaw handles alias resolution)
+        const keyRecord = this.gate.store.resolveKeyRaw(apiKey);
+        if (!keyRecord) {
+          const isExpired = this.gate.store.isExpired(apiKey);
+          const reason = isExpired ? 'api_key_expired' : 'invalid_api_key';
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allowed: false,
+            reason,
+            tool: toolName,
+            creditsRequired: 0,
+            creditsAvailable: 0,
+          }));
+          return;
+        }
+
+        // Step 2: Suspended?
+        if (keyRecord.suspended) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allowed: false,
+            reason: 'key_suspended',
+            tool: toolName,
+            creditsRequired: 0,
+            creditsAvailable: keyRecord.credits,
+          }));
+          return;
+        }
+
+        // Step 3: Tool ACL
+        const effectiveAllowed = keyRecord.allowedTools || [];
+        const effectiveDenied = keyRecord.deniedTools || [];
+        if (effectiveDenied.includes(toolName)) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allowed: false,
+            reason: `tool_not_allowed: ${toolName} is in deniedTools`,
+            tool: toolName,
+            creditsRequired: 0,
+            creditsAvailable: keyRecord.credits,
+          }));
+          return;
+        }
+        if (effectiveAllowed.length > 0 && !effectiveAllowed.includes(toolName)) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allowed: false,
+            reason: `tool_not_allowed: ${toolName} not in allowedTools`,
+            tool: toolName,
+            creditsRequired: 0,
+            creditsAvailable: keyRecord.credits,
+          }));
+          return;
+        }
+
+        // Step 4: Rate limit check (read-only)
+        const rateStatus = this.gate.rateLimiter.getStatus(keyRecord.key);
+        if (rateStatus.limit > 0 && rateStatus.remaining <= 0) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allowed: false,
+            reason: 'rate_limited',
+            tool: toolName,
+            creditsRequired: 0,
+            creditsAvailable: keyRecord.credits,
+            rateLimit: rateStatus,
+          }));
+          return;
+        }
+
+        // Step 5: Credits check
+        const creditsRequired = this.gate.getToolPrice(toolName, params.arguments);
+        if (keyRecord.credits < creditsRequired) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            allowed: false,
+            reason: `insufficient_credits: need ${creditsRequired}, have ${keyRecord.credits}`,
+            tool: toolName,
+            creditsRequired,
+            creditsAvailable: keyRecord.credits,
+          }));
+          return;
+        }
+
+        // Step 6: Spending limit
+        if (keyRecord.spendingLimit > 0) {
+          const wouldSpend = keyRecord.totalSpent + creditsRequired;
+          if (wouldSpend > keyRecord.spendingLimit) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              allowed: false,
+              reason: `spending_limit_exceeded: limit ${keyRecord.spendingLimit}, spent ${keyRecord.totalSpent}, need ${creditsRequired}`,
+              tool: toolName,
+              creditsRequired,
+              creditsAvailable: keyRecord.credits,
+            }));
+            return;
+          }
+        }
+
+        // All checks passed — would be allowed
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          allowed: true,
+          tool: toolName,
+          creditsRequired,
+          creditsAvailable: keyRecord.credits,
+          creditsAfter: keyRecord.credits - creditsRequired,
+          ...(rateStatus.limit > 0 ? { rateLimit: rateStatus } : {}),
+        }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read request body' }));
+    }
   }
 
   // ─── /requests/export — Export request log as JSON or CSV ───────────────────
