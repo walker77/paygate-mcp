@@ -1,5 +1,49 @@
 # Changelog
 
+## 8.65.0 (2026-02-27)
+
+### Production Readiness
+- **Dockerfile** + `.dockerignore` for containerized deployments (multi-stage build, non-root user, health check)
+- **docker-compose.yml** with Redis for production horizontal scaling
+- **Deployment guide** in README — Docker, docker-compose, systemd, PM2 with production checklist
+- **Table of contents** in README for 5000+ line navigation
+- **Error code reference** — HTTP status codes, JSON-RPC error codes, webhook event types
+- **CHANGELOG.md** updated with full version history from v8.39.0 to v8.65.0
+
+### Fixed
+- Credit burn rate test mock now properly handles MCP `initialize` method (fixes flaky test under load)
+
+---
+
+## 8.58.0–8.64.0 (2026-02-27)
+
+### Analytics Endpoints (7 new admin endpoints)
+- `GET /admin/group-activity` — Per-group activity metrics (v8.58.0)
+- `GET /admin/credit-waste` — Per-key credit waste analysis (v8.59.0)
+- `GET /admin/tool-profitability` — Per-tool profitability with revenue metrics (v8.60.0)
+- `GET /admin/consumer-growth` — Consumer growth metrics with spend rate (v8.61.0)
+- `GET /admin/namespace-comparison` — Side-by-side namespace comparison (v8.62.0)
+- `GET /admin/key-health-overview` — Per-key health with status levels (v8.63.0)
+- `GET /admin/system-overview` — Executive summary dashboard (v8.64.0)
+
+### Tests
+- 2,920 tests across 151 suites
+
+---
+
+## 8.39.0–8.57.0 (2026-02-25 – 2026-02-26)
+
+### Analytics Endpoints (19 new admin endpoints)
+- Tool revenue ranking, consumer retention cohorts, consumer lifetime value, response time distribution, credit distribution, consumer segmentation, tool correlation, key churn analysis, access heatmap, credit efficiency, tool adoption, system health score, consumer insights, webhook health, key status overview, request volume trends, group performance, audit summary, namespace usage summary
+- Key age analysis, credit flow analysis, error rate trends, tool latency, key dependency map, capacity planning, SLA monitoring, compliance report, usage forecasting, anomaly detection, key portfolio health, revenue analysis, security audit, traffic analysis, denial analysis, quota analysis, rate limit analysis, cost analysis
+- Hourly traffic, key ranking, daily summary, credit allocation, tool popularity, consumer activity, peak usage times, group revenue, namespace revenue, credit utilization rate, error breakdown
+- Consumer spend velocity, namespace activity, credit burn rate, consumer risk score, revenue forecast
+
+### Tests
+- Grew from ~2,600 to 2,920 tests across 151 suites
+
+---
+
 ## 0.8.0 (2026-02-25)
 
 ### Features

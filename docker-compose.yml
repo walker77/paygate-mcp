@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  paygate:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PAYGATE_PORT: "3000"
+      PAYGATE_STATE_FILE: /data/paygate-state.json
+      PAYGATE_AUDIT_DIR: /data/audit
+      PAYGATE_SERVER_COMMAND: "${MCP_SERVER_COMMAND:-echo}"
+      PAYGATE_SERVER_ARGS: "${MCP_SERVER_ARGS:-}"
+      PAYGATE_REMOTE_URL: "${MCP_REMOTE_URL:-}"
+      PAYGATE_REDIS_URL: "${REDIS_URL:-redis://redis:6379}"
+      PAYGATE_ADMIN_KEY: "${ADMIN_KEY:-}"
+      PAYGATE_WEBHOOK_URL: "${WEBHOOK_URL:-}"
+    volumes:
+      - paygate-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  paygate-data:
+  redis-data:

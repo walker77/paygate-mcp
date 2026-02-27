@@ -17,7 +17,9 @@ const ECHO_ARGS = ['-e', `
   process.stdin.resume();
   process.stdin.on('data', d => {
     const r = JSON.parse(d.toString().trim());
-    if (r.method === 'tools/list') {
+    if (r.method === 'initialize') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: r.id, result: { protocolVersion: '2025-01-01', capabilities: { tools: {} }, serverInfo: { name: 'echo', version: '1.0' } } }) + '\\n');
+    } else if (r.method === 'tools/list') {
       process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: r.id, result: { tools: [
         { name: 'tool_a', inputSchema: { type: 'object' } },
         { name: 'tool_b', inputSchema: { type: 'object' } },

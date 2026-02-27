@@ -6,6 +6,27 @@
 
 Monetize any MCP server with one command. Add API key auth, per-tool pricing, rate limiting, and usage metering to any Model Context Protocol server. Zero dependencies. Zero config. Zero code changes.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [What It Does](#what-it-does)
+- [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
+- [API Reference](#api-reference) — All 150+ endpoints
+- [CLI Options](#cli-options)
+- [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
+- [Error Codes](#error-codes) — Complete error code reference
+- [Feature Reference](#persistent-storage) — Detailed docs for every feature
+  - [Storage & Billing](#persistent-storage) · [Stripe](#stripe-integration) · [ACL](#per-tool-acl-access-control) · [Rate Limits](#per-tool-rate-limits)
+  - [Key Management](#key-expiry-ttl) · [Webhooks](#webhook-events) · [OAuth 2.1](#oauth-21) · [SSE](#sse-streaming-mcp-streamable-http)
+  - [Analytics (64 endpoints)](#cost-analysis) · [Teams](#team-management) · [Redis Scaling](#horizontal-scaling-redis)
+  - [Plugins](#plugin-system) · [Groups](#key-groups-policy-templates) · [Namespaces](#multi-tenant-namespaces)
+- [Programmatic API](#programmatic-api)
+- [Security](#security)
+- [Current Limitations](#current-limitations)
+- [Roadmap](#roadmap)
+- [Requirements](#requirements)
+- [License](#license)
+
 ## Quick Start
 
 ```bash
@@ -4910,6 +4931,158 @@ Response includes changed fields, skipped fields, and any validation warnings:
 ```
 
 The config file is validated before applying changes — invalid configs are rejected with detailed error messages and zero changes applied.
+
+## Deployment
+
+### Docker
+
+```bash
+# Build the image
+docker build -t paygate-mcp .
+
+# Run with a remote MCP server
+docker run -d \
+  -p 3000:3000 \
+  -v paygate-data:/data \
+  -e PAYGATE_REMOTE_URL="https://my-mcp-server.com/mcp" \
+  -e PAYGATE_ADMIN_KEY="your-admin-key" \
+  paygate-mcp
+
+# Run with environment variables
+docker run -d \
+  -p 3000:3000 \
+  -e PAYGATE_PORT=3000 \
+  -e PAYGATE_REMOTE_URL="https://api.example.com/mcp" \
+  -e PAYGATE_DEFAULT_CREDITS=5 \
+  -e PAYGATE_RATE_LIMIT=120 \
+  -e PAYGATE_WEBHOOK_URL="https://hooks.example.com/paygate" \
+  paygate-mcp
+```
+
+### Docker Compose (with Redis)
+
+```bash
+# Set your MCP server URL and start
+MCP_REMOTE_URL="https://my-mcp-server.com/mcp" docker-compose up -d
+
+# View logs
+docker-compose logs -f paygate
+
+# Check health
+curl http://localhost:3000/health
+```
+
+The included `docker-compose.yml` starts PayGate with Redis for horizontal scaling, state persistence, and distributed rate limiting.
+
+### systemd
+
+```ini
+# /etc/systemd/system/paygate-mcp.service
+[Unit]
+Description=PayGate MCP Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=paygate
+WorkingDirectory=/opt/paygate-mcp
+ExecStart=/usr/bin/node dist/cli.js wrap \
+  --remote-url "https://my-mcp-server.com/mcp" \
+  --port 3000 \
+  --state-file /var/lib/paygate/state.json \
+  --audit-file /var/log/paygate/audit.jsonl
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable paygate-mcp
+sudo systemctl start paygate-mcp
+sudo journalctl -u paygate-mcp -f
+```
+
+### PM2
+
+```bash
+# Install globally
+npm install -g paygate-mcp
+
+# Start with PM2
+pm2 start paygate-mcp -- wrap \
+  --remote-url "https://my-mcp-server.com/mcp" \
+  --port 3000 \
+  --state-file ./state.json
+
+# Or use ecosystem file
+pm2 start ecosystem.config.js
+```
+
+### Production Checklist
+
+- [ ] Set `--state-file` for persistent storage across restarts
+- [ ] Set `--audit-file` for audit trail retention
+- [ ] Configure `--webhook-url` for external billing/alerting
+- [ ] Use `--admin-key` or set `PAYGATE_ADMIN_KEY` (auto-generated if omitted)
+- [ ] Enable Redis (`--redis-url`) for multi-instance deployments
+- [ ] Set up reverse proxy (nginx/caddy) with TLS termination
+- [ ] Configure `--cors-origin` for browser-based clients
+- [ ] Monitor `/health` endpoint with your uptime checker
+- [ ] Scrape `/metrics` with Prometheus for observability
+- [ ] Back up state file regularly (or use Redis persistence)
+
+## Error Codes
+
+### HTTP Status Codes
+
+| Code | Meaning | When |
+|------|---------|------|
+| `200` | OK | Successful read/update operations |
+| `201` | Created | Key, team, group, or template created |
+| `401` | Unauthorized | Missing or invalid admin key |
+| `402` | Payment Required | Insufficient credits for tool call |
+| `403` | Forbidden | IP not in allowlist, ACL denied |
+| `404` | Not Found | Key, template, group, or resource not found |
+| `405` | Method Not Allowed | Wrong HTTP method for endpoint |
+| `409` | Conflict | Duplicate alias, template name collision |
+| `429` | Too Many Requests | Rate limit exceeded |
+| `503` | Service Unavailable | Maintenance mode or server shutting down |
+
+### JSON-RPC Error Codes (MCP /mcp endpoint)
+
+| Code | Name | Description |
+|------|------|-------------|
+| `-32402` | `insufficient_credits` | API key has zero credits remaining |
+| `-32402` | `rate_limited` | Request rate exceeds per-key or per-tool limit |
+| `-32402` | `quota_exceeded` | Daily/monthly call or credit quota exceeded |
+| `-32402` | `spending_limit_reached` | Cumulative spend exceeds key spending limit |
+| `-32402` | `key_suspended` | API key is temporarily suspended |
+| `-32402` | `key_expired` | API key TTL has elapsed |
+| `-32402` | `acl_denied` | Tool not in key's ACL whitelist |
+| `-32402` | `ip_not_allowed` | Client IP not in key's allowlist |
+| `-32402` | `invalid_api_key` | X-API-Key header not recognized |
+| `-32402` | `maintenance_mode` | Server in maintenance mode |
+| `-32600` | `invalid_request` | Malformed JSON-RPC request body |
+| `-32601` | `method_not_found` | Unknown MCP method |
+
+### Webhook Event Types
+
+| Event | Trigger |
+|-------|---------|
+| `key.created` | New API key provisioned |
+| `key.revoked` | API key permanently revoked |
+| `key.suspended` | API key temporarily suspended |
+| `key.resumed` | Suspended key reactivated |
+| `key.rotated` | API key rotated to new value |
+| `key.topup` | Credits added to key |
+| `key.expired` | Key TTL elapsed |
+| `key.expiry_warning` | Key approaching expiry |
+| `credit.transfer` | Credits moved between keys |
+| `credit.auto_topup` | Auto-topup triggered |
+| `usage` | Batched tool call events |
 
 ## Programmatic API
 
