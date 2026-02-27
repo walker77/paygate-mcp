@@ -106,6 +106,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Tool Call Dry Run** — `POST /requests/dry-run` simulates a tool call without executing — checks key validity, ACL, rate limits, credits, and spending limits, returns predicted outcome with credits-after calculation and rate limit status
 - **Batch Dry Run** — `POST /requests/dry-run/batch` simulates multiple tool calls at once — aggregate credit check, per-tool ACL validation, spending limit, returns per-tool results with total credits required and credits-after
 - **Tool Availability** — `GET /tools/available?key=...` returns per-key tool availability with pricing, affordability (canAfford), ACL enforcement (accessible/denyReason), and per-tool + global rate limit status
+- **Key Dashboard** — `GET /keys/dashboard?key=...` consolidated single-endpoint view with metadata, balance, health score, spending velocity, rate limits, quotas, usage summary, and recent activity timeline
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2329,6 +2330,35 @@ curl "http://localhost:3402/tools/available?key=pg_..." \
 ```
 
 Returns every discovered tool with: `accessible` (ACL check), `denyReason` (if blocked), `creditsPerCall`, `canAfford` (credits vs price), and per-tool `rateLimit` when configured. Includes global rate limit info. Supports alias keys. Works on suspended keys (informational). Read-only — does not deduct credits or increment rate counters.
+
+### Key Dashboard
+
+Get a consolidated overview of any API key in a single request:
+
+```bash
+curl "http://localhost:3402/keys/dashboard?key=pg_..." \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+**Response:**
+
+```json
+{
+  "key": "pg_c815...09a6",
+  "name": "production-agent",
+  "status": "active",
+  "namespace": "prod",
+  "balance": { "credits": 850, "totalSpent": 150, "totalAllocated": 1000, "spendingLimit": 500 },
+  "health": { "score": 92, "status": "good" },
+  "velocity": { "creditsPerHour": 6.2, "creditsPerDay": 149, "estimatedDepletionDate": "2025-02-03T..." },
+  "rateLimits": { "global": { "limit": 60, "used": 12, "remaining": 48, "resetInMs": 35000 } },
+  "quotas": { "source": "global", "daily": { "callsUsed": 24, "callsLimit": 100 }, "monthly": { "callsUsed": 340, "callsLimit": 5000 } },
+  "usage": { "totalCalls": 340, "totalAllowed": 330, "totalDenied": 10, "totalCredits": 150 },
+  "recentActivity": [{ "timestamp": "...", "event": "gate.allowed", "tool": "search", "credits": 5 }]
+}
+```
+
+Combines metadata (status/namespace/group/tags), balance (credits/spent/allocated/spendingLimit), health score (0-100 composite), spending velocity with depletion forecast, rate limit and quota status, usage summary, and last 10 audit events. Supports alias keys. Works on suspended/revoked/expired keys. Read-only.
 
 ### IP Allowlisting
 

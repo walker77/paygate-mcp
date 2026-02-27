@@ -677,6 +677,11 @@ export class PayGateServer {
         return this.handleKeyComparison(req, res);
       case '/keys/health':
         return this.handleKeyHealth(req, res);
+      case '/keys/dashboard':
+        if (req.method === 'GET') return this.handleKeyDashboard(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       case '/keys/templates':
         if (req.method === 'GET') return this.handleListTemplates(req, res);
         if (req.method === 'POST') return this.handleCreateTemplate(req, res);
@@ -1386,6 +1391,7 @@ export class PayGateServer {
         requestDryRunBatch: 'POST /requests/dry-run/batch — Simulate multiple tool calls without executing (requires X-Admin-Key)',
         toolStats: 'GET /tools/stats — Per-tool call counts, success rates, latency, credits, and top consumers (requires X-Admin-Key)',
         toolAvailability: 'GET /tools/available?key=... — Per-key tool availability with pricing, affordability, and rate limit status (requires X-Admin-Key)',
+        keyDashboard: 'GET /keys/dashboard?key=... — Consolidated key overview with metadata, balance, health, velocity, rate limits, quotas, and recent activity (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -3534,6 +3540,194 @@ export class PayGateServer {
         rateLimit: { score: rateLimitScore, risk: rateLimitRisk, weight: 0.20 },
         errorRate: { score: errorScore, risk: errorRisk, weight: 0.25 },
       },
+    }));
+  }
+
+  // ─── /keys/dashboard — Consolidated key overview ──────────────────────────────
+
+  private handleKeyDashboard(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const urlParts = req.url?.split('?') || [];
+    const params = new URLSearchParams(urlParts[1] || '');
+    const keyParam = params.get('key');
+
+    if (!keyParam) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing required parameter: key' }));
+      return;
+    }
+
+    const record = this.gate.store.resolveKeyRaw(keyParam);
+    if (!record) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Key not found' }));
+      return;
+    }
+
+    const actualKey = record.key;
+    const maskedKey = actualKey.slice(0, 7) + '...' + actualKey.slice(-4);
+
+    // ── Metadata ──
+    const isExpired = record.expiresAt ? new Date(record.expiresAt).getTime() < Date.now() : false;
+    let status = 'active';
+    if (!record.active) status = 'revoked';
+    else if (record.suspended) status = 'suspended';
+    else if (isExpired) status = 'expired';
+
+    const metadata: Record<string, unknown> = {
+      key: maskedKey,
+      name: record.name || null,
+      status,
+      namespace: record.namespace || null,
+      group: record.group || null,
+      createdAt: record.createdAt || null,
+      ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
+      tags: record.tags && Object.keys(record.tags).length > 0 ? record.tags : undefined,
+    };
+
+    // ── Balance ──
+    const balance = {
+      credits: record.credits,
+      totalSpent: record.totalSpent || 0,
+      totalAllocated: record.credits + (record.totalSpent || 0),
+      ...(record.spendingLimit ? { spendingLimit: record.spendingLimit } : {}),
+    };
+
+    // ── Health score (simplified from handleKeyHealth) ──
+    const velocity = this.creditLedger.getSpendingVelocity(actualKey, record.credits, 24);
+    let balanceScore = 100;
+    if (velocity.creditsPerHour > 0) {
+      const hoursLeft = velocity.estimatedHoursRemaining ?? Infinity;
+      if (hoursLeft <= 1) balanceScore = 0;
+      else if (hoursLeft <= 6) balanceScore = 20;
+      else if (hoursLeft <= 24) balanceScore = 40;
+      else if (hoursLeft <= 72) balanceScore = 60;
+      else if (hoursLeft <= 168) balanceScore = 80;
+    } else if (record.credits <= 0) {
+      balanceScore = 0;
+    }
+
+    // Quota component
+    let quotaScore = 100;
+    const quotaConfig = record.quota || this.config.globalQuota;
+    if (quotaConfig) {
+      this.gate.quotaTracker.resetIfNeeded(record);
+      let maxUtil = 0;
+      if (quotaConfig.dailyCallLimit && quotaConfig.dailyCallLimit > 0)
+        maxUtil = Math.max(maxUtil, record.quotaDailyCalls / quotaConfig.dailyCallLimit);
+      if (quotaConfig.monthlyCallLimit && quotaConfig.monthlyCallLimit > 0)
+        maxUtil = Math.max(maxUtil, record.quotaMonthlyCalls / quotaConfig.monthlyCallLimit);
+      if (quotaConfig.dailyCreditLimit && quotaConfig.dailyCreditLimit > 0)
+        maxUtil = Math.max(maxUtil, record.quotaDailyCredits / quotaConfig.dailyCreditLimit);
+      if (quotaConfig.monthlyCreditLimit && quotaConfig.monthlyCreditLimit > 0)
+        maxUtil = Math.max(maxUtil, record.quotaMonthlyCredits / quotaConfig.monthlyCreditLimit);
+      quotaScore = Math.max(0, Math.round((1 - maxUtil) * 100));
+    }
+
+    // Rate limit component
+    const rateStatus = this.gate.rateLimiter.getStatus(actualKey);
+    let rateLimitScore = 100;
+    if (rateStatus.limit > 0) {
+      const utilization = rateStatus.used / rateStatus.limit;
+      rateLimitScore = Math.max(0, Math.round((1 - utilization) * 100));
+    }
+
+    // Error rate component
+    const keyUsage = this.gate.meter.getKeyUsage(actualKey);
+    let errorScore = 100;
+    if (keyUsage.totalCalls > 0) {
+      const errorRate = keyUsage.totalDenied / keyUsage.totalCalls;
+      errorScore = Math.max(0, Math.round((1 - errorRate) * 100));
+    }
+
+    const healthScore = Math.round(
+      balanceScore * 0.30 + quotaScore * 0.25 + rateLimitScore * 0.20 + errorScore * 0.25
+    );
+    let healthStatus = 'healthy';
+    if (healthScore < 25) healthStatus = 'critical';
+    else if (healthScore < 50) healthStatus = 'warning';
+    else if (healthScore < 75) healthStatus = 'caution';
+    else if (healthScore < 90) healthStatus = 'good';
+
+    // ── Velocity ──
+    const velocitySummary = {
+      creditsPerHour: velocity.creditsPerHour,
+      creditsPerDay: velocity.creditsPerDay,
+      callsPerHour: velocity.callsPerHour,
+      callsPerDay: velocity.callsPerDay,
+      estimatedDepletionDate: velocity.estimatedDepletionDate || null,
+    };
+
+    // ── Rate limits ──
+    const rateLimits: Record<string, unknown> = {
+      global: {
+        limit: rateStatus.limit,
+        used: rateStatus.used,
+        remaining: rateStatus.remaining,
+        resetInMs: rateStatus.resetInMs,
+      },
+    };
+
+    // ── Quotas ──
+    let quotas: Record<string, unknown> | undefined;
+    if (quotaConfig) {
+      this.gate.quotaTracker.resetIfNeeded(record);
+      quotas = {
+        source: record.quota ? 'per-key' : 'global',
+        daily: {
+          callsUsed: record.quotaDailyCalls,
+          callsLimit: quotaConfig.dailyCallLimit || 0,
+          creditsUsed: record.quotaDailyCredits,
+          creditsLimit: quotaConfig.dailyCreditLimit || 0,
+        },
+        monthly: {
+          callsUsed: record.quotaMonthlyCalls,
+          callsLimit: quotaConfig.monthlyCallLimit || 0,
+          creditsUsed: record.quotaMonthlyCredits,
+          creditsLimit: quotaConfig.monthlyCreditLimit || 0,
+        },
+      };
+    }
+
+    // ── Usage summary ──
+    const usage = {
+      totalCalls: keyUsage.totalCalls || 0,
+      totalAllowed: keyUsage.totalAllowed || 0,
+      totalDenied: keyUsage.totalDenied || 0,
+      totalCredits: keyUsage.totalCreditsSpent || 0,
+    };
+
+    // ── Recent activity (last 10 events) ──
+    const maskedForAudit = maskKeyForAudit(actualKey);
+    const auditResult = this.audit.query({ limit: 100 });
+    const recentActivity = auditResult.events
+      .filter(e => {
+        for (const field of ['key', 'keyMasked', 'sourceKey', 'destKey'] as const) {
+          const val = e.metadata?.[field];
+          if (val && typeof val === 'string' && val === maskedForAudit) return true;
+        }
+        if (e.actor === maskedForAudit) return true;
+        return false;
+      })
+      .slice(0, 10)
+      .map(e => ({
+        timestamp: e.timestamp,
+        event: e.type,
+        ...(e.metadata?.tool ? { tool: e.metadata.tool } : {}),
+        ...(e.metadata?.credits ? { credits: e.metadata.credits } : {}),
+      }));
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ...metadata,
+      balance,
+      health: { score: healthScore, status: healthStatus },
+      velocity: velocitySummary,
+      rateLimits,
+      ...(quotas ? { quotas } : {}),
+      usage,
+      recentActivity: recentActivity.length > 0 ? recentActivity : [],
     }));
   }
 
