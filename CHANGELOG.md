@@ -1,5 +1,18 @@
 # Changelog
 
+## 8.79.0 (2026-02-27)
+
+### Admin Endpoint Rate Limiting
+- **Brute-force protection for admin API** — all endpoints behind `checkAdmin()` are now rate-limited per source IP using a sliding window counter
+- Configurable via `adminRateLimit` config, `--admin-rate-limit` CLI flag, or `PAYGATE_ADMIN_RATE_LIMIT` env var (default: 120 requests/min, 0 = unlimited)
+- Returns `429 Too Many Requests` with `Retry-After` header when limit is exceeded
+- Rate limiting applies to both valid and invalid admin key attempts, preventing key enumeration attacks
+- `/health` endpoint is unaffected (no auth required, no rate limiting)
+- Admin rate limiter is cleaned up during graceful shutdown
+- 8 new tests (basic enforcement, 429 response format, brute-force protection, POST endpoints, health bypass, disabled mode)
+
+---
+
 ## 8.78.0 (2026-02-27)
 
 ### Bootstrap Admin Key Rotation

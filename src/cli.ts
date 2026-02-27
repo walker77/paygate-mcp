@@ -85,6 +85,7 @@ function printUsage(): void {
     --headers-timeout <n>  Max header receive time in ms (default: 10000)
     --keepalive-timeout <n> Idle connection timeout in ms (default: 65000)
     --max-requests-per-socket <n>  Max HTTP requests per socket (default: 0=unlimited)
+    --admin-rate-limit <n> Admin endpoint rate limit per IP (requests/min, default: 120, 0=unlimited)
 
   ENVIRONMENT VARIABLES (override defaults, overridden by CLI flags):
     PAYGATE_SERVER         MCP server command (same as --server)
@@ -114,6 +115,7 @@ function printUsage(): void {
     PAYGATE_HEADERS_TIMEOUT  Max header receive time in ms (same as --headers-timeout)
     PAYGATE_KEEPALIVE_TIMEOUT Idle connection timeout in ms (same as --keepalive-timeout)
     PAYGATE_MAX_REQUESTS_PER_SOCKET Max requests per socket (same as --max-requests-per-socket)
+    PAYGATE_ADMIN_RATE_LIMIT Admin rate limit per IP (same as --admin-rate-limit)
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -216,6 +218,8 @@ interface ConfigFile {
   keepAliveTimeoutMs?: number;
   /** Max HTTP requests per socket. 0 = unlimited. Default: 0 */
   maxRequestsPerSocket?: number;
+  /** Admin endpoint rate limit per IP (requests/min). 0 = unlimited. Default: 120 */
+  adminRateLimit?: number;
 }
 
 // ─── Env Var Helpers ─────────────────────────────────────────────────────────
@@ -260,6 +264,7 @@ export const ENV_VAR_MAP: Record<string, string> = {
   PAYGATE_HEADERS_TIMEOUT: '--headers-timeout (max header receive time in ms, default: 10000)',
   PAYGATE_KEEPALIVE_TIMEOUT: '--keepalive-timeout (idle connection timeout in ms, default: 65000)',
   PAYGATE_MAX_REQUESTS_PER_SOCKET: '--max-requests-per-socket (pipelining limit, 0=unlimited, default: 0)',
+  PAYGATE_ADMIN_RATE_LIMIT: '--admin-rate-limit (admin endpoint rate limit per IP, requests/min, default: 120)',
 };
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -369,6 +374,7 @@ async function main(): Promise<void> {
       const headersTimeoutFlag = flags['headers-timeout'] || env('PAYGATE_HEADERS_TIMEOUT');
       const keepaliveTimeoutFlag = flags['keepalive-timeout'] || env('PAYGATE_KEEPALIVE_TIMEOUT');
       const maxReqPerSocketFlag = flags['max-requests-per-socket'] || env('PAYGATE_MAX_REQUESTS_PER_SOCKET');
+      const adminRateLimitFlag = flags['admin-rate-limit'] || env('PAYGATE_ADMIN_RATE_LIMIT');
 
       const port = parseInt(portFlag || String(fileConfig.port || 3402), 10);
       const price = parseInt(priceFlag || String(fileConfig.defaultCreditsPerCall || 1), 10);
@@ -423,6 +429,7 @@ async function main(): Promise<void> {
       const headersTimeoutMs = parseInt(headersTimeoutFlag || String(fileConfig.headersTimeoutMs || 0), 10) || undefined;
       const keepAliveTimeoutMs = parseInt(keepaliveTimeoutFlag || String(fileConfig.keepAliveTimeoutMs || 0), 10) || undefined;
       const maxRequestsPerSocket = parseInt(maxReqPerSocketFlag || String(fileConfig.maxRequestsPerSocket || 0), 10) || undefined;
+      const adminRateLimit = adminRateLimitFlag ? parseInt(adminRateLimitFlag, 10) : (fileConfig.adminRateLimit ?? undefined);
 
       const server = new PayGateServer({
         serverCommand,
@@ -448,6 +455,7 @@ async function main(): Promise<void> {
         headersTimeoutMs,
         keepAliveTimeoutMs,
         maxRequestsPerSocket,
+        adminRateLimit,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Wire config file path for hot-reload support

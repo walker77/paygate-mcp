@@ -29,6 +29,7 @@ const PKG_VERSION = (() => {
   } catch { return '0.0.0'; }
 })();
 import { Gate } from './gate';
+import { RateLimiter } from './rate-limiter';
 import { McpProxy } from './proxy';
 import { HttpMcpProxy } from './http-proxy';
 import { MultiServerRouter } from './router';
@@ -197,6 +198,8 @@ export class PayGateServer {
   readonly templates: KeyTemplateManager;
   /** Per-key credit mutation history */
   readonly creditLedger: CreditLedger;
+  /** Rate limiter for admin API endpoints (brute-force protection) */
+  private readonly adminRateLimiter: RateLimiter;
   /** Server start time (ms since epoch) */
   private readonly startedAt: number = Date.now();
   /** Whether the server is draining (shutting down gracefully) */
@@ -282,6 +285,9 @@ export class PayGateServer {
     const adminStatePath = statePath ? statePath.replace(/\.json$/, '-admin.json') : undefined;
     this.adminKeys = new AdminKeyManager(adminStatePath);
     this.adminKeys.bootstrap(this.bootstrapAdminKey);
+
+    // Admin endpoint rate limiter: configurable requests/min per source IP (brute-force protection)
+    this.adminRateLimiter = new RateLimiter(this.config.adminRateLimit ?? 120);
 
     this.gate = new Gate(this.config, statePath);
     this.gate.store.logger = this.logger;
@@ -10894,6 +10900,21 @@ export class PayGateServer {
 
   private checkAdmin(req: IncomingMessage, res: ServerResponse, minRole?: AdminRole): boolean {
     const adminKey = req.headers['x-admin-key'] as string;
+
+    // Rate-limit by source IP to prevent brute-force admin key guessing
+    const sourceIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
+      || req.socket.remoteAddress || 'unknown';
+    const ipRateResult = this.adminRateLimiter.check(`ip:${sourceIp}`);
+    if (!ipRateResult.allowed) {
+      res.writeHead(429, {
+        'Content-Type': 'application/json',
+        'Retry-After': String(Math.ceil(ipRateResult.resetInMs / 1000)),
+      });
+      res.end(JSON.stringify({ error: 'Too many admin requests. Try again later.' }));
+      return false;
+    }
+    this.adminRateLimiter.record(`ip:${sourceIp}`);
+
     const record = adminKey ? this.adminKeys.validate(adminKey) : null;
 
     if (!record) {
@@ -11987,6 +12008,7 @@ export class PayGateServer {
     this.audit.destroy();
     this.tokens.destroy();
     this.expiryScanner.destroy();
+    this.adminRateLimiter.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }

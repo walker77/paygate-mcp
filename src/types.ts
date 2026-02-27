@@ -143,6 +143,8 @@ export interface PayGateConfig {
   keepAliveTimeoutMs?: number;
   /** Max HTTP requests per socket (pipelining limit). 0 = unlimited. Default: 0. */
   maxRequestsPerSocket?: number;
+  /** Admin endpoint rate limit per IP (requests/min). 0 = unlimited. Default: 120. */
+  adminRateLimit?: number;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────
@@ -193,6 +195,7 @@ export const DEFAULT_CONFIG: PayGateConfig = {
   webhookMaxRetries: 5,
   webhookFilters: [],
   refundOnFailure: false,
+  adminRateLimit: 120,
 };
 
 // ─── API Key + Credits ──────────────────────────────────────────────────────────
