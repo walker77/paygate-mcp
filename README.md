@@ -128,6 +128,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Error Rate Trends** — `GET /admin/error-trends` denial rate trends with per-tool error rates, denial reason breakdown, worst-performing tools, and trend direction
 - **Credit Flow Analysis** — `GET /admin/credit-flow` credit inflow/outflow analysis with utilization percentage, top spenders, and per-tool spend breakdown
 - **Key Age Analysis** — `GET /admin/key-age` key age distribution with oldest/newest keys, age buckets (24h/7d/30d/older), and recently created list
+- **Namespace Usage Summary** — `GET /admin/namespace-usage` per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -2963,6 +2964,25 @@ curl http://localhost:3000/admin/key-age -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Key age distribution: average age across all active keys, oldest/newest key identification, age buckets (last 24h / 7d / 30d / older), and recently created list (newest first, top 10). Read-only.
+
+### Namespace Usage Summary
+
+```bash
+curl http://localhost:3000/admin/namespace-usage -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": { "totalNamespaces": 3 },
+  "namespaces": [
+    { "namespace": "prod", "keyCount": 5, "totalAllocated": 5000, "totalSpent": 2000, "totalRemaining": 3000, "totalCalls": 400, "utilizationPct": 40 },
+    { "namespace": "staging", "keyCount": 2, "totalAllocated": 1000, "totalSpent": 200, "totalRemaining": 800, "totalCalls": 40, "utilizationPct": 20 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-namespace usage metrics: key counts, credit allocation/spending/remaining, call counts, and utilization percentages. Sorted by spending (highest first). Keys without a namespace appear under "default". Read-only.
 
 ### IP Allowlisting
 

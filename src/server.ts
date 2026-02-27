@@ -922,6 +922,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/namespace-usage':
+        if (req.method === 'GET') return this.handleNamespaceUsage(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1518,6 +1523,7 @@ export class PayGateServer {
         errorTrends: 'GET /admin/error-trends — Denial rate trends with per-tool error rates, denial reason breakdown, and trend direction (requires X-Admin-Key)',
         creditFlow: 'GET /admin/credit-flow — Credit inflow/outflow analysis with utilization, top spenders, and per-tool spend breakdown (requires X-Admin-Key)',
         keyAge: 'GET /admin/key-age — Key age distribution with oldest/newest keys, age buckets, and recently created list (requires X-Admin-Key)',
+        namespaceUsage: 'GET /admin/namespace-usage — Per-namespace usage metrics with credit allocation, spending, call counts, and cross-namespace comparison (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -6861,6 +6867,57 @@ export class PayGateServer {
       summary: { totalKeys, avgAgeHours, oldestKey, newestKey },
       distribution: { last24h, last7d, last30d, older },
       recentlyCreated,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/namespace-usage — Namespace Usage Summary ────────────────────
+
+  private handleNamespaceUsage(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const records = this.gate.store.getAllRecords().filter(r => r.active);
+
+    if (records.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        summary: { totalNamespaces: 0 },
+        namespaces: [],
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // ── Group records by namespace ──
+    const nsMap = new Map<string, { keys: typeof records; totalAllocated: number; totalSpent: number; totalCalls: number }>();
+    for (const r of records) {
+      const ns = r.namespace || 'default';
+      if (!nsMap.has(ns)) nsMap.set(ns, { keys: [], totalAllocated: 0, totalSpent: 0, totalCalls: 0 });
+      const entry = nsMap.get(ns)!;
+      entry.keys.push(r);
+      entry.totalAllocated += r.credits + r.totalSpent;
+      entry.totalSpent += r.totalSpent;
+      entry.totalCalls += r.totalCalls;
+    }
+
+    const namespaces = Array.from(nsMap.entries())
+      .map(([ns, data]) => ({
+        namespace: ns,
+        keyCount: data.keys.length,
+        totalAllocated: data.totalAllocated,
+        totalSpent: data.totalSpent,
+        totalRemaining: data.totalAllocated - data.totalSpent,
+        totalCalls: data.totalCalls,
+        utilizationPct: data.totalAllocated > 0
+          ? Math.round((data.totalSpent / data.totalAllocated) * 100)
+          : 0,
+      }))
+      .sort((a, b) => b.totalSpent - a.totalSpent);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: { totalNamespaces: nsMap.size },
+      namespaces,
       generatedAt: new Date().toISOString(),
     }));
   }
