@@ -141,6 +141,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Access Heatmap** — `GET /admin/access-heatmap` hourly access patterns with tool breakdown, unique consumers, and peak hour identification
 - **Key Churn Analysis** — `GET /admin/key-churn` key churn metrics with creation/revocation rates, churn and retention percentages, and never-used key detection
 - **Tool Correlation** — `GET /admin/tool-correlation` tool co-occurrence analysis showing which tools are commonly used together by the same consumers
+- **Consumer Segmentation** — `GET /admin/consumer-segmentation` classifies API key consumers into power/regular/casual/dormant segments with per-segment metrics
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3296,6 +3297,27 @@ curl http://localhost:3000/admin/tool-correlation -H "X-Admin-Key: YOUR_ADMIN_KE
 ```
 
 Tool co-occurrence analysis showing which tools are commonly used together. `sharedConsumers` counts API keys that used both tools. `strength` is the percentage of all consumers who use the pair. Sorted by shared consumers descending. Helps identify tool bundles and usage patterns. Read-only.
+
+### Consumer Segmentation
+
+```bash
+curl http://localhost:3000/admin/consumer-segmentation -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "segments": [
+    { "segment": "power", "count": 3, "totalCredits": 500, "totalSpent": 2400, "avgCallsPerKey": 35 },
+    { "segment": "regular", "count": 8, "totalCredits": 1200, "totalSpent": 800, "avgCallsPerKey": 12 },
+    { "segment": "casual", "count": 15, "totalCredits": 3000, "totalSpent": 150, "avgCallsPerKey": 2 },
+    { "segment": "dormant", "count": 5, "totalCredits": 1000, "totalSpent": 0, "avgCallsPerKey": 0 }
+  ],
+  "summary": { "totalConsumers": 31 },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Classifies active API key consumers into segments based on usage: **power** (20+ calls), **regular** (5–19 calls), **casual** (1–4 calls), **dormant** (0 calls). Each segment includes aggregate metrics: count, total credits remaining, total spent, and average calls per key. Excludes revoked and suspended keys. Read-only.
 
 ### IP Allowlisting
 

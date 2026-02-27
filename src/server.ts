@@ -987,6 +987,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-segmentation':
+        if (req.method === 'GET') return this.handleConsumerSegmentation(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1596,6 +1601,7 @@ export class PayGateServer {
         accessHeatmap: 'GET /admin/access-heatmap — Hourly access patterns with tool breakdown, unique consumers, and peak hour identification for capacity planning (requires X-Admin-Key)',
         keyChurn: 'GET /admin/key-churn — Key churn analysis with creation/revocation rates, churn and retention percentages, and never-used key detection (requires X-Admin-Key)',
         toolCorrelation: 'GET /admin/tool-correlation — Tool co-occurrence analysis showing which tools are commonly used together by the same consumers (requires X-Admin-Key)',
+        consumerSegmentation: 'GET /admin/consumer-segmentation — Consumer classification into power/regular/casual/dormant segments with per-segment metrics (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7782,6 +7788,71 @@ export class PayGateServer {
       summary: {
         totalPairs: pairs.length,
         totalConsumers,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/consumer-segmentation — Consumer classification ──────────────
+
+  private handleConsumerSegmentation(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        segments: [],
+        summary: { totalConsumers: 0 },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    // Classify each active key into a segment based on totalCalls
+    const segmentMap = new Map<string, { count: number; totalCredits: number; totalSpent: number; totalCalls: number }>();
+
+    for (const rec of activeRecords) {
+      const calls = rec.totalCalls || 0;
+      let segment: string;
+      if (calls >= 20) segment = 'power';
+      else if (calls >= 5) segment = 'regular';
+      else if (calls >= 1) segment = 'casual';
+      else segment = 'dormant';
+
+      let data = segmentMap.get(segment);
+      if (!data) {
+        data = { count: 0, totalCredits: 0, totalSpent: 0, totalCalls: 0 };
+        segmentMap.set(segment, data);
+      }
+      data.count++;
+      data.totalCredits += rec.credits || 0;
+      data.totalSpent += rec.totalSpent || 0;
+      data.totalCalls += calls;
+    }
+
+    // Build segments array sorted by segment order: power, regular, casual, dormant
+    const order = ['power', 'regular', 'casual', 'dormant'];
+    const segments = order
+      .filter(s => segmentMap.has(s))
+      .map(s => {
+        const data = segmentMap.get(s)!;
+        return {
+          segment: s,
+          count: data.count,
+          totalCredits: data.totalCredits,
+          totalSpent: data.totalSpent,
+          avgCallsPerKey: data.count > 0 ? Math.round(data.totalCalls / data.count) : 0,
+        };
+      });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      segments,
+      summary: {
+        totalConsumers: activeRecords.length,
       },
       generatedAt: new Date().toISOString(),
     }));
