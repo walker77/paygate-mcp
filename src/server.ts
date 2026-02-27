@@ -977,6 +977,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/key-churn':
+        if (req.method === 'GET') return this.handleKeyChurn(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1584,6 +1589,7 @@ export class PayGateServer {
         toolAdoption: 'GET /admin/tool-adoption — Per-tool adoption metrics with unique consumers, adoption rate, first/last seen, and never-used tool identification (requires X-Admin-Key)',
         creditEfficiency: 'GET /admin/credit-efficiency — Credit allocation efficiency with burn efficiency, waste ratio, over-provisioned and under-provisioned key detection (requires X-Admin-Key)',
         accessHeatmap: 'GET /admin/access-heatmap — Hourly access patterns with tool breakdown, unique consumers, and peak hour identification for capacity planning (requires X-Admin-Key)',
+        keyChurn: 'GET /admin/key-churn — Key churn analysis with creation/revocation rates, churn and retention percentages, and never-used key detection (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7658,6 +7664,61 @@ export class PayGateServer {
         totalRequests,
         totalHours: hourly.length,
         ...(peakHour ? { peakHour } : {}),
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/key-churn — Key churn analysis ────────────────────────────────
+
+  private handleKeyChurn(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+
+    if (allRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        summary: {
+          totalKeys: 0,
+          activeKeys: 0,
+          revokedKeys: 0,
+          suspendedKeys: 0,
+          neverUsedKeys: 0,
+          churnRate: 0,
+          retentionRate: 100,
+          avgCreditsPerKey: 0,
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const active = allRecords.filter(r => r.active && !r.suspended);
+    const revoked = allRecords.filter(r => !r.active && !r.suspended);
+    const suspended = allRecords.filter(r => r.suspended);
+    const neverUsed = allRecords.filter(r => r.active && (r.totalCalls || 0) === 0);
+
+    const totalCredits = active.reduce((s, r) => s + (r.credits || 0), 0);
+    const avgCreditsPerKey = active.length > 0
+      ? Math.round(totalCredits / active.length)
+      : 0;
+
+    // Churn rate = revoked / total * 100
+    const churnRate = Math.round((revoked.length / allRecords.length) * 100);
+    const retentionRate = 100 - churnRate;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalKeys: allRecords.length,
+        activeKeys: active.length,
+        revokedKeys: revoked.length,
+        suspendedKeys: suspended.length,
+        neverUsedKeys: neverUsed.length,
+        churnRate,
+        retentionRate,
+        avgCreditsPerKey,
       },
       generatedAt: new Date().toISOString(),
     }));
