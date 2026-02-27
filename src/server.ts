@@ -1122,6 +1122,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/namespace-comparison':
+        if (req.method === 'GET') return this.handleNamespaceComparison(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1754,6 +1759,7 @@ export class PayGateServer {
         creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
         consumerRiskScore: 'GET /admin/consumer-risk-score — Per-consumer risk scoring based on utilization, spend velocity, and credit depletion proximity with risk levels (requires X-Admin-Key)',
         revenueForecast: 'GET /admin/revenue-forecast — Projected revenue with hourly/daily/weekly/monthly forecasts based on current spend trends, capped by remaining credits (requires X-Admin-Key)',
+        namespaceComparison: 'GET /admin/namespace-comparison — Side-by-side namespace comparison with allocation, spend, utilization, and leader namespace (requires X-Admin-Key)',
         consumerGrowth: 'GET /admin/consumer-growth — Consumer growth metrics with age, spend rate, credits allocated, and new consumer count (requires X-Admin-Key)',
         toolProfitability: 'GET /admin/tool-profitability — Per-tool profitability analysis with revenue, calls, avg revenue per call, and unique callers (requires X-Admin-Key)',
         creditWaste: 'GET /admin/credit-waste — Per-key credit waste analysis with utilization metrics and waste percentage (requires X-Admin-Key)',
@@ -8778,6 +8784,63 @@ export class PayGateServer {
   }
 
   // ─── /admin/group-activity — Per-group activity metrics ──────────────────
+
+  private handleNamespaceComparison(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        namespaces: [],
+        summary: { totalNamespaces: 0, leader: null },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const nsMap = new Map<string, { keyCount: number; totalAllocated: number; totalSpent: number; totalCalls: number; creditsRemaining: number }>();
+
+    for (const rec of activeRecords) {
+      const ns = rec.namespace || 'default';
+      let data = nsMap.get(ns);
+      if (!data) {
+        data = { keyCount: 0, totalAllocated: 0, totalSpent: 0, totalCalls: 0, creditsRemaining: 0 };
+        nsMap.set(ns, data);
+      }
+      data.keyCount += 1;
+      data.totalAllocated += rec.credits + rec.totalSpent;
+      data.totalSpent += rec.totalSpent;
+      data.totalCalls += rec.totalCalls;
+      data.creditsRemaining += rec.credits;
+    }
+
+    const namespaces = Array.from(nsMap.entries())
+      .map(([namespace, data]) => ({
+        namespace,
+        keyCount: data.keyCount,
+        totalAllocated: data.totalAllocated,
+        totalSpent: data.totalSpent,
+        totalCalls: data.totalCalls,
+        creditsRemaining: data.creditsRemaining,
+        utilizationPercent: data.totalAllocated > 0
+          ? Math.round((data.totalSpent / data.totalAllocated) * 100)
+          : 0,
+      }))
+      .sort((a, b) => b.totalAllocated - a.totalAllocated);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      namespaces,
+      summary: {
+        totalNamespaces: namespaces.length,
+        leader: namespaces[0].namespace,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
 
   private handleConsumerGrowth(_req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(_req, res)) return;

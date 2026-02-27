@@ -164,6 +164,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Consumer Risk Score** — `GET /admin/consumer-risk-score` per-consumer risk scoring based on utilization with risk levels (low/medium/high/critical)
 - **Revenue Forecast** — `GET /admin/revenue-forecast` projected revenue with hourly/daily/weekly/monthly forecasts capped by remaining credits
+- **Namespace Comparison** — `GET /admin/namespace-comparison` side-by-side namespace comparison with allocation, spend, utilization, leader
 - **Consumer Growth** — `GET /admin/consumer-growth` consumer growth metrics with age, spend rate, credits allocated, new consumer count
 - **Tool Profitability** — `GET /admin/tool-profitability` per-tool profitability analysis with revenue, calls, avg revenue per call, unique callers
 - **Credit Waste Analysis** — `GET /admin/credit-waste` per-key credit waste analysis with utilization metrics and waste percentage
@@ -3779,6 +3780,25 @@ curl http://localhost:3000/admin/revenue-forecast -H "X-Admin-Key: YOUR_ADMIN_KE
 ```
 
 Projected revenue based on current spend trends. Forecasts for next hour, day, week, and month are extrapolated from aggregate credits/hour rate and capped by total remaining credits. Includes current totals and active key count. Zero-spend systems show zero forecasts. Excludes revoked/suspended keys. Read-only.
+
+### Namespace Comparison
+
+```bash
+curl http://localhost:3000/admin/namespace-comparison -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "namespaces": [
+    { "namespace": "production", "keyCount": 5, "totalAllocated": 50000, "totalSpent": 12000, "totalCalls": 800, "creditsRemaining": 38000, "utilizationPercent": 24 },
+    { "namespace": "staging", "keyCount": 3, "totalAllocated": 3000, "totalSpent": 500, "totalCalls": 50, "creditsRemaining": 2500, "utilizationPercent": 17 }
+  ],
+  "summary": { "totalNamespaces": 2, "leader": "production" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Side-by-side namespace comparison. Per namespace: key count, total allocated credits, total spent, total calls, credits remaining, utilization percentage. Keys without a namespace appear under `"default"`. Summary includes namespace count and leading namespace (highest allocation). Sorted by totalAllocated descending. Excludes revoked/suspended keys. Read-only.
 
 ### Consumer Growth
 
