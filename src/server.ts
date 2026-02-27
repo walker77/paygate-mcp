@@ -942,6 +942,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/key-status':
+        if (req.method === 'GET') return this.handleKeyStatus(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1542,6 +1547,7 @@ export class PayGateServer {
         auditSummary: 'GET /admin/audit-summary — Audit event analytics with type breakdown, top actors, recent events, and activity summary (requires X-Admin-Key)',
         groupPerformance: 'GET /admin/group-performance — Per-group analytics with key counts, credit allocation/spending, call volume, and utilization (requires X-Admin-Key)',
         requestTrends: 'GET /admin/request-trends — Hourly request volume time-series with success/failure counts, credit spend, and avg duration (requires X-Admin-Key)',
+        keyStatus: 'GET /admin/key-status — Key status dashboard with active/suspended/revoked/expired counts and keys needing attention (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7136,6 +7142,72 @@ export class PayGateServer {
         peakHour: { hour: peakHour.hour, total: peakHour.total },
       },
       hourly,
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/key-status — Key status dashboard ──────────────────────────
+
+  private handleKeyStatus(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const now = Date.now();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+
+    let active = 0;
+    let suspended = 0;
+    let revoked = 0;
+    let expired = 0;
+
+    const needsAttention: Array<{ keyName: string; issue: string; detail: string }> = [];
+
+    for (const r of allRecords) {
+      // Count status
+      if (r.suspended) {
+        suspended++;
+      } else if (!r.active) {
+        revoked++;
+      } else if (r.expiresAt && new Date(r.expiresAt).getTime() <= now) {
+        expired++;
+      } else {
+        active++;
+
+        // Check for issues on active keys
+        // Low credits: <= 10 credits remaining
+        if (r.credits <= 10) {
+          needsAttention.push({
+            keyName: r.name,
+            issue: 'low_credits',
+            detail: `${r.credits} credits remaining`,
+          });
+        }
+
+        // Expiring soon: within 7 days
+        if (r.expiresAt) {
+          const expiryMs = new Date(r.expiresAt).getTime();
+          if (expiryMs > now && expiryMs <= now + sevenDaysMs) {
+            const hoursLeft = Math.round((expiryMs - now) / (1000 * 60 * 60));
+            needsAttention.push({
+              keyName: r.name,
+              issue: 'expiring_soon',
+              detail: `Expires in ${hoursLeft} hours`,
+            });
+          }
+        }
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      counts: {
+        total: allRecords.length,
+        active,
+        suspended,
+        revoked,
+        expired,
+      },
+      needsAttention,
       generatedAt: new Date().toISOString(),
     }));
   }

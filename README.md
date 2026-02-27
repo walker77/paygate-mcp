@@ -132,6 +132,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Audit Summary** — `GET /admin/audit-summary` audit event analytics with type breakdown, top actors, recent events, and activity summary
 - **Group Performance** — `GET /admin/group-performance` per-group analytics with key counts, credit allocation/spending, call volume, utilization, and policy summary
 - **Request Volume Trends** — `GET /admin/request-trends` hourly time-series of request volume, success/failure counts, credit spend, avg duration, and peak hour identification
+- **Key Status Overview** — `GET /admin/key-status` key status dashboard with active/suspended/revoked/expired counts and keys needing attention (low credits, near expiry)
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3059,6 +3060,25 @@ curl http://localhost:3000/admin/request-trends -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Hourly request volume time-series: total/allowed/denied counts, credit spend, and average duration per hour. Includes summary with peak hour identification. Built from request log data. Sorted chronologically. Read-only.
+
+### Key Status Overview
+
+```bash
+curl http://localhost:3000/admin/key-status -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "counts": { "total": 20, "active": 15, "suspended": 2, "revoked": 2, "expired": 1 },
+  "needsAttention": [
+    { "keyName": "low-balance", "issue": "low_credits", "detail": "5 credits remaining" },
+    { "keyName": "trial-key", "issue": "expiring_soon", "detail": "Expires in 48 hours" }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Key status dashboard: active/suspended/revoked/expired counts with keys needing attention. Flags active keys with low credits (<=10) and near expiry (within 7 days). Read-only.
 
 ### IP Allowlisting
 
