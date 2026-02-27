@@ -952,6 +952,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-insights':
+        if (req.method === 'GET') return this.handleConsumerInsights(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1554,6 +1559,7 @@ export class PayGateServer {
         requestTrends: 'GET /admin/request-trends — Hourly request volume time-series with success/failure counts, credit spend, and avg duration (requires X-Admin-Key)',
         keyStatus: 'GET /admin/key-status — Key status dashboard with active/suspended/revoked/expired counts and keys needing attention (requires X-Admin-Key)',
         webhookHealth: 'GET /admin/webhook-health — Webhook delivery health overview with success rate, retries, dead letters, and pause status (requires X-Admin-Key)',
+        consumerInsights: 'GET /admin/consumer-insights — Per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -7268,6 +7274,83 @@ export class PayGateServer {
         pausedAt: stats.pausedAt,
         successRate,
       },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/consumer-insights — Per-key behavioral analytics ──────────────
+
+  private handleConsumerInsights(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    // Build per-key data from records
+    const keyMap = new Map<string, { name: string; totalSpent: number; totalCalls: number; uniqueTools: Set<string> }>();
+
+    for (const r of allRecords) {
+      keyMap.set(r.key, {
+        name: r.name,
+        totalSpent: r.totalSpent || 0,
+        totalCalls: r.totalCalls || 0,
+        uniqueTools: new Set<string>(),
+      });
+    }
+
+    // Enrich with tool diversity from request log
+    for (const entry of this.requestLog) {
+      if (entry.status === 'allowed' && entry.tool) {
+        // Match key by masked prefix — request log stores masked keys
+        for (const [fullKey, data] of keyMap) {
+          const masked = fullKey.slice(0, 7) + '...' + fullKey.slice(-4);
+          if (masked === entry.key) {
+            data.uniqueTools.add(entry.tool);
+            break;
+          }
+        }
+      }
+    }
+
+    // Top spenders (sorted by totalSpent descending, top 10)
+    const topSpenders = Array.from(keyMap.values())
+      .filter(d => d.totalSpent > 0)
+      .sort((a, b) => b.totalSpent - a.totalSpent)
+      .slice(0, 10)
+      .map(d => ({
+        name: d.name,
+        totalSpent: d.totalSpent,
+        totalCalls: d.totalCalls,
+        uniqueTools: d.uniqueTools.size,
+      }));
+
+    // Most active (sorted by totalCalls descending, top 10)
+    const mostActive = Array.from(keyMap.values())
+      .filter(d => d.totalCalls > 0)
+      .sort((a, b) => b.totalCalls - a.totalCalls)
+      .slice(0, 10)
+      .map(d => ({
+        name: d.name,
+        totalCalls: d.totalCalls,
+        totalSpent: d.totalSpent,
+        uniqueTools: d.uniqueTools.size,
+      }));
+
+    // Summary
+    const totalSpent = allRecords.reduce((sum, r) => sum + (r.totalSpent || 0), 0);
+    const totalCalls = allRecords.reduce((sum, r) => sum + (r.totalCalls || 0), 0);
+    const activeConsumers = allRecords.filter(r => (r.totalCalls || 0) > 0).length;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      summary: {
+        totalConsumers: allRecords.length,
+        activeConsumers,
+        totalCreditsSpent: totalSpent,
+        totalCalls,
+      },
+      topSpenders,
+      mostActive,
       generatedAt: new Date().toISOString(),
     }));
   }

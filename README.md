@@ -134,6 +134,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Request Volume Trends** — `GET /admin/request-trends` hourly time-series of request volume, success/failure counts, credit spend, avg duration, and peak hour identification
 - **Key Status Overview** — `GET /admin/key-status` key status dashboard with active/suspended/revoked/expired counts and keys needing attention (low credits, near expiry)
 - **Webhook Health** — `GET /admin/webhook-health` webhook delivery health overview with success rate, pending retries, dead letter count, pause status, and buffered events
+- **Consumer Insights** — `GET /admin/consumer-insights` per-key behavioral analytics with top spenders, most active callers, tool diversity, and spending patterns
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
 - **Webhook Events** — POST batched usage events to any URL for external billing/alerting
 - **Config File Mode** — Load all settings from a JSON file (`--config`)
@@ -3107,6 +3108,32 @@ curl http://localhost:3000/admin/webhook-health -H "X-Admin-Key: YOUR_ADMIN_KEY"
 ```
 
 Webhook delivery health overview. Status is `healthy`, `retrying`, `degraded` (dead letters exist), `paused`, or `not_configured`. Includes success rate, pending retries, dead letter count, and buffered events. Read-only.
+
+### Consumer Insights
+
+```bash
+curl http://localhost:3000/admin/consumer-insights -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "summary": {
+    "totalConsumers": 15,
+    "activeConsumers": 12,
+    "totalCreditsSpent": 4850,
+    "totalCalls": 970
+  },
+  "topSpenders": [
+    { "name": "heavy-user", "totalSpent": 1200, "totalCalls": 240, "uniqueTools": 5 }
+  ],
+  "mostActive": [
+    { "name": "heavy-user", "totalCalls": 240, "totalSpent": 1200, "uniqueTools": 5 }
+  ],
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-key behavioral analytics. Top 10 spenders ranked by credits consumed, top 10 most active by call count. Each entry includes tool diversity (unique tools used). Summary shows total/active consumers and aggregate spend. Read-only.
 
 ### IP Allowlisting
 
