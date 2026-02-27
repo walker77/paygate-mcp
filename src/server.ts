@@ -1112,6 +1112,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/tool-profitability':
+        if (req.method === 'GET') return this.handleToolProfitability(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1744,6 +1749,7 @@ export class PayGateServer {
         creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
         consumerRiskScore: 'GET /admin/consumer-risk-score — Per-consumer risk scoring based on utilization, spend velocity, and credit depletion proximity with risk levels (requires X-Admin-Key)',
         revenueForecast: 'GET /admin/revenue-forecast — Projected revenue with hourly/daily/weekly/monthly forecasts based on current spend trends, capped by remaining credits (requires X-Admin-Key)',
+        toolProfitability: 'GET /admin/tool-profitability — Per-tool profitability analysis with revenue, calls, avg revenue per call, and unique callers (requires X-Admin-Key)',
         creditWaste: 'GET /admin/credit-waste — Per-key credit waste analysis with utilization metrics and waste percentage (requires X-Admin-Key)',
         groupActivity: 'GET /admin/group-activity — Per-group activity metrics with key counts, spend, calls, credits remaining for policy-template-based analytics (requires X-Admin-Key)',
         ...(this.oauth ? {
@@ -8766,6 +8772,59 @@ export class PayGateServer {
   }
 
   // ─── /admin/group-activity — Per-group activity metrics ──────────────────
+
+  private handleToolProfitability(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const toolMap = new Map<string, { totalCalls: number; totalRevenue: number; callers: Set<string> }>();
+
+    for (const entry of this.requestLog) {
+      if (entry.status !== 'allowed') continue;
+      let data = toolMap.get(entry.tool);
+      if (!data) {
+        data = { totalCalls: 0, totalRevenue: 0, callers: new Set() };
+        toolMap.set(entry.tool, data);
+      }
+      data.totalCalls += 1;
+      data.totalRevenue += entry.credits || 0;
+      data.callers.add(entry.key);
+    }
+
+    if (toolMap.size === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        tools: [],
+        summary: { totalRevenue: 0, mostProfitable: null, leastProfitable: null },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const tools = Array.from(toolMap.entries())
+      .map(([tool, data]) => ({
+        tool,
+        totalCalls: data.totalCalls,
+        totalRevenue: data.totalRevenue,
+        avgRevenuePerCall: data.totalCalls > 0
+          ? Math.round((data.totalRevenue / data.totalCalls) * 100) / 100
+          : 0,
+        callerCount: data.callers.size,
+      }))
+      .sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+    const totalRevenue = tools.reduce((s, t) => s + t.totalRevenue, 0);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      tools,
+      summary: {
+        totalRevenue,
+        mostProfitable: tools[0].tool,
+        leastProfitable: tools[tools.length - 1].tool,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
 
   private handleCreditWaste(_req: IncomingMessage, res: ServerResponse): void {
     if (!this.checkAdmin(_req, res)) return;

@@ -164,6 +164,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Credit Burn Rate** — `GET /admin/credit-burn-rate` system-wide credit burn rate with credits/hour, utilization percentage, depletion forecast
 - **Consumer Risk Score** — `GET /admin/consumer-risk-score` per-consumer risk scoring based on utilization with risk levels (low/medium/high/critical)
 - **Revenue Forecast** — `GET /admin/revenue-forecast` projected revenue with hourly/daily/weekly/monthly forecasts capped by remaining credits
+- **Tool Profitability** — `GET /admin/tool-profitability` per-tool profitability analysis with revenue, calls, avg revenue per call, unique callers
 - **Credit Waste Analysis** — `GET /admin/credit-waste` per-key credit waste analysis with utilization metrics and waste percentage
 - **Group Activity** — `GET /admin/group-activity` per-group activity metrics with key counts, spend, calls, credits remaining for policy-template analytics
 - **Config Hot Reload** — `POST /config/reload` reloads pricing, rate limits, webhooks, quotas, and behavior flags from config file without server restart
@@ -3777,6 +3778,25 @@ curl http://localhost:3000/admin/revenue-forecast -H "X-Admin-Key: YOUR_ADMIN_KE
 ```
 
 Projected revenue based on current spend trends. Forecasts for next hour, day, week, and month are extrapolated from aggregate credits/hour rate and capped by total remaining credits. Includes current totals and active key count. Zero-spend systems show zero forecasts. Excludes revoked/suspended keys. Read-only.
+
+### Tool Profitability
+
+```bash
+curl http://localhost:3000/admin/tool-profitability -H "X-Admin-Key: YOUR_ADMIN_KEY"
+```
+
+```json
+{
+  "tools": [
+    { "tool": "search", "totalCalls": 150, "totalRevenue": 450, "avgRevenuePerCall": 3, "callerCount": 8 },
+    { "tool": "translate", "totalCalls": 40, "totalRevenue": 120, "avgRevenuePerCall": 3, "callerCount": 3 }
+  ],
+  "summary": { "totalRevenue": 570, "mostProfitable": "search", "leastProfitable": "translate" },
+  "generatedAt": "2025-01-15T14:30:00Z"
+}
+```
+
+Per-tool profitability analysis based on actual tool call revenue. Per tool: total calls, total revenue (credits spent), average revenue per call, unique caller count. Sorted by totalRevenue descending. Summary includes most/least profitable tools and total revenue across all tools. Read-only.
 
 ### Credit Waste Analysis
 
