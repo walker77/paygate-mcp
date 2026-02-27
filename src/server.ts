@@ -1092,6 +1092,11 @@ export class PayGateServer {
         res.writeHead(405, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
         return;
+      case '/admin/consumer-risk-score':
+        if (req.method === 'GET') return this.handleConsumerRiskScore(req, res);
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method not allowed. Use GET.' }));
+        return;
       // ─── Plugin endpoints ──────────────────────────────────────────────
       case '/plugins':
         return this.handleListPlugins(req, res);
@@ -1722,6 +1727,7 @@ export class PayGateServer {
         consumerSpendVelocity: 'GET /admin/consumer-spend-velocity — Per-consumer spend rate with credits/hour, depletion forecast, and velocity ranking (requires X-Admin-Key)',
         namespaceActivity: 'GET /admin/namespace-activity — Per-namespace activity metrics with key counts, spend, calls, credits remaining for multi-tenant visibility (requires X-Admin-Key)',
         creditBurnRate: 'GET /admin/credit-burn-rate — System-wide credit burn rate with credits/hour, utilization percentage, depletion forecast, and active key count (requires X-Admin-Key)',
+        consumerRiskScore: 'GET /admin/consumer-risk-score — Per-consumer risk scoring based on utilization, spend velocity, and credit depletion proximity with risk levels (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -8736,6 +8742,74 @@ export class PayGateServer {
         totalTools: tools.length,
         totalCalls,
         mostPopular: tools[0]?.tool || null,
+      },
+      generatedAt: new Date().toISOString(),
+    }));
+  }
+
+  // ─── /admin/consumer-risk-score — Per-consumer risk scoring ──────────────
+
+  private handleConsumerRiskScore(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(_req, res)) return;
+
+    const allRecords = this.gate.store.getAllRecords();
+    const activeRecords = allRecords.filter(r => r.active && !r.suspended);
+
+    if (activeRecords.length === 0) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        consumers: [],
+        summary: {
+          totalConsumers: 0,
+          riskDistribution: { low: 0, medium: 0, high: 0, critical: 0 },
+        },
+        generatedAt: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    const consumers = activeRecords.map(rec => {
+      const totalSpent = rec.totalSpent || 0;
+      const allocated = rec.credits + totalSpent;
+      const utilizationPercent = allocated > 0 ? Math.round((totalSpent / allocated) * 100) : 0;
+
+      // Risk score: 0–100 based on utilization (higher utilization = higher risk)
+      // - 0-25% utilization → low risk (0-25 score)
+      // - 25-50% → medium risk (25-50 score)
+      // - 50-75% → high risk (50-75 score)
+      // - 75-100% → critical risk (75-100 score)
+      const riskScore = Math.min(utilizationPercent, 100);
+
+      let riskLevel: string;
+      if (riskScore >= 75) riskLevel = 'critical';
+      else if (riskScore >= 50) riskLevel = 'high';
+      else if (riskScore >= 25) riskLevel = 'medium';
+      else riskLevel = 'low';
+
+      return {
+        name: rec.name,
+        riskScore,
+        riskLevel,
+        creditsRemaining: rec.credits,
+        totalSpent,
+        utilizationPercent,
+      };
+    });
+
+    // Sort by riskScore descending
+    consumers.sort((a, b) => b.riskScore - a.riskScore);
+
+    const riskDistribution = { low: 0, medium: 0, high: 0, critical: 0 };
+    for (const c of consumers) {
+      riskDistribution[c.riskLevel as keyof typeof riskDistribution]++;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      consumers,
+      summary: {
+        totalConsumers: consumers.length,
+        riskDistribution,
       },
       generatedAt: new Date().toISOString(),
     }));
