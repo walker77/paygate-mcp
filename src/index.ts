@@ -152,6 +152,14 @@ export { SequenceAnomalyDetector } from './sequence-anomaly';
 export type { SequenceAnomalyConfig, AnomalyCheckResult, AnomalyEvent, TransitionModel, SequenceAnomalyStats } from './sequence-anomaly';
 export { ProxyMcpServer } from './proxy-mcp-server';
 export type { ProxyMcpTool, ProxyMcpServerConfig, ProxyMcpStats, ManagementResolver } from './proxy-mcp-server';
+export { KeyHierarchyManager } from './key-hierarchy';
+export type { KeyRelation, HierarchyInfo, KeyHierarchyConfig, KeyHierarchyStats } from './key-hierarchy';
+export { SandboxManager } from './sandbox';
+export type { SandboxPolicy, SandboxUsage, SandboxCheckResult, SandboxConfig, SandboxStats } from './sandbox';
+export { RevenueShareTracker } from './revenue-share';
+export type { RevenueShareRule, RevenueEntry, DeveloperPayout, SettlementRecord, RevenueShareConfig, RevenueShareStats } from './revenue-share';
+export { ConnectionBillingManager } from './connection-billing';
+export type { ConnectionSession, ConnectionBillingConfig, ConnectionBillResult, ConnectionBillingStats } from './connection-billing';
 
 export type {
   PayGateConfig,

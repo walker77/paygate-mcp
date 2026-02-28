@@ -1,5 +1,55 @@
 # Changelog
 
+## 10.8.0 (2026-02-28)
+
+### Key Hierarchy — Parent/Child API Key Relationships
+- **Hierarchical key management** for organizations and resellers:
+  - Create parent-child key relationships with credit ceiling inheritance
+  - Child keys deduct from parent's balance with configurable credit ceilings
+  - Multi-level hierarchy support (configurable max depth, default: 3)
+  - Circular reference prevention and max-children enforcement
+  - Ancestry chain queries (getAncestors, getDescendants, getRoot)
+  - Credit usage tracking per child with refund support
+  - Inherit allowed/denied tools and quota from parent
+  - Export/import for persistence
+  - Stats: relations, depth, cascaded credits
+
+### Sandbox Mode — Try-Before-Buy
+- **Free trial tier** for API keys without credit deduction:
+  - Create sandbox policies with call limits and time windows
+  - Assign policies to keys (or set a default for all unassigned keys)
+  - Per-tool allowlists and denylists within sandbox
+  - Real or mocked response modes — preview tools before purchasing
+  - Automatic window reset (e.g., 10 free calls per hour)
+  - Per-key usage tracking with per-tool breakdown
+  - Export/import for persistence and backup
+  - Stats: sandbox calls, denials, per-tool usage
+
+### Revenue Share Tracking — Split Billing for Marketplaces
+- **Revenue splitting** between platform and tool developers:
+  - Create revenue share rules per tool or catch-all
+  - Configurable developer share percentage (0-100%)
+  - Minimum credits per call threshold before sharing applies
+  - Per-developer payout tracking with per-tool breakdown
+  - Settlement workflow — mark balances as paid with external refs
+  - Settlement history and developer payout reports
+  - Platform revenue summary (total/platform/developer split)
+  - Stats: rules, entries, credits split, settlements
+
+### Connection-Time Billing — Duration-Based Charges
+- **Bill for connection duration** (SSE/stdio/HTTP long-lived connections):
+  - Track active connections as billable sessions
+  - Configurable credits per interval (e.g., 1 credit/minute)
+  - Grace period before billing starts
+  - Idle timeout enforcement — auto-terminate inactive sessions
+  - Maximum session duration limits
+  - Pause/resume billing per session
+  - Credit availability check callback — terminate on insufficient funds
+  - Bulk billing (billAll) for periodic processing
+  - Cost estimation for connection durations
+  - Per-transport billing configuration (SSE, stdio, HTTP)
+  - Stats: active sessions, credits billed, termination reasons
+
 ## 10.7.0 (2026-02-28)
 
 ### Prepaid Credit Grants with Expiration, Priority & Rollover
