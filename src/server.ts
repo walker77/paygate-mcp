@@ -75,6 +75,9 @@ import { AdaptiveRateLimiter } from './adaptive-rate-limiter';
 import { RequestDeduplicator } from './dedup';
 import { PriorityQueue } from './priority-queue';
 import { CostAllocator } from './cost-tags';
+import { IpAccessController } from './ip-access';
+import { RequestSigner } from './request-signing';
+import { TenantManager } from './tenant-isolation';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -492,6 +495,12 @@ export class PayGateServer {
   /** Cost allocation tags. */
   readonly costAllocator: CostAllocator;
 
+  readonly ipAccess: IpAccessController;
+
+  readonly requestSigner: RequestSigner;
+
+  readonly tenants: TenantManager;
+
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
     return (this.router || this.proxy) as RequestHandler;
@@ -782,6 +791,9 @@ export class PayGateServer {
     this.deduplicator = new RequestDeduplicator();
     this.priorityQueue = new PriorityQueue();
     this.costAllocator = new CostAllocator();
+    this.ipAccess = new IpAccessController();
+    this.requestSigner = new RequestSigner();
+    this.tenants = new TenantManager();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1442,6 +1454,12 @@ export class PayGateServer {
         return this.handlePriorityQueue(req, res);
       case '/admin/cost-tags':
         return this.handleCostTags(req, res);
+      case '/admin/ip-access':
+        return this.handleIpAccess(req, res);
+      case '/admin/signing':
+        return this.handleSigning(req, res);
+      case '/admin/tenants':
+        return this.handleTenants(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -2673,6 +2691,9 @@ export class PayGateServer {
         adminDedup: 'GET /admin/dedup — View dedup stats and cache; POST /admin/dedup — Configure deduplication; DELETE /admin/dedup — Clear dedup cache (requires X-Admin-Key)',
         adminPriorityQueue: 'GET /admin/priority-queue — View queue stats; POST /admin/priority-queue — Configure queue or set key priority (requires X-Admin-Key)',
         adminCostTags: 'GET /admin/cost-tags — View cost tag stats; POST /admin/cost-tags — Generate chargeback report or set required tags (requires X-Admin-Key)',
+        adminIpAccess: 'GET /admin/ip-access — View IP access stats and blocked IPs; POST /admin/ip-access — Configure allow/deny lists, bind keys to IPs, block/unblock IPs (requires X-Admin-Key)',
+        adminSigning: 'GET /admin/signing — View request signing stats; POST /admin/signing — Register/rotate signing secrets, configure signing (requires X-Admin-Key)',
+        adminTenants: 'GET /admin/tenants — List tenants and usage; POST /admin/tenants — Create/update tenants, bind keys, manage credits (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -15180,6 +15201,264 @@ export class PayGateServer {
     if (req.method === 'DELETE') {
       if (!this.checkAdmin(req, res, 'admin')) return;
       this.costAllocator.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── v9.9.0: IP Access Control ────────────────────────────────────────────
+
+  private async handleIpAccess(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, {
+        ...this.ipAccess.stats(),
+        blocked: this.ipAccess.getBlocked(),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Bind key to IPs
+      if (params.apiKey && params.ips) {
+        try {
+          this.ipAccess.bindKey(String(params.apiKey), params.ips as string[]);
+          this.sendJson(res, 200, { bound: true, apiKey: String(params.apiKey).slice(0, 8) + '...', ips: params.ips });
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot bind key');
+        }
+        return;
+      }
+
+      // Block an IP
+      if (params.block) {
+        this.ipAccess.blockIp(String(params.block), params.durationMs ? Number(params.durationMs) : undefined, params.reason ? String(params.reason) : undefined);
+        this.audit.log('config.updated' as any, 'admin', `IP blocked: ${params.block}`, params);
+        this.sendJson(res, 200, { blocked: params.block });
+        return;
+      }
+
+      // Unblock an IP
+      if (params.unblock) {
+        const unblocked = this.ipAccess.unblockIp(String(params.unblock));
+        this.sendJson(res, 200, { unblocked, ip: params.unblock });
+        return;
+      }
+
+      // Unbind key
+      if (params.unbindKey) {
+        const unbound = this.ipAccess.unbindKey(String(params.unbindKey));
+        this.sendJson(res, 200, { unbound, apiKey: String(params.unbindKey).slice(0, 8) + '...' });
+        return;
+      }
+
+      // Configure
+      try {
+        const config = this.ipAccess.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `IP access ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.ipAccess.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update IP access config');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.ipAccess.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── v9.9.0: Request Signing ──────────────────────────────────────────────
+
+  private async handleSigning(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.requestSigner.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Register signing secret for a key
+      if (params.registerKey) {
+        const secret = this.requestSigner.registerKey(
+          String(params.registerKey),
+          params.secret ? String(params.secret) : undefined,
+          params.label ? String(params.label) : undefined,
+        );
+        this.audit.log('config.updated' as any, 'admin', `Signing secret registered for key: ${String(params.registerKey).slice(0, 8)}...`, { apiKey: String(params.registerKey).slice(0, 8) + '...' });
+        this.sendJson(res, 200, { registered: true, apiKey: secret.apiKey.slice(0, 8) + '...', secret: secret.secret });
+        return;
+      }
+
+      // Rotate signing secret
+      if (params.rotateKey) {
+        const secret = this.requestSigner.rotateKey(String(params.rotateKey));
+        if (!secret) {
+          this.sendError(res, 404, 'No signing secret found for this key');
+          return;
+        }
+        this.sendJson(res, 200, { rotated: true, apiKey: secret.apiKey.slice(0, 8) + '...', secret: secret.secret });
+        return;
+      }
+
+      // Remove signing secret
+      if (params.removeKey) {
+        const removed = this.requestSigner.removeKey(String(params.removeKey));
+        this.sendJson(res, 200, { removed, apiKey: String(params.removeKey).slice(0, 8) + '...' });
+        return;
+      }
+
+      // Configure
+      try {
+        const config = this.requestSigner.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Request signing ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.requestSigner.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update signing config');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.requestSigner.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── v9.9.0: Tenant Isolation ─────────────────────────────────────────────
+
+  private async handleTenants(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const tenantId = url.searchParams.get('id');
+      if (tenantId) {
+        const report = this.tenants.getUsageReport(tenantId);
+        if (!report) { this.sendError(res, 404, 'Tenant not found'); return; }
+        this.sendJson(res, 200, report);
+        return;
+      }
+      const status = url.searchParams.get('status') as 'active' | 'suspended' | null;
+      this.sendJson(res, 200, {
+        ...this.tenants.stats(),
+        tenants: this.tenants.list(status ?? undefined),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Create tenant
+      if (params.createTenant || params.name) {
+        try {
+          const tenant = this.tenants.create({
+            id: params.id ? String(params.id) : undefined,
+            name: String(params.name || params.createTenant),
+            metadata: params.metadata as Record<string, string> | undefined,
+            rateLimitPerMin: params.rateLimitPerMin ? Number(params.rateLimitPerMin) : undefined,
+            credits: params.credits ? Number(params.credits) : undefined,
+          });
+          this.audit.log('config.updated' as any, 'admin', `Tenant created: ${tenant.id}`, { tenantId: tenant.id });
+          this.sendJson(res, 201, tenant);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot create tenant');
+        }
+        return;
+      }
+
+      // Bind key to tenant
+      if (params.bindKey && params.tenantId) {
+        try {
+          this.tenants.bindKey(String(params.tenantId), String(params.bindKey));
+          this.sendJson(res, 200, { bound: true, tenantId: params.tenantId, apiKey: String(params.bindKey).slice(0, 8) + '...' });
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot bind key');
+        }
+        return;
+      }
+
+      // Unbind key
+      if (params.unbindKey) {
+        const unbound = this.tenants.unbindKey(String(params.unbindKey));
+        this.sendJson(res, 200, { unbound, apiKey: String(params.unbindKey).slice(0, 8) + '...' });
+        return;
+      }
+
+      // Add credits to tenant
+      if (params.addCredits && params.tenantId) {
+        const credits = this.tenants.addCredits(String(params.tenantId), Number(params.addCredits));
+        if (credits === null) { this.sendError(res, 404, 'Tenant not found'); return; }
+        this.sendJson(res, 200, { tenantId: params.tenantId, credits });
+        return;
+      }
+
+      // Suspend tenant
+      if (params.suspend) {
+        const suspended = this.tenants.suspend(String(params.suspend));
+        if (!suspended) { this.sendError(res, 404, 'Tenant not found'); return; }
+        this.audit.log('config.updated' as any, 'admin', `Tenant suspended: ${params.suspend}`, { tenantId: params.suspend });
+        this.sendJson(res, 200, { suspended: true, tenantId: params.suspend });
+        return;
+      }
+
+      // Activate tenant
+      if (params.activate) {
+        const activated = this.tenants.activate(String(params.activate));
+        if (!activated) { this.sendError(res, 404, 'Tenant not found'); return; }
+        this.sendJson(res, 200, { activated: true, tenantId: params.activate });
+        return;
+      }
+
+      // Update tenant
+      if (params.updateTenant) {
+        const updated = this.tenants.update(String(params.updateTenant), params as any);
+        if (!updated) { this.sendError(res, 404, 'Tenant not found'); return; }
+        this.sendJson(res, 200, updated);
+        return;
+      }
+
+      // Configure
+      try {
+        const config = this.tenants.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Tenant isolation ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.tenants.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update tenant config');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { params = {}; }
+
+      if (params.tenantId) {
+        const deleted = this.tenants.delete(String(params.tenantId));
+        if (!deleted) { this.sendError(res, 404, 'Tenant not found'); return; }
+        this.audit.log('config.updated' as any, 'admin', `Tenant deleted: ${params.tenantId}`, { tenantId: params.tenantId });
+        this.sendJson(res, 200, { deleted: true, tenantId: params.tenantId });
+        return;
+      }
+
+      this.tenants.clear();
       this.sendJson(res, 200, { cleared: true });
       return;
     }

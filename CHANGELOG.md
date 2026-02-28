@@ -1,5 +1,52 @@
 # Changelog
 
+## 9.9.0 (2026-02-28)
+
+### IP Access Control
+- **Fine-grained IP-based access control with CIDR notation** — global allow/deny lists, per-key IP binding, and automatic blocking:
+  - `GET /admin/ip-access` — view IP access stats and blocked IPs
+  - `POST /admin/ip-access` — configure allow/deny lists, bind keys to IPs, block/unblock IPs
+  - `DELETE /admin/ip-access` — clear all IP rules and blocks
+  - CIDR notation support (e.g., `10.0.0.0/8`, `192.168.1.0/24`)
+  - Per-key IP binding: restrict API keys to specific IPs/CIDRs
+  - Auto-blocking: configurable threshold for automatic IP blocking after repeated violations
+  - X-Forwarded-For and X-Real-IP header support with configurable trusted proxy depth
+  - IPv6-mapped IPv4 normalization (`::ffff:` prefix stripping)
+  - Deny list takes precedence over allow list
+  - Stats: total checks, blocked, allowed, auto-blocked IPs, per-key bindings
+  - Public API: `IpAccessController` class exported
+
+### Request Signing (HMAC-SHA256)
+- **Cryptographic request authentication with replay protection** — prevents tampering and replay attacks via HMAC-SHA256 signatures:
+  - `GET /admin/signing` — view signing stats (verified, failed, replayed, expired)
+  - `POST /admin/signing` — register/rotate signing secrets, configure signing
+  - `DELETE /admin/signing` — clear all signing secrets
+  - Signature header format: `X-Signature: t=<unix-ms>,n=<nonce>,s=<hex-signature>`
+  - Canonical signing payload: `<timestamp>.<nonce>.<METHOD>.<path>.<body-sha256>`
+  - Timestamp-based replay protection (configurable tolerance, default 5 min)
+  - Nonce tracking to prevent exact replay within dedup window
+  - Per-key signing secrets (separate from API key)
+  - Key rotation without downtime
+  - Timing-safe signature comparison (prevents timing attacks)
+  - Stats: verified, failed, replayed, expired, nonces cached
+  - Public API: `RequestSigner` class exported
+
+### Multi-Tenant Isolation
+- **Full tenant isolation for platform operators** — isolated rate limits, credit pools, usage tracking, and data boundaries per tenant:
+  - `GET /admin/tenants` — list tenants with stats; `GET /admin/tenants?id=<id>` — tenant usage report
+  - `POST /admin/tenants` — create/update tenants, bind keys, manage credits, suspend/activate
+  - `DELETE /admin/tenants` — delete specific tenant or clear all
+  - Tenant CRUD with metadata (create, read, update, delete)
+  - API key → tenant binding (keys belong to exactly one tenant)
+  - Per-tenant rate limit overrides (independent of global limits)
+  - Per-tenant credit pools (isolated balances, allocation tracking)
+  - Tenant suspension: all keys under a suspended tenant are denied
+  - Per-tenant usage tracking: calls, credits consumed, credit allocation history
+  - Cross-tenant queries for platform operators
+  - Configurable limits: max tenants (10,000), max keys per tenant (1,000)
+  - Stats: total tenants, active/suspended, total keys, total credits, total calls
+  - Public API: `TenantManager` class exported
+
 ## 9.8.0 (2026-02-28)
 
 ### Request Deduplication (Idempotency Layer)

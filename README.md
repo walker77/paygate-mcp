@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 172+ endpoints
+- [API Reference](#api-reference) — All 178+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
@@ -66,7 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
-- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 172+ endpoints documented
+- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 178+ endpoints documented
 - **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
 - **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
@@ -171,6 +171,9 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Request Deduplication** — Idempotency layer preventing duplicate billing from agent retries — `X-Idempotency-Key` header with auto-generation fallback (SHA-256), in-flight request coalescing, configurable TTL window, LRU eviction, credits-saved tracking, manage via `GET/POST/DELETE /admin/dedup`
 - **Priority Queue** — Tiered request prioritization (critical/high/normal/low/background) with fair scheduling — per-key priority assignment, configurable max wait times per tier, starvation prevention via automatic promotion, max queue depth limiting, manage via `GET/POST /admin/priority-queue`
 - **Cost Allocation Tags** — Per-request cost attribution via `X-Cost-Tags` header (JSON) for enterprise chargeback — aggregated reports by any tag dimension, cross-tabulation, CSV export, required tag enforcement per key, cardinality limits, manage via `GET/POST/DELETE /admin/cost-tags`
+- **IP Access Control** — Fine-grained IP-based access control with CIDR notation support — global allow/deny lists, per-key IP binding, automatic blocking after configurable violation thresholds, X-Forwarded-For/X-Real-IP trusted proxy depth, IPv6-mapped IPv4 normalization, manage via `GET/POST/DELETE /admin/ip-access`
+- **Request Signing (HMAC-SHA256)** — Cryptographic request authentication with replay protection — `X-Signature: t=<ts>,n=<nonce>,s=<sig>` header, timestamp tolerance with nonce dedup, per-key signing secrets with rotation, timing-safe comparison, manage via `GET/POST/DELETE /admin/signing`
+- **Multi-Tenant Isolation** — Full tenant isolation for platform operators — per-tenant rate limits, credit pools, usage tracking, API key binding, tenant suspension/activation, cross-tenant reporting, configurable limits (10K tenants, 1K keys/tenant), manage via `GET/POST/DELETE /admin/tenants`
 - **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
 - **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
 - **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
@@ -484,7 +487,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/.well-known/mcp.json` | GET | None | MCP Server Identity card (discovery) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
-| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 172+ endpoints) |
+| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 178+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |

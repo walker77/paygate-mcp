@@ -102,6 +102,12 @@ export { PriorityQueue, PRIORITY_ORDER, TIER_VALUES } from './priority-queue';
 export type { PriorityTier, PriorityQueueConfig, PriorityQueueStats, QueuedRequest } from './priority-queue';
 export { CostAllocator } from './cost-tags';
 export type { CostTagConfig, CostTagStats, ChargebackReport, ChargebackRow, CrossTabReport, CrossTabRow, CostTagEntry } from './cost-tags';
+export { IpAccessController } from './ip-access';
+export type { IpAccessConfig, IpCheckResult, AutoBlockEntry, IpAccessStats } from './ip-access';
+export { RequestSigner } from './request-signing';
+export type { SigningConfig, SigningSecret, SignatureVerifyResult, SigningStats } from './request-signing';
+export { TenantManager } from './tenant-isolation';
+export type { TenantConfig, TenantRecord, TenantUsageReport, TenantStats, TenantCreateParams } from './tenant-isolation';
 
 export type {
   PayGateConfig,
