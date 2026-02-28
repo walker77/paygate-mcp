@@ -63,6 +63,9 @@ import { ResponseCache } from './response-cache';
 import { CircuitBreaker } from './circuit-breaker';
 import { generateComplianceReport, complianceReportToCsv, ComplianceFramework } from './compliance';
 import { ContentGuardrails, GuardrailCheckResult, GuardrailRule } from './guardrails';
+import { ConcurrencyLimiter } from './concurrency-limiter';
+import { TrafficMirror } from './traffic-mirror';
+import { ToolAliasManager } from './tool-aliases';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -455,6 +458,12 @@ export class PayGateServer {
   readonly circuitBreaker: CircuitBreaker | null = null;
   /** Content guardrails for PII detection and content policy enforcement. */
   readonly guardrails: ContentGuardrails;
+  /** Concurrency limiter for per-key/per-tool inflight caps. */
+  readonly concurrencyLimiter: ConcurrencyLimiter;
+  /** Traffic mirror for duplicating requests to a shadow backend. */
+  readonly trafficMirror: TrafficMirror;
+  /** Tool alias manager for deprecation and rename support. */
+  readonly toolAliases: ToolAliasManager;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -719,6 +728,24 @@ export class PayGateServer {
       includeContext: this.config.guardrails?.includeContext ?? false,
       maxViolations: this.config.guardrails?.maxViolations ?? 10_000,
     });
+
+    // Concurrency limiter for per-key/per-tool inflight caps
+    this.concurrencyLimiter = new ConcurrencyLimiter({
+      maxConcurrentPerKey: (this.config as any).maxConcurrentPerKey ?? 0,
+      maxConcurrentPerTool: (this.config as any).maxConcurrentPerTool ?? 0,
+    });
+
+    // Traffic mirror for shadow backend testing
+    this.trafficMirror = new TrafficMirror(
+      (this.config as any).mirror ? {
+        url: (this.config as any).mirror.url,
+        percentage: (this.config as any).mirror.percentage,
+        timeoutMs: (this.config as any).mirror.timeoutMs,
+      } : undefined
+    );
+
+    // Tool alias manager for deprecation and rename support
+    this.toolAliases = new ToolAliasManager();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1353,6 +1380,12 @@ export class PayGateServer {
         return this.handleGuardrails(req, res);
       case '/admin/guardrails/violations':
         return this.handleGuardrailViolations(req, res);
+      case '/admin/concurrency':
+        return this.handleConcurrency(req, res);
+      case '/admin/mirror':
+        return this.handleMirror(req, res);
+      case '/admin/tool-aliases':
+        return this.handleToolAliases(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -1774,6 +1807,48 @@ export class PayGateServer {
     let cacheHit = false;
     let circuitBroken = false;
 
+    // ─── Tool Aliasing: resolve deprecated tool names ──────────────
+    if (pluginRequest.method === 'tools/call' && this.toolAliases.size > 0) {
+      const aliasToolName = (pluginRequest.params as Record<string, unknown>)?.name as string || '';
+      const aliasResult = this.toolAliases.resolve(aliasToolName);
+      if (aliasResult.isAlias && aliasResult.alias) {
+        (pluginRequest.params as Record<string, unknown>).name = aliasResult.resolvedName;
+        const deprecHeaders = this.toolAliases.getDeprecationHeaders(aliasResult.alias);
+        for (const [hk, hv] of Object.entries(deprecHeaders)) {
+          res.setHeader(hk, hv);
+        }
+        this.audit.log('tool.alias_used' as any, maskKeyForAudit(apiKey || 'anonymous'), `Tool alias: "${aliasToolName}" → "${aliasResult.resolvedName}"`, { from: aliasToolName, to: aliasResult.resolvedName, requestId });
+      }
+    }
+
+    // ─── Concurrency Limiter: check inflight caps ─────────────────
+    let concurrencyAcquired = false;
+    let concurrencyToolName = '';
+    if (pluginRequest.method === 'tools/call' && this.concurrencyLimiter.enabled) {
+      concurrencyToolName = (pluginRequest.params as Record<string, unknown>)?.name as string || '';
+      const concResult = this.concurrencyLimiter.acquire(apiKey || 'anonymous', concurrencyToolName);
+      if (!concResult.acquired) {
+        const errResp: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: pluginRequest.id,
+          error: {
+            code: -32005,
+            message: `concurrency_limit: ${concResult.reason}`,
+            data: { currentInflight: concResult.currentInflight, limit: concResult.limit, retryAfter: 1 },
+          },
+        };
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': sessionId,
+          'Retry-After': '1',
+        });
+        res.end(JSON.stringify(errResp));
+        return;
+      }
+      concurrencyAcquired = true;
+    }
+
+    try {
     // ─── Content Guardrails: scan inputs ────────────────────────────
     if (this.guardrails.isEnabled && pluginRequest.method === 'tools/call') {
       const grToolName = (pluginRequest.params as Record<string, unknown>)?.name as string || '';
@@ -2049,6 +2124,11 @@ export class PayGateServer {
       }
     }
 
+    // ─── Traffic Mirroring: duplicate to shadow backend ──────────
+    if (request.method === 'tools/call' && this.trafficMirror.enabled) {
+      this.trafficMirror.mirror(pluginRequest, (request.params as Record<string, unknown>)?.name as string || 'unknown');
+    }
+
     // Build rate limit + credits headers for tools/call responses
     const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
 
@@ -2079,6 +2159,13 @@ export class PayGateServer {
         ...rateLimitHeaders,
       });
       res.end(JSON.stringify(response!));
+    }
+
+    } finally {
+      // Release concurrency slot
+      if (concurrencyAcquired) {
+        this.concurrencyLimiter.release(apiKey || 'anonymous', concurrencyToolName);
+      }
     }
   }
 
@@ -2480,6 +2567,9 @@ export class PayGateServer {
         adminGuardrails: 'GET /admin/guardrails — View guardrail rules and stats; POST /admin/guardrails — Toggle, upsert rule, or import rules; DELETE /admin/guardrails?id= — Remove rule (requires X-Admin-Key)',
         adminGuardrailViolations: 'GET /admin/guardrails/violations — View content policy violations with filters; DELETE — Clear all violations (requires X-Admin-Key)',
         keyGeo: 'POST /keys/geo — Set per-key country restrictions; GET /keys/geo?key= — View geo restrictions; DELETE /keys/geo?key= — Clear restrictions (requires X-Admin-Key)',
+        adminConcurrency: 'GET /admin/concurrency — View inflight request counts per key/tool; POST /admin/concurrency — Update concurrency limits (requires X-Admin-Key)',
+        adminMirror: 'GET /admin/mirror — View traffic mirror stats; POST /admin/mirror — Configure mirror backend; DELETE /admin/mirror — Disable mirroring (requires X-Admin-Key)',
+        adminToolAliases: 'GET /admin/tool-aliases — List tool aliases; POST /admin/tool-aliases — Add/update alias with deprecation; DELETE /admin/tool-aliases?from= — Remove alias (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -14371,6 +14461,119 @@ export class PayGateServer {
       return;
     }
     this.sendError(res, 405, 'Method not allowed. Use GET/DELETE.');
+  }
+
+  // ─── /admin/concurrency — Concurrency limiter management ────────────────────
+  private async handleConcurrency(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, {
+        limits: this.concurrencyLimiter.limits,
+        snapshot: this.concurrencyLimiter.snapshot(),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      // Allow updating limits at runtime via config cast
+      if (typeof params.maxConcurrentPerKey === 'number') {
+        (this.concurrencyLimiter as any).config.maxConcurrentPerKey = Math.max(0, Math.floor(params.maxConcurrentPerKey));
+      }
+      if (typeof params.maxConcurrentPerTool === 'number') {
+        (this.concurrencyLimiter as any).config.maxConcurrentPerTool = Math.max(0, Math.floor(params.maxConcurrentPerTool));
+      }
+      this.sendJson(res, 200, { limits: this.concurrencyLimiter.limits });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
+  }
+
+  // ─── /admin/mirror — Traffic mirroring management ─────────────────────────
+  private async handleMirror(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.trafficMirror.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const url = params.url as string;
+      if (!url || typeof url !== 'string') {
+        this.sendError(res, 400, 'Missing "url" parameter');
+        return;
+      }
+      // Validate URL
+      try { new URL(url); } catch { this.sendError(res, 400, 'Invalid mirror URL'); return; }
+      this.trafficMirror.configure({
+        url,
+        percentage: typeof params.percentage === 'number' ? params.percentage : 100,
+        timeoutMs: typeof params.timeoutMs === 'number' ? params.timeoutMs : 5000,
+      });
+      this.audit.log('mirror.configured' as any, 'admin', `Mirror configured: ${url}`, { url, percentage: params.percentage });
+      this.sendJson(res, 200, this.trafficMirror.stats());
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.trafficMirror.disable();
+      this.audit.log('mirror.disabled' as any, 'admin', 'Traffic mirroring disabled', {});
+      this.sendJson(res, 200, { disabled: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /admin/tool-aliases — Tool alias + deprecation management ────────────
+  private async handleToolAliases(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.toolAliases.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const from = params.from as string;
+      const to = params.to as string;
+      if (!from || !to) {
+        this.sendError(res, 400, 'Missing "from" and "to" parameters');
+        return;
+      }
+      try {
+        const alias = this.toolAliases.addAlias(from, to, params.sunsetDate as string | undefined, params.message as string | undefined);
+        this.audit.log('tool.alias_created' as any, 'admin', `Tool alias: "${from}" → "${to}"`, { from, to, sunsetDate: alias.sunsetDate });
+        this.sendJson(res, 200, alias);
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Invalid alias');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const url = new URL(req.url || '', `http://localhost`);
+      const from = url.searchParams.get('from');
+      if (!from) {
+        this.sendError(res, 400, 'Missing ?from= query parameter');
+        return;
+      }
+      const removed = this.toolAliases.removeAlias(from);
+      if (!removed) {
+        this.sendError(res, 404, `Alias "${from}" not found`);
+        return;
+      }
+      this.audit.log('tool.alias_deleted' as any, 'admin', `Tool alias removed: "${from}"`, { from });
+      this.sendJson(res, 200, { removed: from });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
   }
 
   // ─── /keys/geo — Per-key geo-restriction management ─────────────────────────

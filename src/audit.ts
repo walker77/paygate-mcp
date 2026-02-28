@@ -115,7 +115,14 @@ export type AuditEventType =
   | 'guardrail.rule_delete'
   // Geo-restrictions
   | 'key.geo_set'
-  | 'key.geo_cleared';
+  | 'key.geo_cleared'
+  // Traffic mirroring
+  | 'mirror.configured'
+  | 'mirror.disabled'
+  // Tool aliases
+  | 'tool.alias_created'
+  | 'tool.alias_deleted'
+  | 'tool.alias_used';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

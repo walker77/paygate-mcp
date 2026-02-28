@@ -182,6 +182,19 @@ export interface PayGateConfig {
   };
   /** Header name for country code from reverse proxy (e.g., 'CF-IPCountry', 'X-Country'). Default: 'X-Country'. */
   geoCountryHeader?: string;
+  /** Max concurrent in-flight requests per API key. 0 = unlimited. Default: 0. */
+  maxConcurrentPerKey?: number;
+  /** Max concurrent in-flight requests per tool. 0 = unlimited. Default: 0. */
+  maxConcurrentPerTool?: number;
+  /** Traffic mirroring configuration. Undefined = disabled. */
+  mirror?: {
+    /** URL of the mirror backend (Streamable HTTP). */
+    url: string;
+    /** Percentage of traffic to mirror (0-100). Default: 100. */
+    percentage?: number;
+    /** Timeout for mirror requests in ms. Default: 5000. */
+    timeoutMs?: number;
+  };
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────

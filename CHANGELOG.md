@@ -1,5 +1,41 @@
 # Changelog
 
+## 9.5.0 (2026-02-28)
+
+### Concurrency Limiter
+- **Per-key and per-tool inflight request caps** — distinct from rate limiting (calls/time), this limits simultaneous active requests:
+  - `maxConcurrentPerKey`: max concurrent in-flight requests per API key (0 = unlimited)
+  - `maxConcurrentPerTool`: max concurrent in-flight requests per tool (0 = unlimited)
+  - Error code `-32005` with `Retry-After: 1` header when at capacity
+  - `GET /admin/concurrency` — view inflight counts per key/tool + current limits
+  - `POST /admin/concurrency` — update limits at runtime
+  - Acquire/release pattern with try/finally — slots always released even on errors
+  - Public API: `ConcurrencyLimiter` class exported
+
+### Traffic Mirroring
+- **Fire-and-forget request duplication** to a shadow backend for A/B testing MCP server versions:
+  - Duplicates tool call requests to a configurable mirror URL (Streamable HTTP)
+  - Percentage-based sampling (0-100%) for gradual rollout
+  - Mirror response logged but never returned to client — zero impact on primary path
+  - `GET /admin/mirror` — view mirror stats (success/error counts, avg latency, recent results)
+  - `POST /admin/mirror` — configure mirror URL, percentage, and timeout
+  - `DELETE /admin/mirror` — disable mirroring
+  - EventEmitter-based: subscribe to `mirror-result` events for custom handling
+  - Public API: `TrafficMirror` class exported
+
+### Tool Aliasing + Deprecation
+- **Tool renaming with RFC 8594 deprecation notices** for smooth API evolution:
+  - Map old tool names to new ones — requests transparently routed to target
+  - `Deprecation: true` header on aliased responses (RFC 8594)
+  - `Sunset` header with HTTP-date when sunset date is set (RFC 8594)
+  - `Link: </tools/new_name>; rel="successor-version"` header
+  - Chain prevention: A→B→C alias chains rejected
+  - `GET /admin/tool-aliases` — list aliases with per-alias call counts
+  - `POST /admin/tool-aliases` — add/update alias with optional sunsetDate and message
+  - `DELETE /admin/tool-aliases?from=` — remove an alias
+  - Import/export support for alias persistence
+  - Public API: `ToolAliasManager` class exported
+
 ## 9.4.0 (2026-02-28)
 
 ### Content Guardrails (PII Detection & Redaction)

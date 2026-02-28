@@ -78,6 +78,12 @@ export { generateComplianceReport, complianceReportToCsv } from './compliance';
 export type { ComplianceFramework, ComplianceReport, ComplianceReportMeta, ComplianceSection, ComplianceEvent, ComplianceSummary } from './compliance';
 export { ContentGuardrails, BUILT_IN_RULES } from './guardrails';
 export type { GuardrailRule, GuardrailAction, GuardrailConfig, GuardrailViolation, GuardrailCheckResult, GuardrailStats } from './guardrails';
+export { ConcurrencyLimiter } from './concurrency-limiter';
+export type { ConcurrencyLimiterConfig, ConcurrencyAcquireResult, ConcurrencySnapshot } from './concurrency-limiter';
+export { TrafficMirror } from './traffic-mirror';
+export type { MirrorConfig, MirrorStats } from './traffic-mirror';
+export { ToolAliasManager } from './tool-aliases';
+export type { ToolAlias, AliasResolveResult, AliasStats } from './tool-aliases';
 
 export type {
   PayGateConfig,
