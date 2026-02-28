@@ -1,5 +1,52 @@
 # Changelog
 
+## 10.9.0 (2026-02-28)
+
+### Webhook Signature Verification — Inbound Webhook Validation
+- **Multi-scheme signature verification** for incoming webhooks:
+  - HMAC-SHA256, Stripe v1, GitHub SHA-256, and custom scheme support
+  - Timing-safe comparison using Node.js `timingSafeEqual`
+  - Replay protection with configurable timestamp validation (default: 5 min max age)
+  - Auto-discovery: tries all active secrets when no specific secret ID given
+  - Case-insensitive header lookup for all signature headers
+  - `sign()` and `signStripe()` helper methods for generating outbound signatures
+  - Secret masking: `getSecret()` and `getSecrets()` never expose raw secret values
+  - Stats: verifications by secret, success/failure counts, failure reasons
+
+### Key Rotation Scheduler — Automated API Key Lifecycle
+- **Policy-based key rotation** with grace period support:
+  - Create rotation policies with configurable intervals (default: 30 days)
+  - Grace periods: old key stays valid during transition (default: 24 hours)
+  - Schedule keys for automatic rotation based on policies
+  - `getDueKeys()` returns all keys past their rotation deadline
+  - `expireGracePeriods()` cleans up expired grace periods
+  - `isKeyValid()` checks both current and grace-period keys
+  - Full rotation history with auto/manual trigger tracking
+  - Export rotation events for compliance audit trails
+  - Stats: scheduled keys, due keys, grace keys, auto vs manual rotations
+
+### Usage Forecast Engine — Predictive Credit Analytics
+- **EMA + linear regression** for usage prediction:
+  - Record usage data points with automatic time-bucket aggregation
+  - Exponential moving average (EMA) for trend smoothing (configurable alpha)
+  - Linear regression for daily/weekly/monthly credit projections
+  - Days-until-exhaustion prediction when current balance is provided
+  - Trend detection: rising, falling, or stable with strength indicator
+  - Anomaly detection: spike/drop alerts based on standard deviation thresholds
+  - Confidence scoring based on available data volume
+  - Per-key tracking with configurable max data points (default: 720)
+  - Stats: tracked keys, total forecasts, total anomalies
+
+### Multi-Currency Credit Conversion — Global Billing
+- **Currency-aware pricing** for international billing:
+  - Add/update currencies with ISO 4217 codes and exchange rates
+  - `creditsToMoney()` and `moneyToCredits()` with proper rounding
+  - `convertBetween()` for cross-currency conversion via credits
+  - `getToolPricing()` returns per-tool pricing in all active currencies
+  - Support for zero-decimal currencies (JPY) and symbol placement (before/after)
+  - Configurable base currency with max currency limit (default: 50)
+  - Stats: conversions by currency, total conversions
+
 ## 10.8.0 (2026-02-28)
 
 ### Key Hierarchy — Parent/Child API Key Relationships

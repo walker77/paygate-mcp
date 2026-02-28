@@ -160,6 +160,14 @@ export { RevenueShareTracker } from './revenue-share';
 export type { RevenueShareRule, RevenueEntry, DeveloperPayout, SettlementRecord, RevenueShareConfig, RevenueShareStats } from './revenue-share';
 export { ConnectionBillingManager } from './connection-billing';
 export type { ConnectionSession, ConnectionBillingConfig, ConnectionBillResult, ConnectionBillingStats } from './connection-billing';
+export { WebhookVerifier } from './webhook-verify';
+export type { WebhookVerifierConfig, WebhookSecret, VerifyResult, WebhookVerifyStats } from './webhook-verify';
+export { KeyRotationScheduler } from './key-rotation';
+export type { RotationPolicy, RotationSchedule, RotationEvent, KeyRotationConfig, KeyRotationStats } from './key-rotation';
+export { UsageForecastEngine } from './usage-forecast';
+export type { UsageDataPoint, UsageForecast, AnomalyAlert, ForecastConfig, ForecastStats } from './usage-forecast';
+export { MultiCurrencyManager } from './multi-currency';
+export type { CurrencyRate, CreditConversion, MonetaryConversion, CurrencyPricing, MultiCurrencyConfig, MultiCurrencyStats } from './multi-currency';
 
 export type {
   PayGateConfig,
