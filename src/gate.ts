@@ -75,7 +75,7 @@ export class Gate {
   /**
    * Evaluate a tool call request.
    */
-  evaluate(apiKey: string | null, toolCall: ToolCallParams, clientIp?: string, scopedTokenTools?: string[]): GateDecision {
+  evaluate(apiKey: string | null, toolCall: ToolCallParams, clientIp?: string, scopedTokenTools?: string[], countryCode?: string): GateDecision {
     const toolName = toolCall.name;
     const creditsRequired = this.getToolPrice(toolName, toolCall.arguments, apiKey || undefined);
 
@@ -148,7 +148,30 @@ export class Gate {
       }
     }
 
-    // Step 3: Tool ACL check (with group policy applied)
+    // Step 3b: Country restriction check
+    if (countryCode && countryCode.length === 2) {
+      const cc = countryCode.toUpperCase();
+      const allowed = keyRecord.allowedCountries;
+      const denied = keyRecord.deniedCountries;
+      if (allowed && allowed.length > 0 && !allowed.includes(cc)) {
+        const reason = `country_not_allowed: ${cc} not in allowed countries`;
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason, keyRecord.namespace);
+        if (this.config.shadowMode) {
+          return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+        }
+        return { allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+      if (denied && denied.length > 0 && denied.includes(cc)) {
+        const reason = `country_denied: ${cc} is in denied countries list`;
+        this.recordEvent(apiKey, keyRecord.name, toolName, 0, false, reason, keyRecord.namespace);
+        if (this.config.shadowMode) {
+          return { allowed: true, reason: `shadow:${reason}`, creditsCharged: 0, remainingCredits: keyRecord.credits };
+        }
+        return { allowed: false, reason, creditsCharged: 0, remainingCredits: keyRecord.credits };
+      }
+    }
+
+    // Step 3c: Tool ACL check (with group policy applied)
     const effectiveRecord = groupPolicy ? {
       ...keyRecord,
       allowedTools: groupPolicy.allowedTools,
@@ -293,7 +316,7 @@ export class Gate {
    *
    * On success, deducts credits for all calls at once.
    */
-  evaluateBatch(apiKey: string | null, calls: BatchToolCall[], clientIp?: string, scopedTokenTools?: string[]): BatchGateResult {
+  evaluateBatch(apiKey: string | null, calls: BatchToolCall[], clientIp?: string, scopedTokenTools?: string[], countryCode?: string): BatchGateResult {
     if (calls.length === 0) {
       return { allAllowed: true, totalCredits: 0, decisions: [], remainingCredits: 0, failedIndex: -1 };
     }

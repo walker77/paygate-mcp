@@ -76,6 +76,8 @@ export { CircuitBreaker } from './circuit-breaker';
 export type { CircuitBreakerConfig, CircuitState, CircuitStatus } from './circuit-breaker';
 export { generateComplianceReport, complianceReportToCsv } from './compliance';
 export type { ComplianceFramework, ComplianceReport, ComplianceReportMeta, ComplianceSection, ComplianceEvent, ComplianceSummary } from './compliance';
+export { ContentGuardrails, BUILT_IN_RULES } from './guardrails';
+export type { GuardrailRule, GuardrailAction, GuardrailConfig, GuardrailViolation, GuardrailCheckResult, GuardrailStats } from './guardrails';
 
 export type {
   PayGateConfig,

@@ -62,6 +62,7 @@ import { BackupManager, BackupStateProvider, BackupSnapshot } from './backup';
 import { ResponseCache } from './response-cache';
 import { CircuitBreaker } from './circuit-breaker';
 import { generateComplianceReport, complianceReportToCsv, ComplianceFramework } from './compliance';
+import { ContentGuardrails, GuardrailCheckResult, GuardrailRule } from './guardrails';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -323,8 +324,8 @@ interface SelfServiceAlert {
 
 /** Common interface for request handling (single proxy or multi-server router) */
 interface RequestHandler {
-  handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse>;
-  handleBatchRequest(calls: import('./types').BatchToolCall[], batchId: string | number | undefined, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse>;
+  handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[], countryCode?: string): Promise<JsonRpcResponse>;
+  handleBatchRequest(calls: import('./types').BatchToolCall[], batchId: string | number | undefined, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[], countryCode?: string): Promise<JsonRpcResponse>;
   start(): Promise<void>;
   stop(): Promise<void>;
   readonly isRunning: boolean;
@@ -452,6 +453,8 @@ export class PayGateServer {
   readonly responseCache: ResponseCache | null = null;
   /** Circuit breaker for backend failure detection (null if disabled) */
   readonly circuitBreaker: CircuitBreaker | null = null;
+  /** Content guardrails for PII detection and content policy enforcement. */
+  readonly guardrails: ContentGuardrails;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -709,6 +712,13 @@ export class PayGateServer {
         cooldownSeconds: this.config.circuitBreakerCooldownSeconds ?? 30,
       });
     }
+
+    // Content guardrails for PII detection
+    this.guardrails = new ContentGuardrails({
+      enabled: this.config.guardrails?.enabled ?? false,
+      includeContext: this.config.guardrails?.includeContext ?? false,
+      maxViolations: this.config.guardrails?.maxViolations ?? 10_000,
+    });
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1339,6 +1349,12 @@ export class PayGateServer {
         if (req.method === 'GET') return this.handleComplianceExport(req, res);
         this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
+      case '/admin/guardrails':
+        return this.handleGuardrails(req, res);
+      case '/admin/guardrails/violations':
+        return this.handleGuardrailViolations(req, res);
+      case '/keys/geo':
+        return this.handleKeyGeo(req, res);
       case '/admin/sla':
         if (req.method === 'GET') return this.handleSlaMonitoring(req, res);
         this.sendError(res, 405, 'Method not allowed. Use GET.');
@@ -1676,6 +1692,10 @@ export class PayGateServer {
     // Extract client IP for IP allowlist checking (trusted proxy-aware)
     const clientIp = resolveClientIp(req, this.config.trustedProxies);
 
+    // Extract country code from reverse proxy header (Cloudflare, AWS, etc.)
+    const geoHeader = this.config.geoCountryHeader || 'X-Country';
+    const countryCode = (req.headers[geoHeader.toLowerCase()] as string) || undefined;
+
     // Extract scoped token tool restrictions (set by resolveApiKey)
     const scopedTokenTools: string[] | undefined = (req as any)._scopedTokenTools;
 
@@ -1695,7 +1715,7 @@ export class PayGateServer {
         return;
       }
 
-      const batchResponse = await this.handler.handleBatchRequest(calls, request.id, apiKey, clientIp, scopedTokenTools);
+      const batchResponse = await this.handler.handleBatchRequest(calls, request.id, apiKey, clientIp, scopedTokenTools, countryCode);
 
       // Audit + metrics for batch
       if (batchResponse.error) {
@@ -1754,6 +1774,38 @@ export class PayGateServer {
     let cacheHit = false;
     let circuitBroken = false;
 
+    // ─── Content Guardrails: scan inputs ────────────────────────────
+    if (this.guardrails.isEnabled && pluginRequest.method === 'tools/call') {
+      const grToolName = (pluginRequest.params as Record<string, unknown>)?.name as string || '';
+      const grToolArgs = (pluginRequest.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined;
+      const inputContent = grToolArgs ? JSON.stringify(grToolArgs) : '';
+      if (inputContent) {
+        const grResult = this.guardrails.check(inputContent, grToolName, 'input', apiKey ? apiKey.slice(0, 10) : 'anon');
+        if (grResult.blocked) {
+          const ruleNames = grResult.violations.filter(v => v.action === 'block').map(v => v.ruleName).join(', ');
+          this.audit.log('guardrail.block', maskKeyForAudit(apiKey || 'anonymous'), `Input blocked by guardrail: ${ruleNames}`, { tool: grToolName, scope: 'input', requestId });
+          const errResp: JsonRpcResponse = {
+            jsonrpc: '2.0',
+            id: pluginRequest.id,
+            error: { code: -32406, message: `Content policy violation: input blocked by guardrail (${ruleNames})` },
+          };
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+          res.end(JSON.stringify(errResp));
+          return;
+        }
+        if (grResult.redactedContent && grToolArgs) {
+          // Replace arguments with redacted version
+          try {
+            (pluginRequest.params as Record<string, unknown>).arguments = JSON.parse(grResult.redactedContent);
+          } catch { /* ignore parse error, use original */ }
+        }
+        // Add warnings as response headers
+        for (const warning of grResult.warnings) {
+          res.setHeader('X-Guardrail-Warning', warning);
+        }
+      }
+    }
+
     // ─── Response Cache check (before forwarding to backend) ────────
     // response is guaranteed assigned before use: either via cache hit, circuit breaker, or handler
     let response: JsonRpcResponse = null as unknown as JsonRpcResponse;
@@ -1805,11 +1857,11 @@ export class PayGateServer {
           }, timeoutMs);
         });
         response = await Promise.race([
-          this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools),
+          this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools, countryCode),
           timeoutPromise,
         ]);
       } else {
-        response = await this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools);
+        response = await this.handler.handleRequest(pluginRequest, apiKey, clientIp, scopedTokenTools, countryCode);
       }
 
       // Record circuit breaker outcome
@@ -1859,6 +1911,31 @@ export class PayGateServer {
             }
             outputSurcharge = available;
           }
+        }
+      }
+    }
+
+    // ─── Content Guardrails: scan outputs ────────────────────────────
+    if (this.guardrails.isEnabled && request.method === 'tools/call' && response && !response.error) {
+      const grToolName = (request.params as Record<string, unknown>)?.name as string || '';
+      const outputContent = response.result ? JSON.stringify(response.result) : '';
+      if (outputContent) {
+        const grResult = this.guardrails.check(outputContent, grToolName, 'output', apiKey ? apiKey.slice(0, 10) : 'anon');
+        if (grResult.blocked) {
+          const ruleNames = grResult.violations.filter(v => v.action === 'block').map(v => v.ruleName).join(', ');
+          this.audit.log('guardrail.block', maskKeyForAudit(apiKey || 'anonymous'), `Output blocked by guardrail: ${ruleNames}`, { tool: grToolName, scope: 'output', requestId });
+          response = {
+            jsonrpc: '2.0',
+            id: response.id,
+            error: { code: -32406, message: `Content policy violation: output blocked by guardrail (${ruleNames})` },
+          };
+        } else if (grResult.redactedContent) {
+          try {
+            response = { ...response, result: JSON.parse(grResult.redactedContent) };
+          } catch { /* ignore parse error, use original */ }
+        }
+        for (const warning of grResult.warnings) {
+          res.setHeader('X-Guardrail-Warning', warning);
         }
       }
     }
@@ -2400,6 +2477,9 @@ export class PayGateServer {
         adminCircuit: 'GET /admin/circuit — Circuit breaker status; POST /admin/circuit — Reset circuit breaker (requires X-Admin-Key)',
         adminComplianceExport: 'GET /admin/compliance/export?framework=soc2|gdpr|hipaa&format=json|csv — Framework-specific compliance audit export with event classification (requires X-Admin-Key)',
         keyWebhook: 'POST /keys/webhook — Set per-key webhook URL; DELETE /keys/webhook — Remove per-key webhook (requires X-Admin-Key)',
+        adminGuardrails: 'GET /admin/guardrails — View guardrail rules and stats; POST /admin/guardrails — Toggle, upsert rule, or import rules; DELETE /admin/guardrails?id= — Remove rule (requires X-Admin-Key)',
+        adminGuardrailViolations: 'GET /admin/guardrails/violations — View content policy violations with filters; DELETE — Clear all violations (requires X-Admin-Key)',
+        keyGeo: 'POST /keys/geo — Set per-key country restrictions; GET /keys/geo?key= — View geo restrictions; DELETE /keys/geo?key= — Clear restrictions (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -3094,6 +3174,52 @@ export class PayGateServer {
               index: i, action: 'revoke', success: true,
               result: { keyMasked: maskKeyForAudit(key) },
             });
+            break;
+          }
+          case 'suspend': {
+            const key = op.key as string;
+            if (!key) {
+              results.push({ index: i, action: 'suspend', success: false, error: 'Missing key' });
+              break;
+            }
+            const rec = this.gate.store.getKey(key);
+            if (!rec) {
+              results.push({ index: i, action: 'suspend', success: false, error: 'Key not found' });
+              break;
+            }
+            if (rec.suspended) {
+              results.push({ index: i, action: 'suspend', success: true, result: { keyMasked: maskKeyForAudit(key), alreadySuspended: true } });
+              break;
+            }
+            rec.suspended = true;
+            this.gate.store.save();
+            if (this.redisSync) this.redisSync.saveKey(rec).catch(() => {});
+            this.audit.log('key.suspended', 'admin', 'Key suspended (bulk)', { keyMasked: maskKeyForAudit(key) });
+            this.emitWebhookAdmin('key.suspended', 'admin', { keyMasked: maskKeyForAudit(key) });
+            results.push({ index: i, action: 'suspend', success: true, result: { keyMasked: maskKeyForAudit(key) } });
+            break;
+          }
+          case 'resume': {
+            const key = op.key as string;
+            if (!key) {
+              results.push({ index: i, action: 'resume', success: false, error: 'Missing key' });
+              break;
+            }
+            const rec = this.gate.store.getKey(key);
+            if (!rec) {
+              results.push({ index: i, action: 'resume', success: false, error: 'Key not found' });
+              break;
+            }
+            if (!rec.suspended) {
+              results.push({ index: i, action: 'resume', success: true, result: { keyMasked: maskKeyForAudit(key), alreadyActive: true } });
+              break;
+            }
+            rec.suspended = false;
+            this.gate.store.save();
+            if (this.redisSync) this.redisSync.saveKey(rec).catch(() => {});
+            this.audit.log('key.resumed', 'admin', 'Key resumed (bulk)', { keyMasked: maskKeyForAudit(key) });
+            this.emitWebhookAdmin('key.resumed', 'admin', { keyMasked: maskKeyForAudit(key) });
+            results.push({ index: i, action: 'resume', success: true, result: { keyMasked: maskKeyForAudit(key) } });
             break;
           }
           default:
@@ -14129,6 +14255,235 @@ export class PayGateServer {
       ...(globalRateLimit.limit > 0 ? { globalRateLimit } : {}),
       tools,
     });
+  }
+
+  // ─── /admin/guardrails — Guardrail rule management ─────────────────────────
+  private async handleGuardrails(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, {
+        enabled: this.guardrails.isEnabled,
+        rules: this.guardrails.getRules(),
+        stats: this.guardrails.getStats(),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Toggle enabled/disabled
+      if (params.enabled !== undefined) {
+        this.guardrails.setEnabled(!!params.enabled);
+        this.audit.log('guardrail.toggle', 'admin', `Guardrails ${params.enabled ? 'enabled' : 'disabled'}`);
+        this.sendJson(res, 200, { enabled: this.guardrails.isEnabled });
+        return;
+      }
+
+      // Upsert a rule
+      if (params.rule && typeof params.rule === 'object') {
+        const rule = params.rule as GuardrailRule;
+        if (!rule.id || !rule.name || !rule.pattern || !rule.action) {
+          this.sendError(res, 400, 'Rule requires: id, name, pattern, action');
+          return;
+        }
+        if (!['log', 'warn', 'block', 'redact'].includes(rule.action)) {
+          this.sendError(res, 400, 'Invalid action. Must be: log, warn, block, redact');
+          return;
+        }
+        // Validate regex compiles
+        try { new RegExp(rule.pattern, rule.flags ?? 'gi'); } catch {
+          this.sendError(res, 400, 'Invalid regex pattern');
+          return;
+        }
+        const saved = this.guardrails.upsertRule({
+          ...rule,
+          active: rule.active !== false,
+          scope: rule.scope || 'both',
+          tools: rule.tools || [],
+        });
+        this.audit.log('guardrail.rule_upsert', 'admin', `Guardrail rule upserted: ${saved.name}`, { ruleId: saved.id, action: saved.action });
+        this.sendJson(res, 200, { rule: saved });
+        return;
+      }
+
+      // Import rules
+      if (params.rules && Array.isArray(params.rules)) {
+        const mode = (params.mode as string) === 'replace' ? 'replace' : 'merge';
+        const count = this.guardrails.importRules(params.rules as GuardrailRule[], mode);
+        this.audit.log('guardrail.rules_import', 'admin', `Imported ${count} guardrail rules (${mode})`);
+        this.sendJson(res, 200, { imported: count, mode, totalRules: this.guardrails.getRules().length });
+        return;
+      }
+
+      this.sendError(res, 400, 'Provide "enabled" (boolean), "rule" (object), or "rules" (array)');
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const url = new URL(req.url || '', `http://localhost`);
+      const ruleId = url.searchParams.get('id');
+      if (!ruleId) {
+        this.sendError(res, 400, 'Missing ?id= query parameter');
+        return;
+      }
+      const removed = this.guardrails.removeRule(ruleId);
+      if (!removed) {
+        this.sendError(res, 404, `Rule not found: ${ruleId}`);
+        return;
+      }
+      this.audit.log('guardrail.rule_delete', 'admin', `Guardrail rule deleted: ${ruleId}`);
+      this.sendJson(res, 200, { deleted: ruleId });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /admin/guardrails/violations — View guardrail violations ──────────────
+  private handleGuardrailViolations(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '', `http://localhost`);
+      const limit = clampInt(parseInt(url.searchParams.get('limit') || '100', 10), 1, 1000);
+      const offset = clampInt(parseInt(url.searchParams.get('offset') || '0', 10), 0, 100_000);
+      const ruleId = url.searchParams.get('ruleId') || undefined;
+      const tool = url.searchParams.get('tool') || undefined;
+      const action = url.searchParams.get('action') as any || undefined;
+      const since = url.searchParams.get('since') || undefined;
+      const until = url.searchParams.get('until') || undefined;
+
+      const result = this.guardrails.queryViolations({ ruleId, tool, action, since, until, limit, offset });
+      this.sendJson(res, 200, {
+        violations: result.violations,
+        total: result.total,
+        limit,
+        offset,
+        hasMore: offset + limit < result.total,
+      });
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const cleared = this.guardrails.clearViolations();
+      this.sendJson(res, 200, { cleared });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/DELETE.');
+  }
+
+  // ─── /keys/geo — Per-key geo-restriction management ─────────────────────────
+  private async handleKeyGeo(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res, 'admin')) return;
+
+    if (req.method === 'GET') {
+      const url = new URL(req.url || '', `http://localhost`);
+      const apiKeyPrefix = url.searchParams.get('key');
+      if (!apiKeyPrefix) {
+        this.sendError(res, 400, 'Missing ?key= query parameter (key prefix)');
+        return;
+      }
+      const record = this.gate.store.getAllRecords().find((k: ApiKeyRecord) => k.key.startsWith(apiKeyPrefix));
+      if (!record) {
+        this.sendError(res, 404, 'Key not found');
+        return;
+      }
+      this.sendJson(res, 200, {
+        keyPrefix: record.key.slice(0, 10) + '...',
+        allowedCountries: record.allowedCountries || [],
+        deniedCountries: record.deniedCountries || [],
+      });
+      return;
+    }
+
+    if (req.method === 'POST') {
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      const apiKeyPrefix = params.key as string;
+      if (!apiKeyPrefix) {
+        this.sendError(res, 400, 'Missing "key" parameter (key prefix)');
+        return;
+      }
+
+      const record = this.gate.store.getAllRecords().find((k: ApiKeyRecord) => k.key.startsWith(apiKeyPrefix));
+      if (!record) {
+        this.sendError(res, 404, 'Key not found');
+        return;
+      }
+
+      // Validate country codes (ISO 3166-1 alpha-2)
+      const COUNTRY_CODE_RE = /^[A-Z]{2}$/;
+      if (params.allowedCountries !== undefined) {
+        if (!Array.isArray(params.allowedCountries)) {
+          this.sendError(res, 400, '"allowedCountries" must be an array of ISO 3166-1 alpha-2 codes');
+          return;
+        }
+        const codes = (params.allowedCountries as string[]).map(c => String(c).toUpperCase());
+        if (codes.some(c => !COUNTRY_CODE_RE.test(c))) {
+          this.sendError(res, 400, 'Invalid country code. Use ISO 3166-1 alpha-2 (e.g., "US", "GB", "DE")');
+          return;
+        }
+        record.allowedCountries = codes.length > 0 ? codes : undefined;
+      }
+      if (params.deniedCountries !== undefined) {
+        if (!Array.isArray(params.deniedCountries)) {
+          this.sendError(res, 400, '"deniedCountries" must be an array of ISO 3166-1 alpha-2 codes');
+          return;
+        }
+        const codes = (params.deniedCountries as string[]).map(c => String(c).toUpperCase());
+        if (codes.some(c => !COUNTRY_CODE_RE.test(c))) {
+          this.sendError(res, 400, 'Invalid country code. Use ISO 3166-1 alpha-2 (e.g., "US", "GB", "DE")');
+          return;
+        }
+        record.deniedCountries = codes.length > 0 ? codes : undefined;
+      }
+
+      this.gate.store.save();
+      if (this.redisSync) this.redisSync.saveKey(record).catch(() => {});
+
+      this.audit.log('key.geo_set', 'admin', `Geo restrictions set for ${record.key.slice(0, 10)}...`, {
+        keyMasked: maskKeyForAudit(record.key),
+        allowedCountries: record.allowedCountries || [],
+        deniedCountries: record.deniedCountries || [],
+      });
+
+      this.sendJson(res, 200, {
+        keyPrefix: record.key.slice(0, 10) + '...',
+        allowedCountries: record.allowedCountries || [],
+        deniedCountries: record.deniedCountries || [],
+      });
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      const url = new URL(req.url || '', `http://localhost`);
+      const apiKeyPrefix = url.searchParams.get('key');
+      if (!apiKeyPrefix) {
+        this.sendError(res, 400, 'Missing ?key= query parameter (key prefix)');
+        return;
+      }
+      const record = this.gate.store.getAllRecords().find((k: ApiKeyRecord) => k.key.startsWith(apiKeyPrefix));
+      if (!record) {
+        this.sendError(res, 404, 'Key not found');
+        return;
+      }
+      record.allowedCountries = undefined;
+      record.deniedCountries = undefined;
+      this.gate.store.save();
+      if (this.redisSync) this.redisSync.saveKey(record).catch(() => {});
+
+      this.audit.log('key.geo_cleared', 'admin', `Geo restrictions cleared for ${record.key.slice(0, 10)}...`, {
+        keyMasked: maskKeyForAudit(record.key),
+      });
+
+      this.sendJson(res, 200, { keyPrefix: record.key.slice(0, 10) + '...', allowedCountries: [], deniedCountries: [] });
+      return;
+    }
+
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
   }
 
   /** Calculate percentile from an array of numbers. */

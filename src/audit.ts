@@ -106,7 +106,16 @@ export type AuditEventType =
   | 'admin.backup_created'
   | 'admin.backup_restored'
   | 'admin.cache_cleared'
-  | 'admin.circuit_reset';
+  | 'admin.circuit_reset'
+  // Content guardrails
+  | 'guardrail.block'
+  | 'guardrail.toggle'
+  | 'guardrail.rule_upsert'
+  | 'guardrail.rules_import'
+  | 'guardrail.rule_delete'
+  // Geo-restrictions
+  | 'key.geo_set'
+  | 'key.geo_cleared';
 
 export interface AuditEvent {
   /** Monotonically increasing ID */

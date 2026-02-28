@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 143+ endpoints
+- [API Reference](#api-reference) — All 148+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
@@ -66,7 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
-- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 143+ endpoints documented
+- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 148+ endpoints documented
 - **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
 - **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
@@ -99,7 +99,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Key Groups** — Policy templates that apply shared ACL, rate limits, pricing overrides, IP allowlists, and quotas to groups of API keys with automatic inheritance and key-level override support
 - **Refund on Failure** — Automatically refund credits when downstream tool calls fail
 - **Credit Transfers** — Atomically transfer credits between API keys with validation, audit trail, and webhook events
-- **Bulk Key Operations** — Execute multiple key operations (create, topup, revoke) in a single request with per-operation error handling and index tracking
+- **Bulk Key Operations** — Execute multiple key operations (create, topup, revoke, suspend, resume) in a single request with per-operation error handling and index tracking
 - **Key Import/Export** — Export all API keys for backup/migration (JSON or CSV) and import with conflict resolution (skip, overwrite, error modes)
 - **Webhook Filters** — Route webhook events to different destinations based on event type and API key prefix with per-filter secrets, independent retry queues, and admin CRUD API
 - **Key Cloning** — `POST /keys/clone` creates a new API key with the same config (ACL, quotas, tags, IP, namespace, group, spending limit, expiry, auto-topup) but fresh counters — ideal for provisioning similar keys
@@ -156,6 +156,9 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Security Audit** — `GET /admin/security` security posture analysis identifying keys without IP allowlists, quotas, ACL restrictions, spending limits, or expiry dates, flagging high-credit keys, and computing a composite security score
 - **Revenue Analysis** — `GET /admin/revenue` revenue metrics with per-tool revenue breakdown, per-key spending, hourly revenue trends, credit flow summary (allocated/spent/remaining), and average revenue per call
 - **Key Portfolio Health** — `GET /admin/key-portfolio` portfolio-wide key health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown
+- **Content Guardrails** — Regex-based PII detection and redaction for tool call inputs/outputs — 8 built-in rules (credit card, SSN, email, phone, AWS key, API secret, IBAN, passport), 4 actions (log/warn/block/redact), scope filtering (input/output/both), per-tool targeting, violation tracking with query API, admin CRUD endpoints (`/admin/guardrails`, `/admin/guardrails/violations`)
+- **IP Country Restrictions** — Per-key geographic access control with allow/deny country lists (ISO 3166-1 alpha-2) — country code from reverse-proxy headers (`X-Country`, `CF-IPCountry`, configurable), CRUD via `/keys/geo`, enforced at gate evaluation, zero-dependency geo-fencing
+- **Bulk Suspend/Resume** — Added `suspend` and `resume` actions to `POST /keys/bulk` — temporarily disable or re-activate multiple keys in one request with per-operation error handling
 - **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
 - **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
 - **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
@@ -469,7 +472,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/.well-known/mcp.json` | GET | None | MCP Server Identity card (discovery) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
-| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 143+ endpoints) |
+| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 148+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |

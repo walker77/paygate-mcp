@@ -77,7 +77,7 @@ export class MultiServerRouter extends EventEmitter {
   /**
    * Handle an incoming JSON-RPC request, routing to the appropriate backend.
    */
-  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[]): Promise<JsonRpcResponse> {
+  async handleRequest(request: JsonRpcRequest, apiKey: string | null, clientIp?: string, scopedTokenTools?: string[], countryCode?: string): Promise<JsonRpcResponse> {
     if (!this.started) {
       return this.errorResponse(request.id, -32603, 'Router not started');
     }

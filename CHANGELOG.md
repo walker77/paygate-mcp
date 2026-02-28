@@ -1,5 +1,47 @@
 # Changelog
 
+## 9.4.0 (2026-02-28)
+
+### Content Guardrails (PII Detection & Redaction)
+- **Regex-based content scanning** for tool call inputs and outputs:
+  - 8 built-in rules: credit card, SSN, email, phone, AWS access key, API secret, IBAN, passport
+  - 4 configurable actions per rule: `log`, `warn`, `block`, `redact`
+  - Scope filtering: scan `input`, `output`, or `both`
+  - Per-tool filtering: apply rules only to specific tools
+  - Violation tracking with queryable history
+  - `GET /admin/guardrails` — view rules, stats, and enabled state
+  - `POST /admin/guardrails` — toggle enabled state, upsert rules, import rule sets
+  - `DELETE /admin/guardrails?id=` — remove a rule
+  - `GET /admin/guardrails/violations` — query violations with ruleId/tool filters
+  - `DELETE /admin/guardrails/violations` — clear violation history
+  - Input violations block with error code `-32406`
+  - Output violations block or redact depending on rule action
+  - Public API: `ContentGuardrails` class, `BUILT_IN_RULES` array exported
+
+### IP Country Restrictions (Geo-Fencing)
+- **Per-key country allow/deny lists** for geographic access control:
+  - `allowedCountries`: only these country codes can use the key (ISO 3166-1 alpha-2)
+  - `deniedCountries`: these country codes are blocked
+  - Country code extracted from reverse-proxy headers (`X-Country`, `CF-IPCountry`, configurable)
+  - `POST /keys/geo` — set allowed/denied countries for a key
+  - `GET /keys/geo?key=` — view current restrictions
+  - `DELETE /keys/geo?key=` — clear all restrictions
+  - ISO 3166-1 alpha-2 validation on all country codes
+  - Configurable header via `geoCountryHeader` config option
+  - Enforced in gate evaluation between IP allowlist and tool ACL checks
+
+### Bulk Key Operations (Suspend/Resume)
+- Added `suspend` and `resume` actions to `POST /keys/bulk`:
+  - Bulk suspend: temporarily disable multiple keys in one request
+  - Bulk resume: re-activate multiple suspended keys
+  - Per-operation error handling with index tracking
+  - Already-suspended/already-active keys handled gracefully
+  - Audit logging for each operation
+
+### Tests
+- 52 new tests: content guardrails unit (21), guardrails integration (10), geo-fencing (12), bulk suspend/resume (6), root listing (3)
+- Total: 3,686+ tests across 190 suites
+
 ## 9.3.0 (2026-02-28)
 
 ### Outcome-Based Pricing

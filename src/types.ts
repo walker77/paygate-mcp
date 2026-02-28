@@ -171,6 +171,17 @@ export interface PayGateConfig {
   circuitBreakerCooldownSeconds?: number;
   /** Global per-tool call timeout in milliseconds. 0 = no timeout. Default: 0. Per-tool override via toolPricing. */
   toolTimeoutMs?: number;
+  /** Content guardrails configuration. Undefined = disabled. */
+  guardrails?: {
+    /** Whether guardrails are enabled. Default: false. */
+    enabled: boolean;
+    /** Whether to include match context in violations. Default: false. */
+    includeContext?: boolean;
+    /** Max violations to retain. Default: 10000. */
+    maxViolations?: number;
+  };
+  /** Header name for country code from reverse proxy (e.g., 'CF-IPCountry', 'X-Country'). Default: 'X-Country'. */
+  geoCountryHeader?: string;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────
@@ -262,6 +273,10 @@ export interface ApiKeyRecord {
   group?: string;
   /** Whether the key is temporarily suspended. Suspended keys are denied but can be resumed (unlike revocation which is permanent). */
   suspended?: boolean;
+  /** Allowed country codes (ISO 3166-1 alpha-2). Empty = all countries allowed. */
+  allowedCountries?: string[];
+  /** Denied country codes (ISO 3166-1 alpha-2). Empty = no countries denied. */
+  deniedCountries?: string[];
   /** Human-readable alias for admin convenience. Must be unique across all keys. */
   alias?: string;
   /** Auto-topup configuration. Undefined = disabled. */
