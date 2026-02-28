@@ -1,5 +1,54 @@
 # Changelog
 
+## 10.10.0 (2026-02-28)
+
+### Per-Tool Rate Limiting — Fine-Grained Call Throttling
+- **Sliding window rate limiter** with per-tool rules:
+  - Exact tool match → wildcard `*` → configurable default fallback
+  - Per-key, per-tool independent rate windows
+  - `peek()` checks remaining capacity without consuming a slot
+  - `resetWindow(key, tool)` and `resetKey(key)` for manual override
+  - Active/inactive rule toggling; inactive rules skipped transparently
+  - Stats: checks, denials, denials-by-tool, active tracking windows
+  - Configurable `maxRules` and `defaultMaxCalls`/`defaultWindowSeconds`
+
+### Usage Export Engine — CSV/JSON Data Export with Aggregation
+- **Flexible export** for billing, compliance, and analytics:
+  - Record usage events with key, tool, credits, allowed, response time
+  - Export as JSON or CSV with proper escaping (commas, quotes)
+  - Filter by keys, tools, date range, allowed/denied status, with limit
+  - Aggregated export: hourly, daily, weekly, monthly time buckets
+  - Each bucket includes total calls, denied calls, total credits, avg response time
+  - `importRecords()` for bulk loading; `count()` for filtered record counts
+  - Configurable `maxRecords` with automatic eviction of oldest records
+  - Date range metadata in export results
+
+### API Key Permissions Engine — Conditional Access Control
+- **Rule-based ACL** with 7 condition types:
+  - `environment`: restrict to production, staging, etc.
+  - `max_payload_bytes`: enforce request size limits
+  - `tool_pattern`: wildcard tool name matching (e.g., `search_*`)
+  - `ip_cidr`: IPv4 CIDR range filtering with full subnet math
+  - `time_range`: hour-of-day restrictions
+  - `day_of_week`: day-based scheduling (0=Sunday through 6=Saturday)
+  - `custom`: arbitrary key/value checks on extra context
+  - AND logic: all conditions must pass for a rule to match
+  - Priority-ordered evaluation; inactive rules skipped
+  - Assign multiple rules per key; configurable default effect (allow/deny)
+  - Stats: checks, denials, rule count, assigned key count
+
+### Health Check Monitor — Backend Health Tracking
+- **Multi-target health monitoring** with status transitions:
+  - Status flow: unknown → healthy/degraded/unhealthy
+  - Configurable thresholds: `unhealthyThreshold` and `healthyThreshold`
+  - Check types: ping, tcp, http (extensible)
+  - `getSnapshot()` with uptime %, avg response time, consecutive success/fail counts
+  - `getOverallHealth()` aggregates all targets (unhealthy if any unhealthy)
+  - `getDueTargets()` returns targets past their check interval
+  - Inactive targets excluded from due checks
+  - Full check history with configurable retention
+  - Stats: total checks, total failures, target counts
+
 ## 10.9.0 (2026-02-28)
 
 ### Webhook Signature Verification — Inbound Webhook Validation

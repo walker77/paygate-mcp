@@ -168,6 +168,14 @@ export { UsageForecastEngine } from './usage-forecast';
 export type { UsageDataPoint, UsageForecast, AnomalyAlert, ForecastConfig, ForecastStats } from './usage-forecast';
 export { MultiCurrencyManager } from './multi-currency';
 export type { CurrencyRate, CreditConversion, MonetaryConversion, CurrencyPricing, MultiCurrencyConfig, MultiCurrencyStats } from './multi-currency';
+export { ToolRateLimiter } from './tool-rate-limiter';
+export type { ToolRateRule, ToolRateCheckResult, ToolRateLimiterConfig, ToolRateLimiterStats } from './tool-rate-limiter';
+export { UsageExportEngine } from './usage-export';
+export type { UsageRecord, ExportFilter, ExportResult, AggregatedExport, AggregatedBucket, UsageExportConfig, UsageExportStats } from './usage-export';
+export { KeyPermissionsEngine } from './key-permissions';
+export type { PermissionRule, PermissionCondition, PermissionConditionType, PermissionCheckResult, PermissionAssignment, KeyPermissionsConfig, KeyPermissionsStats, PermissionCheckContext } from './key-permissions';
+export { HealthMonitor } from './health-monitor';
+export type { HealthStatus, HealthTarget, HealthCheckResult, HealthSnapshot, HealthMonitorConfig, HealthMonitorStats } from './health-monitor';
 
 export type {
   PayGateConfig,
