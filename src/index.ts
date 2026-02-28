@@ -108,6 +108,12 @@ export { RequestSigner } from './request-signing';
 export type { SigningConfig, SigningSecret, SignatureVerifyResult, SigningStats } from './request-signing';
 export { TenantManager } from './tenant-isolation';
 export type { TenantConfig, TenantRecord, TenantUsageReport, TenantStats, TenantCreateParams } from './tenant-isolation';
+export { RequestTracer } from './request-tracer';
+export type { RequestTrace, TraceSpan, TraceSummary, TracerConfig, TracerStats } from './request-tracer';
+export { BudgetPolicyEngine } from './budget-policy';
+export type { BudgetPolicy, BudgetState, BudgetCheckResult, BudgetPolicyStats, BudgetPolicyCreateParams } from './budget-policy';
+export { ToolDependencyGraph } from './tool-deps';
+export type { ToolDep, DepCheckResult, ExecutionRecord, TopologicalOrder, DepGraphStats, DepGraphConfig } from './tool-deps';
 
 export type {
   PayGateConfig,

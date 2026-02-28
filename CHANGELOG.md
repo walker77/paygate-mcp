@@ -1,5 +1,57 @@
 # Changelog
 
+## 10.0.0 (2026-02-28)
+
+### Request Tracing
+- **End-to-end request visibility with structured tracing** — trace every request through gate evaluation, backend calls, transforms, and caching:
+  - `GET /admin/tracing` — view tracing stats (total, active, completed, avg/p95 duration)
+  - `GET /admin/tracing?action=recent` — list recent traces
+  - `GET /admin/tracing?action=slow` — list slowest requests
+  - `GET /admin/tracing?action=export` — export all traces as JSON
+  - `GET /admin/tracing?traceId=...` — retrieve specific trace by ID
+  - `GET /admin/tracing?requestId=...` — find trace by request ID
+  - `POST /admin/tracing` — configure tracing (enabled, sampleRate, maxTraces, maxAgeMs)
+  - `DELETE /admin/tracing` — clear all traces
+  - Span recording at key decision points (gate, backend, transform)
+  - Per-trace timing breakdown: gateMs, backendMs, transformMs
+  - Configurable sample rate (0.0-1.0) for production use
+  - Configurable retention (max 50,000 traces, max age)
+  - P95 latency and slowest trace ID tracking
+  - Public API: `RequestTracer` class exported
+
+### Budget Policy Engine
+- **Burn rate monitoring with progressive throttling** — protect against runaway agents and unexpected cost explosions:
+  - `GET /admin/budget-policies` — view all policies with utilization stats
+  - `GET /admin/budget-policies?policyId=...` — retrieve specific policy
+  - `POST /admin/budget-policies` — create policies, record spend, delete policies
+  - `DELETE /admin/budget-policies` — clear all policies
+  - Daily and monthly budget enforcement with automatic reset
+  - Burn rate monitoring: credits/minute over configurable rolling window
+  - Three burn rate actions: `alert`, `throttle`, `deny`
+  - Progressive throttling with configurable cooldown period
+  - Per-namespace and per-API-key policy targeting
+  - Budget remaining forecast: hours until exhaustion at current rate
+  - Most restrictive policy wins when multiple apply
+  - Stats: daily/monthly utilization %, current burn rate, throttle events
+  - Public API: `BudgetPolicyEngine` class exported
+
+### Tool Dependency Graph
+- **DAG-based workflow validation and failure propagation** — model dependencies between MCP tools for multi-step agent workflows:
+  - `GET /admin/tool-deps` — view dependency graph stats and registered deps
+  - `GET /admin/tool-deps?action=sort` — topological sort of all tools
+  - `GET /admin/tool-deps?action=validate` — detect cycles in the graph
+  - `GET /admin/tool-deps?action=dependents&tool=X` — downstream impact analysis
+  - `GET /admin/tool-deps?action=prerequisites&tool=X` — upstream prerequisites
+  - `GET /admin/tool-deps?action=workflow&workflowId=...` — workflow execution history
+  - `POST /admin/tool-deps` — register/unregister deps, check/record execution, start workflows, configure
+  - `DELETE /admin/tool-deps` — clear all state
+  - Hard vs soft dependency enforcement
+  - Failure propagation: if A fails, B/C/D are automatically blocked
+  - Cycle detection via Kahn's algorithm
+  - Per-workflow execution tracking with automatic expiry
+  - Group-scoped dependency graphs
+  - Public API: `ToolDependencyGraph` class exported
+
 ## 9.9.0 (2026-02-28)
 
 ### IP Access Control

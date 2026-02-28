@@ -78,6 +78,9 @@ import { CostAllocator } from './cost-tags';
 import { IpAccessController } from './ip-access';
 import { RequestSigner } from './request-signing';
 import { TenantManager } from './tenant-isolation';
+import { RequestTracer } from './request-tracer';
+import { BudgetPolicyEngine } from './budget-policy';
+import { ToolDependencyGraph } from './tool-deps';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -501,6 +504,12 @@ export class PayGateServer {
 
   readonly tenants: TenantManager;
 
+  readonly requestTracer: RequestTracer;
+
+  readonly budgetPolicies: BudgetPolicyEngine;
+
+  readonly toolDeps: ToolDependencyGraph;
+
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
     return (this.router || this.proxy) as RequestHandler;
@@ -794,6 +803,9 @@ export class PayGateServer {
     this.ipAccess = new IpAccessController();
     this.requestSigner = new RequestSigner();
     this.tenants = new TenantManager();
+    this.requestTracer = new RequestTracer();
+    this.budgetPolicies = new BudgetPolicyEngine();
+    this.toolDeps = new ToolDependencyGraph();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1460,6 +1472,12 @@ export class PayGateServer {
         return this.handleSigning(req, res);
       case '/admin/tenants':
         return this.handleTenants(req, res);
+      case '/admin/tracing':
+        return this.handleTracing(req, res);
+      case '/admin/budget-policies':
+        return this.handleBudgetPolicies(req, res);
+      case '/admin/tool-deps':
+        return this.handleToolDeps(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -2694,6 +2712,9 @@ export class PayGateServer {
         adminIpAccess: 'GET /admin/ip-access — View IP access stats and blocked IPs; POST /admin/ip-access — Configure allow/deny lists, bind keys to IPs, block/unblock IPs (requires X-Admin-Key)',
         adminSigning: 'GET /admin/signing — View request signing stats; POST /admin/signing — Register/rotate signing secrets, configure signing (requires X-Admin-Key)',
         adminTenants: 'GET /admin/tenants — List tenants and usage; POST /admin/tenants — Create/update tenants, bind keys, manage credits (requires X-Admin-Key)',
+        adminTracing: 'GET /admin/tracing — View traces, slow requests, export; POST /admin/tracing — Configure tracing (requires X-Admin-Key)',
+        adminBudgetPolicies: 'GET /admin/budget-policies — View budget policy stats; POST /admin/budget-policies — Create/delete policies, record spend (requires X-Admin-Key)',
+        adminToolDeps: 'GET /admin/tool-deps — View dependency graph, topological sort; POST /admin/tool-deps — Register/check dependencies, record execution (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -15459,6 +15480,263 @@ export class PayGateServer {
       }
 
       this.tenants.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── Request Tracing Handler ────────────────────────────────────────────
+  private async handleTracing(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const traceId = url.searchParams.get('traceId');
+      if (traceId) {
+        const trace = this.requestTracer.getTrace(traceId);
+        if (!trace) { this.sendError(res, 404, 'Trace not found'); return; }
+        this.sendJson(res, 200, trace);
+        return;
+      }
+      const requestId = url.searchParams.get('requestId');
+      if (requestId) {
+        const trace = this.requestTracer.getByRequestId(requestId);
+        if (!trace) { this.sendError(res, 404, 'Trace not found'); return; }
+        this.sendJson(res, 200, trace);
+        return;
+      }
+      const action = url.searchParams.get('action');
+      if (action === 'slow') {
+        const limit = parseInt(url.searchParams.get('limit') || '10', 10);
+        this.sendJson(res, 200, { slow: this.requestTracer.getSlow(limit) });
+        return;
+      }
+      if (action === 'recent') {
+        const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+        this.sendJson(res, 200, { recent: this.requestTracer.getRecent(limit) });
+        return;
+      }
+      if (action === 'export') {
+        this.sendJson(res, 200, this.requestTracer.exportTraces());
+        return;
+      }
+      this.sendJson(res, 200, this.requestTracer.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      try {
+        const config = this.requestTracer.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Tracing ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.requestTracer.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update tracing config');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.requestTracer.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── Budget Policies Handler ────────────────────────────────────────────
+  private async handleBudgetPolicies(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const policyId = url.searchParams.get('policyId');
+      if (policyId) {
+        const policy = this.budgetPolicies.getPolicy(policyId);
+        if (!policy) { this.sendError(res, 404, 'Policy not found'); return; }
+        this.sendJson(res, 200, policy);
+        return;
+      }
+      this.sendJson(res, 200, {
+        ...this.budgetPolicies.stats(),
+        policies: this.budgetPolicies.listPolicies(),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Create policy
+      if (params.createPolicy || params.name) {
+        try {
+          const policy = this.budgetPolicies.createPolicy({
+            name: String(params.name || params.createPolicy),
+            targetNamespace: params.targetNamespace ? String(params.targetNamespace) : undefined,
+            targetApiKey: params.targetApiKey ? String(params.targetApiKey) : undefined,
+            burnRateThreshold: params.burnRateThreshold ? Number(params.burnRateThreshold) : 100,
+            burnRateWindowSec: params.burnRateWindowSec ? Number(params.burnRateWindowSec) : 60,
+            dailyBudget: params.dailyBudget ? Number(params.dailyBudget) : 0,
+            monthlyBudget: params.monthlyBudget ? Number(params.monthlyBudget) : 0,
+            onBurnRateExceeded: (params.onBurnRateExceeded as any) ?? 'alert',
+            throttleReductionPercent: params.throttleReductionPercent ? Number(params.throttleReductionPercent) : 50,
+            throttleCooldownSec: params.throttleCooldownSec ? Number(params.throttleCooldownSec) : 300,
+            active: params.active !== false,
+          });
+          this.audit.log('config.updated' as any, 'admin', `Budget policy created: ${policy.policyId}`, { policyId: policy.policyId });
+          this.sendJson(res, 201, policy);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot create policy');
+        }
+        return;
+      }
+
+      // Record spend
+      if (params.recordSpend) {
+        const result = this.budgetPolicies.recordSpend(
+          params.namespace ? String(params.namespace) : undefined,
+          params.apiKey ? String(params.apiKey) : undefined,
+          Number(params.recordSpend),
+        );
+        this.sendJson(res, 200, result);
+        return;
+      }
+
+      // Delete policy
+      if (params.deletePolicy) {
+        const deleted = this.budgetPolicies.deletePolicy(String(params.deletePolicy));
+        if (!deleted) { this.sendError(res, 404, 'Policy not found'); return; }
+        this.sendJson(res, 200, { deleted: true, policyId: params.deletePolicy });
+        return;
+      }
+
+      this.sendError(res, 400, 'Unknown action. Use createPolicy, recordSpend, or deletePolicy.');
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.budgetPolicies.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── Tool Dependency Graph Handler ──────────────────────────────────────
+  private async handleToolDeps(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const action = url.searchParams.get('action');
+
+      if (action === 'sort') {
+        const group = url.searchParams.get('group') ?? undefined;
+        this.sendJson(res, 200, this.toolDeps.topologicalSort(group));
+        return;
+      }
+      if (action === 'validate') {
+        this.sendJson(res, 200, this.toolDeps.validate());
+        return;
+      }
+      if (action === 'dependents') {
+        const tool = url.searchParams.get('tool');
+        if (!tool) { this.sendError(res, 400, 'tool query param required'); return; }
+        this.sendJson(res, 200, { tool, dependents: this.toolDeps.getDependents(tool) });
+        return;
+      }
+      if (action === 'prerequisites') {
+        const tool = url.searchParams.get('tool');
+        if (!tool) { this.sendError(res, 400, 'tool query param required'); return; }
+        this.sendJson(res, 200, { tool, prerequisites: this.toolDeps.getPrerequisites(tool) });
+        return;
+      }
+      if (action === 'workflow') {
+        const workflowId = url.searchParams.get('workflowId');
+        if (!workflowId) { this.sendError(res, 400, 'workflowId query param required'); return; }
+        this.sendJson(res, 200, { workflowId, records: this.toolDeps.getWorkflow(workflowId) });
+        return;
+      }
+
+      const group = url.searchParams.get('group') ?? undefined;
+      this.sendJson(res, 200, {
+        ...this.toolDeps.stats(),
+        deps: this.toolDeps.listDeps(group),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Register dependency
+      if (params.register && params.dependsOn) {
+        try {
+          const dep = this.toolDeps.register(
+            String(params.register),
+            (params.dependsOn as string[]).map(String),
+            { hardDependency: params.hardDependency !== false, group: params.group ? String(params.group) : undefined },
+          );
+          this.sendJson(res, 201, dep);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot register dep');
+        }
+        return;
+      }
+
+      // Unregister
+      if (params.unregister) {
+        const removed = this.toolDeps.unregister(String(params.unregister));
+        this.sendJson(res, 200, { removed, tool: params.unregister });
+        return;
+      }
+
+      // Check dependency
+      if (params.check && params.workflowId) {
+        const result = this.toolDeps.check(String(params.check), String(params.workflowId));
+        this.sendJson(res, 200, result);
+        return;
+      }
+
+      // Record execution
+      if (params.recordExecution && params.workflowId && params.status) {
+        this.toolDeps.recordExecution(
+          String(params.recordExecution),
+          String(params.workflowId),
+          params.status as 'success' | 'failure',
+        );
+        this.sendJson(res, 200, { recorded: true });
+        return;
+      }
+
+      // Start workflow
+      if (params.startWorkflow) {
+        this.sendJson(res, 200, { workflowId: this.toolDeps.startWorkflow() });
+        return;
+      }
+
+      // Configure
+      if (params.enabled !== undefined || params.maxTools !== undefined || params.maxWorkflows !== undefined) {
+        try {
+          const config = this.toolDeps.configure(params as any);
+          this.audit.log('config.updated' as any, 'admin', `Tool deps ${config.enabled ? 'enabled' : 'disabled'}`, params);
+          this.sendJson(res, 200, this.toolDeps.stats());
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update config');
+        }
+        return;
+      }
+
+      this.sendError(res, 400, 'Unknown action. Use register, unregister, check, recordExecution, startWorkflow, or configure.');
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.toolDeps.clear();
       this.sendJson(res, 200, { cleared: true });
       return;
     }
