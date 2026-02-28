@@ -1,5 +1,61 @@
 # Changelog
 
+## 10.7.0 (2026-02-28)
+
+### Prepaid Credit Grants with Expiration, Priority & Rollover
+- **Named credit grants** — go beyond simple balance -= cost:
+  - Create named grants (e.g., 'Welcome Credits', 'Monthly Allowance') with configurable amounts
+  - Priority-based consumption — lower priority number consumed first
+  - Automatic expiration — grants expire at a configurable date
+  - Soonest-expiring grants consumed first within same priority tier
+  - Rollover support — transfer remaining balance to a new grant before expiry
+  - Partial rollover with configurable percentage (e.g., 50% rollover)
+  - Refund credits back to specific grants
+  - Void grants (cancel and mark remaining as lost)
+  - Per-grant usage tracking with deduction breakdown
+  - Export/import for persistence and backup
+  - Stats: grants created, consumed, expired, rollovers, deductions
+  - Config: `manager.createGrant(key, { name, amount, priority, expiresAt, metadata })`
+
+### A2A Protocol Support (Agent-to-Agent)
+- **Google A2A protocol primitives** for inter-agent communication:
+  - Agent Cards (/.well-known/agent.json) — advertise agent capabilities and skills
+  - Task lifecycle: submitted → working → input-required → completed/failed/canceled
+  - Message exchange with typed parts (text, file, data)
+  - State transition history recording
+  - Artifact production during task execution
+  - Skill discovery and matching by name, tags, description
+  - Session-scoped multi-turn conversations
+  - Full JSON-RPC 2.0 request handling (tasks/send, tasks/get, tasks/cancel)
+  - Task cleanup with configurable max age
+  - Stats: tasks by status, messages exchanged, artifacts produced
+
+### Sequence Anomaly Detection
+- **Markov chain anomaly detection** over tool call history (inspired by Cloudflare):
+  - Per-key transition model — learns normal tool call patterns
+  - Learning mode: passively builds model without enforcement
+  - Enforcement mode: flags unusual sequences after configurable threshold
+  - Laplace smoothing for unseen transitions
+  - Global baseline model for new keys (cross-key patterns)
+  - Sliding window for recent sequence context
+  - Configurable anomaly threshold and actions (log, warn, block)
+  - Sequence score calculation for overall key health
+  - Top transitions report for debugging
+  - Key-level eviction when capacity is reached
+  - Stats: checks, anomalies, blocks, learning/enforcing keys, recent events
+
+### Proxy-as-MCP-Server
+- **Expose PayGate management as MCP tools** agents can discover and call:
+  - 10 built-in management tools: balance, usage, pricing, rate limits, quotas, cost estimation, grants, health, key info, tool listing
+  - Agents make informed resource decisions without separate admin API calls
+  - Custom prefix support (default: `paygate_`)
+  - Resolver-based architecture — connect tools to any data source
+  - Enable/disable individual management tools
+  - Register custom management tools at runtime
+  - Returns MCP-compatible tool definitions for tools/list
+  - Proper error handling with JSON-RPC error codes
+  - Stats: calls per tool, total errors
+
 ## 10.6.0 (2026-02-28)
 
 ### PII Reversible Masking

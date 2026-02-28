@@ -144,6 +144,14 @@ export { OtelEmitter } from './otel-emitter';
 export type { OtelConfig, OtelSpan, OtelEmitterStats } from './otel-emitter';
 export { BillableMetricEngine, computeExpression } from './billable-metrics';
 export type { BillableMetric, MetricContext, MetricResult, BillableMetricStats } from './billable-metrics';
+export { CreditGrantManager } from './credit-grants';
+export type { CreditGrant, GrantCreateParams, DeductResult, RolloverResult, GrantSummary, CreditGrantStats } from './credit-grants';
+export { A2AManager } from './a2a-protocol';
+export type { AgentCard, AgentSkill, A2ATask, A2AMessage, A2ATaskStatus, A2AArtifact, MessagePart, TaskStatus as A2ATaskStatusInfo, A2AManagerConfig, A2AStats } from './a2a-protocol';
+export { SequenceAnomalyDetector } from './sequence-anomaly';
+export type { SequenceAnomalyConfig, AnomalyCheckResult, AnomalyEvent, TransitionModel, SequenceAnomalyStats } from './sequence-anomaly';
+export { ProxyMcpServer } from './proxy-mcp-server';
+export type { ProxyMcpTool, ProxyMcpServerConfig, ProxyMcpStats, ManagementResolver } from './proxy-mcp-server';
 
 export type {
   PayGateConfig,
