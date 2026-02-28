@@ -1,5 +1,60 @@
 # Changelog
 
+## 10.6.0 (2026-02-28)
+
+### PII Reversible Masking
+- **Reversible PII tokenization** — masks sensitive data before it reaches backend servers:
+  - Unlike destructive redaction, replaces PII with deterministic tokens (e.g., `<EMAIL_1>`, `<SSN_1>`)
+  - Per-request token vaults — zero cross-request data leakage
+  - Automatic unmasking in responses — original values restored transparently
+  - Built-in patterns: email, phone, SSN, credit card, IBAN
+  - Custom pattern support via regex with per-tool scoping
+  - Token deduplication — same value gets same token within a request
+  - Vault cleanup with configurable TTL for in-flight request safety
+  - Stats: mask/unmask counts, tokens by type, active vaults
+  - Config: `piiMasking: { enabled, patterns, tokenFormat, maxTokensPerRequest }`
+
+### Virtual MCP Server Composition (Tool Federation)
+- **Compose multiple upstream MCP servers into one endpoint** — agents see a unified tool list:
+  - Prefix-based namespacing (e.g., `fs_readFile`, `db_query`) prevents tool name collisions
+  - Health-aware routing with per-upstream latency tracking
+  - Automatic tool discovery via `tools/list` to each upstream
+  - Configurable discovery cache TTL (default: 60s)
+  - Partial discovery mode — continues if some upstreams are unreachable
+  - Runtime upstream management (add, remove, enable/disable)
+  - Mixed transport support (upstream servers can be HTTP)
+  - Stats: requests by upstream, tool counts, error rates, health status
+  - Config: `upstreams: [{ id, prefix, remoteUrl, authHeader, enabled, timeoutMs }]`
+
+### OpenTelemetry Trace Emission
+- **Zero-dependency OTLP/HTTP JSON trace export** to any OpenTelemetry collector:
+  - Emits spans in standard OTLP format (`POST /v1/traces`)
+  - W3C `traceparent` header parsing and propagation
+  - Configurable batch export (flush interval, max batch size, max queue)
+  - Resource attributes (`service.name`, `service.version`, custom)
+  - Span kinds: INTERNAL, SERVER, CLIENT
+  - Configurable sample rate (0.0-1.0)
+  - Auth header support for collector authentication
+  - Graceful shutdown with final flush
+  - Stats: spans created/exported/dropped, batch counts, export errors
+  - Config: `otel: { enabled, endpoint, serviceName, sampleRate, flushIntervalMs }`
+
+### Billable Metric Expressions
+- **Config-driven pricing formulas** — compute credits from request/response attributes:
+  - Expression language: `input_size_kb * 2 + response_size_kb * 5`
+  - Safe recursive descent parser — no code execution, only arithmetic and math functions
+  - Built-in math functions: `min`, `max`, `ceil`, `floor`, `round`, `abs`, `sqrt`, `pow`
+  - Auto-extracted variables: `input_size_bytes`, `input_size_kb`, `response_size_bytes`, `response_size_kb`, `duration_ms`, `duration_s`
+  - Numeric tool args injected as variables; string args create `{name}_length` vars
+  - Custom variable injection for external data
+  - Per-metric min/max cost bounds
+  - Graceful fallback to flat pricing on expression errors
+  - Stats: evaluations by metric/tool, success/fallback rates, total credits computed
+  - Config: `billableMetrics: [{ id, name, expression, tools, minCost, maxCost, fallbackCost }]`
+
+### Test Coverage
+- 4,438 tests across 210 test suites (102 new tests for v10.6.0 features)
+
 ## 10.5.0 (2026-02-28)
 
 ### x402 Payment Protocol Support

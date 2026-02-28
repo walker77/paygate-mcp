@@ -136,6 +136,14 @@ export { OpenApiMcpBackend } from './openapi-backend';
 export type { OpenApiMcpBackendConfig } from './openapi-backend';
 export { parseOpenApiSpec, resolveBaseUrl, createApiProxyHandler, summarizeSpec } from './openapi-to-mcp';
 export type { McpToolDef, OpenApiSpec, OpenApiToMcpConfig } from './openapi-to-mcp';
+export { PiiMasker, BUILT_IN_PII_PATTERNS } from './pii-masking';
+export type { PiiPattern, PiiMaskingConfig, TokenVault, MaskResult, UnmaskResult, PiiMaskingStats } from './pii-masking';
+export { VirtualServerComposer } from './virtual-server';
+export type { UpstreamServer, VirtualServerConfig, UpstreamToolInfo, UpstreamHealth, VirtualServerStats } from './virtual-server';
+export { OtelEmitter } from './otel-emitter';
+export type { OtelConfig, OtelSpan, OtelEmitterStats } from './otel-emitter';
+export { BillableMetricEngine, computeExpression } from './billable-metrics';
+export type { BillableMetric, MetricContext, MetricResult, BillableMetricStats } from './billable-metrics';
 
 export type {
   PayGateConfig,
