@@ -81,6 +81,9 @@ import { TenantManager } from './tenant-isolation';
 import { RequestTracer } from './request-tracer';
 import { BudgetPolicyEngine } from './budget-policy';
 import { ToolDependencyGraph } from './tool-deps';
+import { QuotaManager } from './quota-manager';
+import { WebhookReplayManager } from './webhook-replay';
+import { ConfigProfileManager } from './config-profiles';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -510,6 +513,12 @@ export class PayGateServer {
 
   readonly toolDeps: ToolDependencyGraph;
 
+  readonly quotas: QuotaManager;
+
+  readonly webhookReplay: WebhookReplayManager;
+
+  readonly configProfiles: ConfigProfileManager;
+
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
     return (this.router || this.proxy) as RequestHandler;
@@ -806,6 +815,9 @@ export class PayGateServer {
     this.requestTracer = new RequestTracer();
     this.budgetPolicies = new BudgetPolicyEngine();
     this.toolDeps = new ToolDependencyGraph();
+    this.quotas = new QuotaManager();
+    this.webhookReplay = new WebhookReplayManager();
+    this.configProfiles = new ConfigProfileManager();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1478,6 +1490,12 @@ export class PayGateServer {
         return this.handleBudgetPolicies(req, res);
       case '/admin/tool-deps':
         return this.handleToolDeps(req, res);
+      case '/admin/quota-rules':
+        return this.handleQuotas(req, res);
+      case '/admin/webhook-replay':
+        return this.handleWebhookReplayAdmin(req, res);
+      case '/admin/config-profiles':
+        return this.handleConfigProfiles(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -2715,6 +2733,9 @@ export class PayGateServer {
         adminTracing: 'GET /admin/tracing — View traces, slow requests, export; POST /admin/tracing — Configure tracing (requires X-Admin-Key)',
         adminBudgetPolicies: 'GET /admin/budget-policies — View budget policy stats; POST /admin/budget-policies — Create/delete policies, record spend (requires X-Admin-Key)',
         adminToolDeps: 'GET /admin/tool-deps — View dependency graph, topological sort; POST /admin/tool-deps — Register/check dependencies, record execution (requires X-Admin-Key)',
+        adminQuotaRules: 'GET /admin/quota-rules — View quota rules and usage; POST /admin/quota-rules — Create/update/delete rules, check/reset quotas (requires X-Admin-Key)',
+        adminWebhookReplay: 'GET /admin/webhook-replay — View dead letter queue; POST /admin/webhook-replay — Replay failed deliveries, purge entries (requires X-Admin-Key)',
+        adminConfigProfiles: 'GET /admin/config-profiles — View profiles; POST /admin/config-profiles — Save/activate/compare/import/export profiles (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -15737,6 +15758,366 @@ export class PayGateServer {
     if (req.method === 'DELETE') {
       if (!this.checkAdmin(req, res, 'admin')) return;
       this.toolDeps.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── v10.1.0: Quota Management ─────────────────────────────────────────
+
+  private async handleQuotas(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const ruleId = url.searchParams.get('ruleId');
+
+      if (ruleId) {
+        const rule = this.quotas.getRule(ruleId);
+        if (!rule) { this.sendError(res, 404, 'Quota rule not found'); return; }
+        const usage = this.quotas.getUsage(rule.apiKey, rule.tool);
+        this.sendJson(res, 200, { rule, usage });
+        return;
+      }
+
+      const apiKey = url.searchParams.get('apiKey') ?? undefined;
+      if (apiKey) {
+        const usage = this.quotas.getUsage(apiKey);
+        this.sendJson(res, 200, { apiKey, usage, rules: this.quotas.listRules(apiKey) });
+        return;
+      }
+
+      this.sendJson(res, 200, {
+        ...this.quotas.stats(),
+        rules: this.quotas.listRules(),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Create rule
+      if (params.apiKey && params.period && params.metric && params.limit) {
+        try {
+          const rule = this.quotas.createRule({
+            apiKey: String(params.apiKey),
+            tool: params.tool ? String(params.tool) : undefined,
+            period: params.period as any,
+            metric: params.metric as any,
+            limit: Number(params.limit),
+            overageAction: params.overageAction as any,
+            burstPercent: params.burstPercent !== undefined ? Number(params.burstPercent) : undefined,
+            enabled: params.enabled !== false,
+          });
+          this.audit.log('config.updated' as any, 'admin', `Quota rule created: ${rule.id}`, params);
+          this.sendJson(res, 201, rule);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot create quota rule');
+        }
+        return;
+      }
+
+      // Update rule
+      if (params.updateRule && params.ruleId) {
+        try {
+          const updated = this.quotas.updateRule(String(params.ruleId), params.updateRule as any);
+          if (!updated) { this.sendError(res, 404, 'Rule not found'); return; }
+          this.sendJson(res, 200, updated);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update rule');
+        }
+        return;
+      }
+
+      // Delete rule
+      if (params.deleteRule) {
+        const deleted = this.quotas.deleteRule(String(params.deleteRule));
+        this.sendJson(res, 200, { deleted, ruleId: params.deleteRule });
+        return;
+      }
+
+      // Check quota
+      if (params.checkQuota) {
+        const result = this.quotas.check(
+          String(params.checkQuota),
+          params.amount !== undefined ? Number(params.amount) : 1,
+          params.tool ? String(params.tool) : undefined,
+          params.record !== false,
+        );
+        this.sendJson(res, 200, result);
+        return;
+      }
+
+      // Reset usage
+      if (params.resetUsage) {
+        const reset = this.quotas.resetUsage(String(params.resetUsage));
+        this.sendJson(res, 200, { reset, ruleId: params.resetUsage });
+        return;
+      }
+
+      // Configure
+      if (params.enabled !== undefined || params.maxRules !== undefined) {
+        try {
+          const config = this.quotas.configure(params as any);
+          this.audit.log('config.updated' as any, 'admin', `Quotas ${config.enabled ? 'enabled' : 'disabled'}`, params);
+          this.sendJson(res, 200, this.quotas.stats());
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update config');
+        }
+        return;
+      }
+
+      this.sendError(res, 400, 'Unknown action. Provide apiKey+period+metric+limit to create, deleteRule, checkQuota, resetUsage, or enabled to configure.');
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.quotas.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── v10.1.0: Webhook Replay (Enhanced DLQ) ─────────────────────────────
+
+  private async handleWebhookReplayAdmin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const deliveryId = url.searchParams.get('deliveryId');
+
+      if (deliveryId) {
+        const entry = this.webhookReplay.getDelivery(deliveryId);
+        if (!entry) { this.sendError(res, 404, 'Delivery not found'); return; }
+        this.sendJson(res, 200, entry);
+        return;
+      }
+
+      const status = url.searchParams.get('status') as any;
+      const eventType = url.searchParams.get('eventType') ?? undefined;
+      const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
+
+      this.sendJson(res, 200, {
+        ...this.webhookReplay.stats(),
+        entries: this.webhookReplay.listDeadLetters({ status, eventType, limit }),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Record a failure (usually called internally)
+      if (params.recordFailure && params.url && params.payload) {
+        try {
+          const entry = this.webhookReplay.recordFailure({
+            url: String(params.url),
+            payload: String(params.payload),
+            eventType: String(params.eventType || 'unknown'),
+            signature: params.signature ? String(params.signature) : undefined,
+            statusCode: Number(params.statusCode || 0),
+            errorMessage: String(params.errorMessage || 'Unknown error'),
+          });
+          this.sendJson(res, 201, entry);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot record failure');
+        }
+        return;
+      }
+
+      // Replay single
+      if (params.replay) {
+        const result = await this.webhookReplay.replay(String(params.replay));
+        this.sendJson(res, 200, result);
+        return;
+      }
+
+      // Replay all pending
+      if (params.replayAll) {
+        const limit = params.limit ? Number(params.limit) : 50;
+        const results = await this.webhookReplay.replayAll(limit);
+        this.sendJson(res, 200, { replayed: results.length, results });
+        return;
+      }
+
+      // Purge single
+      if (params.purge) {
+        const purged = this.webhookReplay.purge(String(params.purge));
+        this.sendJson(res, 200, { purged, deliveryId: params.purge });
+        return;
+      }
+
+      // Purge by status
+      if (params.purgeByStatus) {
+        const count = this.webhookReplay.purgeByStatus(params.purgeByStatus as any);
+        this.sendJson(res, 200, { purged: count, status: params.purgeByStatus });
+        return;
+      }
+
+      // Configure
+      if (params.enabled !== undefined || params.maxDeadLetters !== undefined || params.maxRetries !== undefined) {
+        try {
+          const config = this.webhookReplay.configure(params as any);
+          this.audit.log('config.updated' as any, 'admin', `Webhook replay ${config.enabled ? 'enabled' : 'disabled'}`, params);
+          this.sendJson(res, 200, this.webhookReplay.stats());
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update config');
+        }
+        return;
+      }
+
+      this.sendError(res, 400, 'Unknown action. Use replay, replayAll, purge, purgeByStatus, recordFailure, or configure.');
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.webhookReplay.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── v10.1.0: Config Profiles ──────────────────────────────────────────
+
+  private async handleConfigProfiles(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const profileId = url.searchParams.get('profileId');
+      const name = url.searchParams.get('name');
+      const action = url.searchParams.get('action');
+
+      if (action === 'export') {
+        const json = this.configProfiles.exportProfiles();
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="config-profiles.json"' });
+        res.end(json);
+        return;
+      }
+
+      if (profileId) {
+        const profile = this.configProfiles.getProfile(profileId);
+        if (!profile) { this.sendError(res, 404, 'Profile not found'); return; }
+        const resolved = this.configProfiles.resolveConfig(profileId);
+        this.sendJson(res, 200, { profile, resolvedConfig: resolved });
+        return;
+      }
+
+      if (name) {
+        const profile = this.configProfiles.getProfileByName(name);
+        if (!profile) { this.sendError(res, 404, 'Profile not found'); return; }
+        this.sendJson(res, 200, profile);
+        return;
+      }
+
+      this.sendJson(res, 200, {
+        ...this.configProfiles.stats(),
+        profiles: this.configProfiles.listProfiles(),
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Save profile
+      if (params.name && params.config) {
+        try {
+          const profile = this.configProfiles.saveProfile({
+            name: String(params.name),
+            config: params.config as Record<string, unknown>,
+            description: params.description ? String(params.description) : undefined,
+            extendsProfile: params.extendsProfile ? String(params.extendsProfile) : undefined,
+            activate: !!params.activate,
+          });
+          this.audit.log('config.updated' as any, 'admin', `Config profile saved: ${profile.name}`, { id: profile.id });
+          this.sendJson(res, 201, profile);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot save profile');
+        }
+        return;
+      }
+
+      // Activate profile
+      if (params.activate && !params.config) {
+        try {
+          const resolved = this.configProfiles.activateProfile(String(params.activate));
+          this.audit.log('config.updated' as any, 'admin', `Config profile activated: ${params.activate}`, {});
+          this.sendJson(res, 200, { activated: params.activate, resolvedConfig: resolved });
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot activate profile');
+        }
+        return;
+      }
+
+      // Rollback
+      if (params.rollback) {
+        const resolved = this.configProfiles.rollback();
+        if (!resolved) { this.sendError(res, 400, 'No previous profile to rollback to'); return; }
+        this.audit.log('config.updated' as any, 'admin', 'Config profile rolled back', {});
+        this.sendJson(res, 200, { rolledBack: true, resolvedConfig: resolved });
+        return;
+      }
+
+      // Compare
+      if (params.compare && Array.isArray(params.compare) && params.compare.length === 2) {
+        try {
+          const diff = this.configProfiles.compare(String(params.compare[0]), String(params.compare[1]));
+          this.sendJson(res, 200, diff);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot compare profiles');
+        }
+        return;
+      }
+
+      // Delete profile
+      if (params.deleteProfile) {
+        const deleted = this.configProfiles.deleteProfile(String(params.deleteProfile));
+        this.sendJson(res, 200, { deleted, profileId: params.deleteProfile });
+        return;
+      }
+
+      // Import
+      if (params.importProfiles) {
+        try {
+          const mode = (params.mode as 'merge' | 'replace') || 'merge';
+          const count = this.configProfiles.importProfiles(
+            typeof params.importProfiles === 'string' ? params.importProfiles : JSON.stringify(params.importProfiles),
+            mode,
+          );
+          this.sendJson(res, 200, { imported: count });
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot import profiles');
+        }
+        return;
+      }
+
+      // Configure
+      if (params.enabled !== undefined || params.maxProfiles !== undefined) {
+        try {
+          const config = this.configProfiles.configure(params as any);
+          this.audit.log('config.updated' as any, 'admin', `Config profiles ${config.enabled ? 'enabled' : 'disabled'}`, params);
+          this.sendJson(res, 200, this.configProfiles.stats());
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update config');
+        }
+        return;
+      }
+
+      this.sendError(res, 400, 'Unknown action. Provide name+config to save, activate, rollback, compare, deleteProfile, importProfiles, or enabled to configure.');
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.configProfiles.clear();
       this.sendJson(res, 200, { cleared: true });
       return;
     }

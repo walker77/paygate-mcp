@@ -1,5 +1,59 @@
 # Changelog
 
+## 10.1.0 (2026-02-28)
+
+### Quota Management
+- **Daily/weekly/monthly hard caps per API key** — absolute call or credit ceilings distinct from rate limiting:
+  - `GET /admin/quota-rules` — view all quota rules, usage, and stats
+  - `GET /admin/quota-rules?ruleId=...` — specific rule with current usage
+  - `GET /admin/quota-rules?apiKey=...` — all quotas for a key
+  - `POST /admin/quota-rules` — create rules, check quotas, delete rules, reset usage, configure
+  - `DELETE /admin/quota-rules` — clear all quota state
+  - Per-key quotas with daily/weekly/monthly periods
+  - Call count and credit amount metrics
+  - Per-tool quotas (restrict specific tool usage per key)
+  - Global default quotas (apiKey: '*') with key-specific overrides
+  - Overage actions: deny (hard block), warn (allow with warning), throttle
+  - Burst allowance: configurable % over limit before hard deny
+  - Period-aware rollover (daily at midnight UTC, weekly at Monday 00:00 UTC, monthly at 1st)
+  - Usage reporting with period boundaries
+  - Admin usage reset per rule
+  - Public API: `QuotaManager` class exported
+
+### Webhook Replay (Enhanced DLQ)
+- **Dead letter queue management for failed webhook deliveries** — inspect, retry, and purge failed webhooks:
+  - `GET /admin/webhook-replay` — view DLQ stats and entries (filterable by status, event type)
+  - `GET /admin/webhook-replay?deliveryId=...` — specific failed delivery details
+  - `POST /admin/webhook-replay` — record failures, replay single/bulk, purge entries, configure
+  - `DELETE /admin/webhook-replay` — clear all DLQ state
+  - Failed delivery recording with URL, payload, event type, status code, error message
+  - Individual replay with HTTP retry and status tracking
+  - Bulk replay of all pending entries with configurable limit
+  - Purge by individual ID or status (pending/succeeded/exhausted)
+  - HMAC signature preservation across retries
+  - Configurable max retries (default 5), request timeout (10s), max age (7 days)
+  - Auto-purge of old entries beyond max age
+  - Stats: total failed, pending, succeeded, exhausted, retry success rate
+  - Public API: `WebhookReplayManager` class exported
+
+### Config Profiles
+- **Named configuration presets for environment switching** — save, compare, and switch between dev/staging/prod configs:
+  - `GET /admin/config-profiles` — list all profiles with stats
+  - `GET /admin/config-profiles?profileId=...` — specific profile with resolved config
+  - `GET /admin/config-profiles?name=...` — lookup by name
+  - `GET /admin/config-profiles?action=export` — export all profiles as JSON
+  - `POST /admin/config-profiles` — save, activate, rollback, compare, delete, import, configure
+  - `DELETE /admin/config-profiles` — clear all profile state
+  - Named profiles with description and SHA-256 checksum
+  - Profile inheritance: extend a base profile, child overrides parent values
+  - One-click activation with automatic deactivation of previous
+  - Rollback to previous profile
+  - Config comparison: flat-key diff showing unchanged, changed, only-in-A, only-in-B
+  - Import/export with merge or replace mode
+  - Circular inheritance detection
+  - Stats: total profiles, active profile, switch count, rollback availability
+  - Public API: `ConfigProfileManager` class exported
+
 ## 10.0.0 (2026-02-28)
 
 ### Request Tracing

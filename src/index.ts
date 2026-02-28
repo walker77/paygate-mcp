@@ -114,6 +114,12 @@ export { BudgetPolicyEngine } from './budget-policy';
 export type { BudgetPolicy, BudgetState, BudgetCheckResult, BudgetPolicyStats, BudgetPolicyCreateParams } from './budget-policy';
 export { ToolDependencyGraph } from './tool-deps';
 export type { ToolDep, DepCheckResult, ExecutionRecord, TopologicalOrder, DepGraphStats, DepGraphConfig } from './tool-deps';
+export { QuotaManager } from './quota-manager';
+export type { QuotaRule, QuotaUsage, QuotaCheckResult, QuotaStats, QuotaManagerConfig, QuotaPeriod, QuotaMetric, OverageAction } from './quota-manager';
+export { WebhookReplayManager } from './webhook-replay';
+export type { FailedDelivery, ReplayResult, ReplayStats, WebhookReplayConfig } from './webhook-replay';
+export { ConfigProfileManager } from './config-profiles';
+export type { ConfigProfile, ProfileDiff, ProfileStats, ConfigProfileManagerConfig } from './config-profiles';
 
 export type {
   PayGateConfig,

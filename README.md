@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 187+ endpoints
+- [API Reference](#api-reference) — All 196+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
@@ -66,7 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
-- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 187+ endpoints documented
+- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 196+ endpoints documented
 - **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
 - **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
@@ -177,6 +177,9 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Request Tracing** — End-to-end structured tracing with span recording at gate, backend, and transform stages — trace/request ID lookup, timing breakdown (gateMs/backendMs/transformMs), configurable sample rate, retention limits, P95 latency tracking, JSON export, manage via `GET/POST/DELETE /admin/tracing`
 - **Budget Policy Engine** — Burn rate monitoring with progressive throttling — daily/monthly budget enforcement, credits/minute burn rate tracking over configurable windows, three actions (alert/throttle/deny), per-namespace and per-key targeting, budget remaining forecast, automatic daily/monthly reset, manage via `GET/POST/DELETE /admin/budget-policies`
 - **Tool Dependency Graph** — DAG-based workflow validation — register tool dependencies, enforce execution order, failure propagation (upstream failure blocks downstream), topological sort, cycle detection, per-workflow execution tracking, hard vs soft dependencies, group scoping, manage via `GET/POST/DELETE /admin/tool-deps`
+- **Quota Management** — Granular daily/weekly/monthly hard caps per API key — per-tool or global quotas, calls or credits metric, burst allowance (temporary over-limit percentage), three overage actions (deny/warn/throttle), UTC-based period boundaries (daily midnight, weekly Monday, monthly 1st), automatic period rollover, manage via `GET/POST/DELETE /admin/quota-rules`
+- **Webhook Replay (DLQ)** — Dead letter queue management for failed webhook deliveries — record failures with full request context (URL, headers, body, HMAC signature), replay individual or bulk failed deliveries, status tracking (pending → retrying → succeeded/exhausted), configurable max retries with timeout, purge by ID or status, age-based expiry, manage via `GET/POST/DELETE /admin/webhook-replay`
+- **Config Profiles** — Named configuration presets with save/activate/rollback — profile inheritance chains (base → child merging), SHA-256 checksums, flat-key diffing for comparison (onlyInA/onlyInB/changed/unchanged), import/export as JSON with merge or replace mode, activation history, circular inheritance detection, manage via `GET/POST/DELETE /admin/config-profiles`
 - **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
 - **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
 - **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
@@ -490,7 +493,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/.well-known/mcp.json` | GET | None | MCP Server Identity card (discovery) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
-| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 187+ endpoints) |
+| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 196+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |
