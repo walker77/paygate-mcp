@@ -1,5 +1,57 @@
 # Changelog
 
+## 10.14.0 (2026-02-28)
+
+### Feature Flags — Percentage-Based Rollouts with Scheduling
+- **Gradual feature rollout** with deterministic key bucketing:
+  - Create flags with name, description, enabled state, and rollout percentage
+  - Deterministic hash-based bucket assignment: same key always gets same result
+  - Allowlist overrides rollout (force-enable specific keys)
+  - Blocklist overrides everything (force-disable specific keys)
+  - Blocklist takes precedence over allowlist when both match
+  - Schedule-based activation with `activeFrom` and `activeUntil` timestamps
+  - Detailed evaluation results with reason codes: flag_not_found, globally_disabled, blocklisted, allowlisted, not_yet_active, expired, rollout_included, rollout_excluded
+  - `evaluateAll()` returns all flag states for a key in one call
+  - `getEnabledKeys()` filters a key sample against a flag
+
+### Audit Trail — Tamper-Evident Hash Chain Logging
+- **Immutable audit log** with cryptographic hash chain:
+  - Record entries with action, actor, target, details, and optional metadata
+  - Sequential IDs (audit_1, audit_2, ...) for deterministic ordering
+  - Hash chain linking: each entry's hash includes the previous entry's hash
+  - `verifyChain()` validates entire chain integrity (blockchain-like)
+  - Query with filters: action, actions[], actor, target, actorType, targetType
+  - Pagination with offset/limit and hasMore flag
+  - Target and actor history retrieval
+  - Action count analytics and unique actor/target listing
+  - Configurable `maxEntries` with oldest-first eviction
+
+### Request Pipeline — Ordered Middleware with Abort Control
+- **Stage-based middleware pipeline** for request interception:
+  - Three stages: pre-processing, post-processing, error handling
+  - Priority-sorted execution within each stage (highest priority first)
+  - Tool and key filtering: middleware runs only for matching tools/keys
+  - Abort mechanism: middleware can halt pipeline with reason
+  - Configurable error handling: continue-on-error or stop-on-error
+  - Context enrichment: middleware can add metadata to request context
+  - Post-stage receives response data; error-stage receives error object
+  - Duration tracking with startTime/endTime on context
+  - Max middleware per stage enforcement
+  - Execution stats tracking
+
+### Usage Trend Analyzer — Time-Series Anomaly Detection
+- **Statistical usage analysis** with automatic anomaly detection:
+  - Record usage data points by key+tool with automatic timestamps
+  - Moving average computation with configurable window size
+  - Standard deviation tracking for anomaly thresholds
+  - Anomaly detection: spikes and drops flagged with deviation score
+  - Zero-stddev fallback: percentage-based detection when all values identical
+  - Trend classification: growing, declining, or stable with strength score
+  - First-half vs second-half comparison for trend direction
+  - Per-key usage summaries with totalCalls, totalCredits, topTools
+  - Configurable maxDataPoints with oldest-first eviction
+  - Batch recording support
+
 ## 10.13.0 (2026-02-28)
 
 ### Event Ledger — Immutable Event Sourcing

@@ -203,6 +203,16 @@ export type { QuotaDefinition, QuotaCreateParams, QuotaPeriod as RolloverQuotaPe
 export { KeyScopeManager } from './key-scoping';
 export type { ScopeDefinition, ScopeDefinitionParams, KeyScopes, AccessCheckResult, TemporaryGrant, KeyScopeConfig, KeyScopeStats } from './key-scoping';
 
+// ── v10.14.0 ──────────────────────────────────────────────────────────
+export { FeatureFlagManager } from './feature-flags';
+export type { FeatureFlag, FlagCreateParams, FlagEvaluation, FeatureFlagConfig, FeatureFlagStats } from './feature-flags';
+export { AuditTrailManager } from './audit-trail';
+export type { AuditEntry, AuditRecordParams, AuditQuery as TrailAuditQuery, AuditQueryResult as TrailAuditQueryResult, ChainVerification, AuditTrailConfig, AuditTrailStats } from './audit-trail';
+export { RequestPipelineManager } from './request-pipeline';
+export type { PipelineContext, PipelineMiddleware, MiddlewareRegistration, MiddlewareHandler, PipelineStage, PipelineResult, PipelineConfig, PipelineStats } from './request-pipeline';
+export { UsageTrendAnalyzer } from './usage-trends';
+export type { DataPoint, TrendResult, Anomaly, UsageSummary as TrendUsageSummary, UsageTrendConfig, UsageTrendStats } from './usage-trends';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,
