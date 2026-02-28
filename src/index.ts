@@ -90,6 +90,12 @@ export { ToolSchemaValidator } from './schema-validator';
 export type { ToolSchema, SchemaNode, ValidationResult, ValidationError, SchemaStats } from './schema-validator';
 export { CanaryRouter } from './canary-router';
 export type { CanaryConfig, CanaryStats, CanaryBackend, CanaryDecision } from './canary-router';
+export { TransformPipeline } from './transforms';
+export type { TransformRule, TransformRuleCreateParams, TransformOperation, TransformDirection, TransformOp, TransformStats, TransformContext } from './transforms';
+export { RetryPolicy } from './retry-policy';
+export type { RetryConfig, RetryStats, RetryResult } from './retry-policy';
+export { AdaptiveRateLimiter } from './adaptive-rate-limiter';
+export type { AdaptiveRateConfig, AdaptiveRateStats, AdaptiveRateAdjustment, KeyBehavior } from './adaptive-rate-limiter';
 
 export type {
   PayGateConfig,

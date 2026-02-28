@@ -1,5 +1,46 @@
 # Changelog
 
+## 9.7.0 (2026-02-28)
+
+### Request/Response Transform Pipeline
+- **Declarative rewriting of tool call arguments and responses** — inject defaults, strip fields, rename keys, and template values without touching server code:
+  - `POST /admin/transforms` — create transform rules with ordered operations
+  - `GET /admin/transforms` — list all rules with applied/error counts
+  - `PUT /admin/transforms` — update rule priority, enabled status, or description
+  - `DELETE /admin/transforms` — remove rule by ID
+  - Four operations: `set` (inject value at dotted path), `remove` (strip key), `rename` (move key), `template` (interpolate `{{variables}}` from context)
+  - Wildcard tool matching (`*`) for global transforms
+  - Priority ordering (lower = earlier) for deterministic rule execution
+  - Deep clone on apply — input data never mutated
+  - Import/export for backup and restore
+  - Max 200 rules per instance
+  - Public API: `TransformPipeline` class exported
+
+### Backend Retry Policy
+- **Automatic retry with exponential backoff** — prevents credits being charged for transient failures:
+  - `GET /admin/retry-policy` — view retry config and stats
+  - `POST /admin/retry-policy` — update retry configuration at runtime
+  - Configurable max retries (default 3), base backoff (200ms), max backoff (5s)
+  - Full jitter option for thundering-herd prevention
+  - Retry budget: max percentage of recent traffic as retries (default 20%) with cold-start grace period
+  - Configurable retryable error patterns: JSON-RPC codes (`-32603`, `-32004`) and string patterns (`ETIMEDOUT`, `ECONNRESET`)
+  - Per-tool stats: attempts, successes-after-retry, exhausted counts
+  - Sliding 60-second window for budget calculation
+  - Public API: `RetryPolicy` class exported
+
+### Adaptive Rate Limiting
+- **Dynamic rate adjustment based on key behavior** — tightens for abusers, boosts for good actors:
+  - `GET /admin/adaptive-rates` — view adaptive rate stats per key
+  - `POST /admin/adaptive-rates` — enable/disable adaptive rates and configure thresholds
+  - Behavior tracking: success rate, denial count, error rate per key
+  - Auto-tighten: keys with >30% error rate get reduced limits (down to configurable minimum)
+  - Auto-boost: keys with <5% error rate and 0 denials get increased limits (up to configurable maximum)
+  - Cooldown period prevents rapid oscillation (default 60s)
+  - `evaluateAll()` for periodic batch assessment
+  - Max 5,000 tracked keys with LRU eviction
+  - Per-key reset and global clear
+  - Public API: `AdaptiveRateLimiter` class exported
+
 ## 9.6.0 (2026-02-28)
 
 ### Usage Plans

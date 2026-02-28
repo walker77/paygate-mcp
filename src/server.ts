@@ -69,6 +69,9 @@ import { ToolAliasManager } from './tool-aliases';
 import { UsagePlanManager } from './usage-plans';
 import { ToolSchemaValidator } from './schema-validator';
 import { CanaryRouter } from './canary-router';
+import { TransformPipeline } from './transforms';
+import { RetryPolicy } from './retry-policy';
+import { AdaptiveRateLimiter } from './adaptive-rate-limiter';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -473,6 +476,12 @@ export class PayGateServer {
   readonly schemaValidator: ToolSchemaValidator;
   /** Canary router for weighted traffic splitting. */
   readonly canaryRouter: CanaryRouter;
+  /** Request/response transform pipeline. */
+  readonly transforms: TransformPipeline;
+  /** Backend retry policy. */
+  readonly retryPolicy: RetryPolicy;
+  /** Adaptive rate limiter. */
+  readonly adaptiveRates: AdaptiveRateLimiter;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -758,6 +767,9 @@ export class PayGateServer {
     this.usagePlans = new UsagePlanManager();
     this.schemaValidator = new ToolSchemaValidator();
     this.canaryRouter = new CanaryRouter();
+    this.transforms = new TransformPipeline();
+    this.retryPolicy = new RetryPolicy();
+    this.adaptiveRates = new AdaptiveRateLimiter();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1406,6 +1418,12 @@ export class PayGateServer {
         return this.handleToolSchema(req, res);
       case '/admin/canary':
         return this.handleCanary(req, res);
+      case '/admin/transforms':
+        return this.handleTransforms(req, res);
+      case '/admin/retry-policy':
+        return this.handleRetryPolicy(req, res);
+      case '/admin/adaptive-rates':
+        return this.handleAdaptiveRates(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -2631,6 +2649,9 @@ export class PayGateServer {
         adminKeyPlan: 'POST /admin/keys/plan — Assign key to plan or unassign (requires X-Admin-Key)',
         adminToolSchema: 'GET /admin/tools/schema — List schemas; POST /admin/tools/schema — Register schema; DELETE /admin/tools/schema?tool= — Remove schema (requires X-Admin-Key)',
         adminCanary: 'GET /admin/canary — Canary status; POST /admin/canary — Enable canary; POST /admin/canary — Update weight; DELETE /admin/canary — Disable canary (requires X-Admin-Key)',
+        adminTransforms: 'GET /admin/transforms — List transform rules; POST /admin/transforms — Create rule; DELETE /admin/transforms?id= — Remove rule (requires X-Admin-Key)',
+        adminRetryPolicy: 'GET /admin/retry-policy — View retry policy and stats; POST /admin/retry-policy — Update retry configuration (requires X-Admin-Key)',
+        adminAdaptiveRates: 'GET /admin/adaptive-rates — View adaptive rate stats; POST /admin/adaptive-rates — Configure adaptive rate limiting (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -14917,5 +14938,101 @@ export class PayGateServer {
     const sorted = [...values].sort((a, b) => a - b);
     const idx = Math.ceil((p / 100) * sorted.length) - 1;
     return sorted[Math.max(0, idx)];
+  }
+
+  // ─── /admin/transforms — Transform pipeline management ────────────────────
+  private async handleTransforms(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.transforms.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Update existing rule?
+      if (params.id && (params.priority !== undefined || params.enabled !== undefined)) {
+        try {
+          const updated = this.transforms.updateRule(params.id as string, params as any);
+          this.sendJson(res, 200, updated);
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update rule');
+        }
+        return;
+      }
+
+      // Create new rule
+      try {
+        const rule = this.transforms.createRule(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Transform rule created: "${rule.id}" for tool "${rule.tool}"`, { id: rule.id, tool: rule.tool });
+        this.sendJson(res, 200, rule);
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot create rule');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const url = new URL(req.url || '', `http://localhost`);
+      const id = url.searchParams.get('id');
+      if (!id) { this.sendError(res, 400, 'Missing ?id= query parameter'); return; }
+      const removed = this.transforms.removeRule(id);
+      if (!removed) { this.sendError(res, 404, 'Rule not found'); return; }
+      this.audit.log('config.updated' as any, 'admin', `Transform rule removed: "${id}"`, { id });
+      this.sendJson(res, 200, { deleted: id });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /admin/retry-policy — Retry policy management ────────────────────────
+  private async handleRetryPolicy(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.retryPolicy.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      try {
+        const config = this.retryPolicy.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Retry policy updated: maxRetries=${config.maxRetries}`, params);
+        this.sendJson(res, 200, this.retryPolicy.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update retry policy');
+      }
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
+  }
+
+  // ─── /admin/adaptive-rates — Adaptive rate limiting management ────────────
+  private async handleAdaptiveRates(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.adaptiveRates.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      try {
+        const config = this.adaptiveRates.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Adaptive rate limiting ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.adaptiveRates.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update adaptive rates');
+      }
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
   }
 }
