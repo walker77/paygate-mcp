@@ -221,6 +221,33 @@ export interface PayGateConfig {
   discoveryMode?: 'static' | 'dynamic';
   /** Spend cap configuration for preventing runaway agents. Undefined = disabled. */
   spendCaps?: SpendCapConfig;
+  /** x402 payment protocol configuration. Undefined = disabled. */
+  x402?: X402Config;
+  /** OpenAPI spec JSON string for wrap-api mode. Undefined = not in wrap-api mode. */
+  openApiSpec?: string;
+  /** OpenAPI base URL override (for wrap-api mode). */
+  openApiBaseUrl?: string;
+}
+
+// ─── x402 Payment Config ──────────────────────────────────────────────────
+
+export interface X402Config {
+  /** Enable x402 payment support. Default: false. */
+  enabled: boolean;
+  /** Recipient wallet address (e.g., '0x1234...'). Required. */
+  payTo: string;
+  /** Blockchain network (e.g., 'base', 'base-sepolia', 'ethereum'). Default: 'base'. */
+  network: string;
+  /** Token contract address for USDC on the chosen network. */
+  asset: string;
+  /** Facilitator URL for payment verification. Default: 'https://x402.org/facilitator'. */
+  facilitatorUrl: string;
+  /** How many credits $1.00 USD buys. Default: 100. */
+  creditsPerDollar: number;
+  /** Description shown to payers. */
+  description?: string;
+  /** Max payment timeout in seconds. Default: 60. */
+  maxTimeoutSeconds?: number;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────

@@ -1,5 +1,36 @@
 # Changelog
 
+## 10.5.0 (2026-02-28)
+
+### x402 Payment Protocol Support
+- **HTTP 402-based micropayments** as an alternative to API keys for tool billing:
+  - x402 protocol (coinbase/x402) integration — pay per tool call with stablecoins (USDC)
+  - Client flow: request without key → receives 402 + `PAYMENT-REQUIRED` header → signs payment → retries with `X-PAYMENT` header
+  - Server verifies payment via external Facilitator service (Coinbase, QuickNode, etc.)
+  - Zero blockchain dependencies — all verification is delegated to Facilitator
+  - Ephemeral API keys created on payment verification with exact credits awarded
+  - Configurable credits-per-dollar exchange rate
+  - `GET /admin/x402` — view payment stats, config, and verification history
+  - `POST /admin/x402` — manual payment verification, generate test requirements
+  - Config: `x402: { enabled, payTo, network, asset, facilitatorUrl, creditsPerDollar }`
+
+### OpenAPI-to-MCP Transformation (wrap-api)
+- **`paygate-mcp wrap-api --openapi spec.json`** — wraps any REST API as gated MCP tools:
+  - Parses OpenAPI 3.x specs → generates MCP tool definitions from operations
+  - Tool naming: uses `operationId` or `{method}_{path_slug}` as fallback
+  - Input schemas from path/query parameters and request body
+  - HTTP proxy handler forwards MCP tool calls to upstream REST API
+  - Path parameter substitution, query parameter injection, JSON body forwarding
+  - Tag filtering (`--tag-filter`), tool prefix (`--prefix`), deprecated exclusion
+  - Auth header forwarding for upstream API authentication
+  - Full RequestHandler interface — works with all PayGate features (billing, rate limiting, analytics, etc.)
+  - `--base-url` to override API server URL
+  - `--dry-run` to discover tools without running
+
+### Test Coverage
+- 4,336 tests across 206 suites (60 new tests)
+- New test suites: `x402.test.ts`, `openapi-to-mcp.test.ts`, `openapi-backend.test.ts`
+
 ## 10.4.0 (2026-02-28)
 
 ### Spend Caps with Auto-Suspend

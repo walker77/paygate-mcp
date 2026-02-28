@@ -130,6 +130,12 @@ export { SpendCapManager } from './spend-caps';
 export type { SpendCapCheckResult } from './spend-caps';
 export { TaskManager } from './task-manager';
 export type { TaskRecord, TaskStatus, TaskListQuery, TaskListResult } from './task-manager';
+export { X402Handler } from './x402';
+export type { PaymentRequirements, X402VerifyResult, X402Stats } from './x402';
+export { OpenApiMcpBackend } from './openapi-backend';
+export type { OpenApiMcpBackendConfig } from './openapi-backend';
+export { parseOpenApiSpec, resolveBaseUrl, createApiProxyHandler, summarizeSpec } from './openapi-to-mcp';
+export type { McpToolDef, OpenApiSpec, OpenApiToMcpConfig } from './openapi-to-mcp';
 
 export type {
   PayGateConfig,
@@ -146,6 +152,7 @@ export type {
   GateDecision,
   QuotaConfig,
   SpendCapConfig,
+  X402Config,
   BatchToolCall,
   BatchGateResult,
   WebhookFilterRule,

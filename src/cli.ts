@@ -54,6 +54,7 @@ function printUsage(): void {
     paygate-mcp wrap --server <command> [options]     # stdio transport
     paygate-mcp wrap --remote-url <url> [options]     # Streamable HTTP transport
     paygate-mcp wrap --config <path> [options]        # load from config file
+    paygate-mcp wrap-api --openapi <spec.json> [opts] # wrap REST API as MCP tools
     paygate-mcp init [--output <path>] [--force]      # interactive setup wizard
     paygate-mcp validate --config <path>              # validate config without starting
     paygate-mcp completions <bash|zsh|fish>           # generate shell completions
@@ -673,6 +674,138 @@ async function main(): Promise<void> {
         console.log(generateCompletions(shell));
       } catch (err) {
         console.error((err as Error).message);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'wrap-api': {
+      // ─── wrap-api: Convert OpenAPI spec → gated MCP tools ───────────────
+      const specPath = flags['openapi'] || flags['spec'];
+      if (!specPath) {
+        console.error('Error: --openapi <path-or-url> is required for wrap-api.\n');
+        console.log('  Usage: paygate-mcp wrap-api --openapi <spec.json> [--base-url <url>] [options]');
+        console.log('');
+        console.log('  Wraps any REST API described by an OpenAPI 3.x spec as gated MCP tools.');
+        console.log('  All standard PayGate options (--port, --price, --rate-limit, etc.) apply.');
+        console.log('');
+        console.log('  Options:');
+        console.log('    --openapi <path>     Path to OpenAPI 3.x spec (JSON)');
+        console.log('    --base-url <url>     Override base URL for API calls');
+        console.log('    --prefix <s>         Prefix for tool names (e.g. "api_")');
+        console.log('    --tag-filter <s>     Only include operations with this tag');
+        console.log('');
+        process.exit(1);
+      }
+
+      let specJson: string;
+      try {
+        specJson = readFileSync(specPath, 'utf-8');
+        // Validate it's parseable JSON
+        JSON.parse(specJson);
+      } catch (err) {
+        console.error(`Error reading OpenAPI spec: ${(err as Error).message}`);
+        process.exit(1);
+      }
+
+      const apiBaseUrl = flags['base-url'] || undefined;
+      const apiPrefix = flags['prefix'] || undefined;
+      const apiTagFilter = flags['tag-filter'] || undefined;
+      const apiPortFlag = flags['port'] || env('PAYGATE_PORT');
+      const apiPriceFlag = flags['price'] || env('PAYGATE_PRICE');
+      const apiRateLimitFlag = flags['rate-limit'] || env('PAYGATE_RATE_LIMIT');
+      const apiShadowFlag = ('shadow' in flags) || env('PAYGATE_SHADOW') === 'true';
+      const apiAdminKeyFlag = flags['admin-key'] || env('PAYGATE_ADMIN_KEY');
+      const apiStateFileFlag = flags['state-file'] || env('PAYGATE_STATE_FILE');
+      const apiLogLevelFlag = flags['log-level'] || env('PAYGATE_LOG_LEVEL');
+      const apiLogFormatFlag = flags['log-format'] || env('PAYGATE_LOG_FORMAT');
+      const apiToolPriceFlag = flags['tool-price'] || env('PAYGATE_TOOL_PRICE');
+      const apiRedisUrlFlag = flags['redis-url'] || env('PAYGATE_REDIS_URL');
+
+      const apiPort = parseInt(apiPortFlag || '3402', 10);
+      const apiPrice = parseInt(apiPriceFlag || '1', 10);
+      const apiRateLimit = parseInt(apiRateLimitFlag || '60', 10);
+
+      // Build a dummy serverCommand since PayGateServer requires it
+      const config: any = {
+        serverCommand: '__openapi__',
+        serverArgs: [],
+        port: apiPort,
+        defaultCreditsPerCall: apiPrice,
+        globalRateLimitPerMin: apiRateLimit,
+        shadowMode: !!apiShadowFlag,
+        openApiSpec: specJson,
+        openApiBaseUrl: apiBaseUrl,
+        logLevel: apiLogLevelFlag || 'info',
+        logFormat: apiLogFormatFlag || 'text',
+        name: 'PayGate MCP (OpenAPI)',
+        toolPricing: apiToolPriceFlag ? parseToolPricing(apiToolPriceFlag) : {},
+      };
+
+      const apiServer = new PayGateServer(
+        config,
+        apiAdminKeyFlag,
+        apiStateFileFlag,
+        undefined, // remoteUrl
+        undefined, // stripeSecret
+        undefined, // servers
+        apiRedisUrlFlag,
+      );
+
+      // Handle graceful shutdown
+      let apiShuttingDown = false;
+      const apiShutdown = async (reason?: string) => {
+        if (apiShuttingDown) return;
+        apiShuttingDown = true;
+        console.log(`\nGraceful shutdown initiated${reason ? ` (${reason})` : ''}…`);
+        await apiServer.gracefulStop(30_000);
+        process.exit(reason ? 1 : 0);
+      };
+      process.on('SIGINT', () => apiShutdown());
+      process.on('SIGTERM', () => apiShutdown());
+
+      try {
+        const result = await apiServer.start();
+
+        // Get tool count from the OpenAPI backend
+        const handler = (apiServer as any).handler;
+        let toolCount = 0;
+        try {
+          const toolsResp = await handler.handleRequest(
+            { jsonrpc: '2.0', id: 'init', method: 'tools/list', params: {} },
+            null
+          );
+          toolCount = ((toolsResp?.result as any)?.tools || []).length;
+        } catch { /* ignore */ }
+
+        console.log(`
+  ╔══════════════════════════════════════════════════╗
+  ║       PayGate MCP — OpenAPI Wrapped              ║
+  ╠══════════════════════════════════════════════════╣
+  ║                                                  ║
+  ║  Endpoint:   http://localhost:${String(result.port).padEnd(5)}              ║
+  ║  Admin Key:  ${result.adminKey.slice(0, 20)}...       ║
+  ║  Backend:    OpenAPI (${String(toolCount).padEnd(3)} tools)                ║
+  ║  Source:     ${specPath.slice(0, 35).padEnd(35)}║
+  ║                                                  ║
+  ║  Pricing:    ${String(apiPrice).padEnd(3)} credit(s) per tool call       ║
+  ║  Rate Limit: ${String(apiRateLimit).padEnd(3)} calls/min per key          ║
+  ║  Shadow:     ${String(!!apiShadowFlag).padEnd(5)}                            ║
+  ║                                                  ║
+  ╚══════════════════════════════════════════════════╝
+`);
+
+        console.log(`  Admin key (save this): ${result.adminKey}\n`);
+
+        // Dry run
+        const isDryRun = flags['dry-run'] === 'true' || 'dry-run' in flags;
+        if (isDryRun) {
+          console.log(`  Discovered ${toolCount} tool(s) from OpenAPI spec. Dry run complete.\n`);
+          await apiServer.stop();
+          process.exit(0);
+        }
+      } catch (error) {
+        console.error('Failed to start server:', error);
         process.exit(1);
       }
       break;

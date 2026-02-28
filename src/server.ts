@@ -90,6 +90,8 @@ import { GatewayHookManager } from './gateway-hooks';
 import { getMetaTools, isMetaTool, handleMetaToolCall, ToolInfo, DynamicDiscoveryConfig } from './dynamic-discovery';
 import { SpendCapManager } from './spend-caps';
 import { TaskManager, TaskRecord } from './task-manager';
+import { X402Handler } from './x402';
+import { OpenApiMcpBackend } from './openapi-backend';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -338,7 +340,7 @@ function ipToNum(ip: string): number | null {
 }
 
 /** Union type for both proxy backends */
-type ProxyBackend = McpProxy | HttpMcpProxy;
+type ProxyBackend = McpProxy | HttpMcpProxy | OpenApiMcpBackend;
 
 /** Self-service alert configuration stored per API key */
 interface SelfServiceAlert {
@@ -537,6 +539,9 @@ export class PayGateServer {
   /** MCP Task manager for async task lifecycle. */
   readonly taskManager: TaskManager;
 
+  /** x402 payment handler. Null = disabled. */
+  readonly x402: X402Handler | null = null;
+
   /** Cached backend tool list for dynamic discovery mode. */
   private cachedBackendTools: ToolInfo[] | null = null;
 
@@ -593,10 +598,26 @@ export class PayGateServer {
     // MCP Tasks lifecycle manager
     this.taskManager = new TaskManager();
 
+    // x402 payment protocol support
+    if (this.config.x402?.enabled) {
+      this.x402 = new X402Handler(this.config.x402);
+      this.logger.info(`x402 payments enabled (network=${this.config.x402.network}, payTo=${this.config.x402.payTo.slice(0, 10)}...)`);
+    }
+
     // Multi-server mode: use Router
     if (servers && servers.length > 0) {
       this.router = new MultiServerRouter(this.gate, servers);
       this.proxy = null;
+    } else if (this.config.openApiSpec) {
+      // OpenAPI wrap-api mode: virtual MCP backend from OpenAPI spec
+      const openApiBackend = new OpenApiMcpBackend({
+        specJson: this.config.openApiSpec,
+        baseUrl: this.config.openApiBaseUrl,
+      });
+      openApiBackend.setGate(this.gate);
+      this.proxy = openApiBackend;
+      this.router = null;
+      this.logger.info(`OpenAPI backend: ${openApiBackend.getInfo().title} (${openApiBackend.getInfo().totalTools} tools)`);
     } else if (remoteUrl) {
       this.proxy = new HttpMcpProxy(this.gate, remoteUrl);
       this.router = null;
@@ -1542,6 +1563,8 @@ export class PayGateServer {
         return this.handleGatewayHooks(req, res);
       case '/admin/spend-caps':
         return this.handleSpendCaps(req, res);
+      case '/admin/x402':
+        return this.handleAdminX402(req, res);
       case '/admin/tasks':
         return this.handleAdminTasks(req, res);
       case '/keys/geo':
@@ -1809,7 +1832,7 @@ export class PayGateServer {
     const requestId = (req as any)._requestId as string;
 
     // Resolve API key from X-API-Key or Bearer token
-    const apiKey = this.resolveApiKey(req);
+    let apiKey = this.resolveApiKey(req);
 
     // GET /mcp — Open SSE stream for server-to-client notifications
     if (req.method === 'GET') {
@@ -2078,6 +2101,34 @@ export class PayGateServer {
         }
         // If not a meta-tool, fall through to normal tools/call handling
       }
+    }
+
+    // ─── x402 Payment: handle X-PAYMENT header for crypto payments ─────
+    if (this.x402 && !apiKey && this.x402.hasPayment(req) && request.method === 'tools/call') {
+      const paymentHeader = req.headers['x-payment'] as string;
+      const x402ToolName = (request.params as Record<string, unknown>)?.name as string || '';
+      const creditsRequired = this.gate.getToolPrice(x402ToolName, (request.params as Record<string, unknown>)?.arguments as Record<string, unknown>);
+      const verifyResult = await this.x402.verifyPayment(paymentHeader, creditsRequired, '/mcp');
+
+      if (!verifyResult.valid) {
+        // Payment failed — return 402 with requirements
+        this.x402.write402Response(res, creditsRequired, '/mcp', verifyResult.error);
+        return;
+      }
+
+      // Payment verified — create ephemeral key with awarded credits
+      const ephemeralKey = `x402_${randomBytes(16).toString('hex')}`;
+      this.gate.store.createKey(ephemeralKey, verifyResult.creditsAwarded, { namespace: 'x402' });
+      apiKey = ephemeralKey;
+      this.audit.log('x402.payment_verified' as any, ephemeralKey.slice(0, 10), `x402 payment verified: ${verifyResult.amountUsd}`, {
+        requestId, creditsAwarded: verifyResult.creditsAwarded, txHash: verifyResult.txHash, tool: x402ToolName,
+      });
+    } else if (this.x402 && !apiKey && !this.x402.hasPayment(req) && request.method === 'tools/call') {
+      // No API key and no x402 payment — send 402 with payment requirements
+      const x402ToolName = (request.params as Record<string, unknown>)?.name as string || '';
+      const creditsRequired = this.gate.getToolPrice(x402ToolName, (request.params as Record<string, unknown>)?.arguments as Record<string, unknown>);
+      this.x402.write402Response(res, creditsRequired, '/mcp', 'No API key or x402 payment provided. Include X-PAYMENT header with signed payment proof, or provide an X-API-Key.');
+      return;
     }
 
     // ─── Spend Caps: server-wide and per-key hourly caps ─────────────────
@@ -3112,6 +3163,7 @@ export class PayGateServer {
         adminGatewayHooks: 'GET /admin/gateway-hooks — View hooks and stats; POST /admin/gateway-hooks — Register/update/delete hooks, test execution (requires X-Admin-Key)',
         adminSpendCaps: 'GET /admin/spend-caps — View spend cap stats and auto-suspended keys; POST /admin/spend-caps — Update config, clear auto-suspend (requires X-Admin-Key)',
         adminTasks: 'GET /admin/tasks — View MCP task lifecycle status and stats (requires X-Admin-Key)',
+        ...(this.x402 ? { adminX402: 'GET /admin/x402 — View x402 payment stats and config (requires X-Admin-Key)' } : {}),
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthProtectedResource: 'GET /.well-known/oauth-protected-resource — Protected Resource Metadata (RFC 9728)',
@@ -16901,6 +16953,62 @@ export class PayGateServer {
         }
         default:
           this.sendError(res, 400, 'Unknown action. Use cancel/stats.');
+          return;
+      }
+    }
+
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
+  }
+
+  // ─── /admin/x402 — x402 payment protocol stats and config ─────────────────
+
+  private async handleAdminX402(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.x402) {
+      this.sendError(res, 404, 'x402 payments not enabled');
+      return;
+    }
+
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, {
+        config: this.x402.getPublicConfig(),
+        stats: this.x402.getStats(),
+      });
+      return;
+    }
+
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const raw = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(raw); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const action = String(params.action ?? '');
+
+      switch (action) {
+        case 'verify': {
+          // Manual payment verification (for testing/debugging)
+          const paymentHeader = String(params.paymentHeader ?? '');
+          if (!paymentHeader) { this.sendError(res, 400, 'paymentHeader is required'); return; }
+          const credits = Number(params.credits ?? 1);
+          const resource = String(params.resource ?? '/mcp');
+          const result = await this.x402.verifyPayment(paymentHeader, credits, resource);
+          this.sendJson(res, 200, result);
+          return;
+        }
+        case 'requirements': {
+          // Generate payment requirements for testing
+          const credits = Number(params.credits ?? 1);
+          const resource = String(params.resource ?? '/mcp');
+          const requirements = this.x402.generatePaymentRequired(credits, resource);
+          this.sendJson(res, 200, { paymentRequired: requirements });
+          return;
+        }
+        case 'stats': {
+          this.sendJson(res, 200, this.x402.getStats());
+          return;
+        }
+        default:
+          this.sendError(res, 400, 'Unknown action. Use verify/requirements/stats.');
           return;
       }
     }
