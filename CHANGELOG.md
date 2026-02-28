@@ -1,5 +1,44 @@
 # Changelog
 
+## 9.8.0 (2026-02-28)
+
+### Request Deduplication (Idempotency Layer)
+- **Prevents duplicate billing from agent retries** — clients send `X-Idempotency-Key` header or proxy auto-generates one via SHA-256 of apiKey + tool + sorted args:
+  - `GET /admin/dedup` — view dedup stats (cached entries, credits saved, hit rate)
+  - `POST /admin/dedup` — configure dedup TTL, max entries, auto-generation
+  - `DELETE /admin/dedup` — clear dedup cache
+  - In-flight request coalescing: concurrent duplicate requests share the first result
+  - Configurable TTL window (default 60s) for completed request cache
+  - LRU eviction at capacity (default 10,000 entries)
+  - Errors are not cached — retries of failed requests go through
+  - Stats: total deduped, total coalesced, credits saved, hit rate
+  - Public API: `RequestDeduplicator` class exported
+
+### Request Priority Queue
+- **Tiered request prioritization with fair scheduling** — higher-priority keys are processed first when the system is under contention:
+  - `GET /admin/priority-queue` — view queue stats (depth per tier, wait times, promotions)
+  - `POST /admin/priority-queue` — configure queue or assign key priority tier
+  - Five priority tiers: critical (bypasses queue), high, normal (default), low, background
+  - Per-key priority assignment via admin endpoint or key group inheritance
+  - Configurable max wait time per tier (critical=1s, high=5s, normal=15s, low=30s, background=60s)
+  - Starvation prevention: automatic promotion after aging threshold
+  - Max queue depth (default 1,000) with per-tier breakdown
+  - Stats: total enqueued, processed, timed out, promoted, average wait time
+  - Public API: `PriorityQueue` class exported
+
+### Cost Allocation Tags with Chargeback Reporting
+- **Per-request cost attribution for enterprise chargeback** — clients attach tags via `X-Cost-Tags` header (JSON) for fine-grained cost tracking:
+  - `GET /admin/cost-tags` — view cost tag stats (unique keys, values per key, credits tracked)
+  - `GET /admin/cost-tags?dimension=project` — generate chargeback report grouped by tag dimension
+  - `GET /admin/cost-tags?dimension=project&dim2=dept` — cross-tabulation report (two dimensions)
+  - `GET /admin/cost-tags?dimension=project&format=csv` — CSV export for billing/ERP integration
+  - `POST /admin/cost-tags` — configure limits or set required tags per API key
+  - `DELETE /admin/cost-tags` — clear recorded entries
+  - Tag validation: max 10 tags/request, 64-char keys/values, alphanumeric + `-_:.` pattern
+  - Cardinality limits: max 1,000 unique keys, 10,000 values per key
+  - Required tag enforcement: keys with `requiredTags` must include specified tags
+  - Public API: `CostAllocator` class exported
+
 ## 9.7.0 (2026-02-28)
 
 ### Request/Response Transform Pipeline

@@ -96,6 +96,12 @@ export { RetryPolicy } from './retry-policy';
 export type { RetryConfig, RetryStats, RetryResult } from './retry-policy';
 export { AdaptiveRateLimiter } from './adaptive-rate-limiter';
 export type { AdaptiveRateConfig, AdaptiveRateStats, AdaptiveRateAdjustment, KeyBehavior } from './adaptive-rate-limiter';
+export { RequestDeduplicator } from './dedup';
+export type { DedupConfig, DedupStats, DedupResult, DedupEntry } from './dedup';
+export { PriorityQueue, PRIORITY_ORDER, TIER_VALUES } from './priority-queue';
+export type { PriorityTier, PriorityQueueConfig, PriorityQueueStats, QueuedRequest } from './priority-queue';
+export { CostAllocator } from './cost-tags';
+export type { CostTagConfig, CostTagStats, ChargebackReport, ChargebackRow, CrossTabReport, CrossTabRow, CostTagEntry } from './cost-tags';
 
 export type {
   PayGateConfig,

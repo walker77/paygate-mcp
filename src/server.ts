@@ -72,6 +72,9 @@ import { CanaryRouter } from './canary-router';
 import { TransformPipeline } from './transforms';
 import { RetryPolicy } from './retry-policy';
 import { AdaptiveRateLimiter } from './adaptive-rate-limiter';
+import { RequestDeduplicator } from './dedup';
+import { PriorityQueue } from './priority-queue';
+import { CostAllocator } from './cost-tags';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -482,6 +485,12 @@ export class PayGateServer {
   readonly retryPolicy: RetryPolicy;
   /** Adaptive rate limiter. */
   readonly adaptiveRates: AdaptiveRateLimiter;
+  /** Request deduplicator. */
+  readonly deduplicator: RequestDeduplicator;
+  /** Priority queue. */
+  readonly priorityQueue: PriorityQueue;
+  /** Cost allocation tags. */
+  readonly costAllocator: CostAllocator;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -770,6 +779,9 @@ export class PayGateServer {
     this.transforms = new TransformPipeline();
     this.retryPolicy = new RetryPolicy();
     this.adaptiveRates = new AdaptiveRateLimiter();
+    this.deduplicator = new RequestDeduplicator();
+    this.priorityQueue = new PriorityQueue();
+    this.costAllocator = new CostAllocator();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1424,6 +1436,12 @@ export class PayGateServer {
         return this.handleRetryPolicy(req, res);
       case '/admin/adaptive-rates':
         return this.handleAdaptiveRates(req, res);
+      case '/admin/dedup':
+        return this.handleDedup(req, res);
+      case '/admin/priority-queue':
+        return this.handlePriorityQueue(req, res);
+      case '/admin/cost-tags':
+        return this.handleCostTags(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -2652,6 +2670,9 @@ export class PayGateServer {
         adminTransforms: 'GET /admin/transforms — List transform rules; POST /admin/transforms — Create rule; DELETE /admin/transforms?id= — Remove rule (requires X-Admin-Key)',
         adminRetryPolicy: 'GET /admin/retry-policy — View retry policy and stats; POST /admin/retry-policy — Update retry configuration (requires X-Admin-Key)',
         adminAdaptiveRates: 'GET /admin/adaptive-rates — View adaptive rate stats; POST /admin/adaptive-rates — Configure adaptive rate limiting (requires X-Admin-Key)',
+        adminDedup: 'GET /admin/dedup — View dedup stats and cache; POST /admin/dedup — Configure deduplication; DELETE /admin/dedup — Clear dedup cache (requires X-Admin-Key)',
+        adminPriorityQueue: 'GET /admin/priority-queue — View queue stats; POST /admin/priority-queue — Configure queue or set key priority (requires X-Admin-Key)',
+        adminCostTags: 'GET /admin/cost-tags — View cost tag stats; POST /admin/cost-tags — Generate chargeback report or set required tags (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -15034,5 +15055,134 @@ export class PayGateServer {
       return;
     }
     this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
+  }
+
+  // ─── /admin/dedup — Request deduplication management ──────────────────────
+
+  private async handleDedup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.deduplicator.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      try {
+        const config = this.deduplicator.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Deduplication ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.deduplicator.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update dedup config');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.deduplicator.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /admin/priority-queue — Priority queue management ────────────────────
+
+  private async handlePriorityQueue(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.priorityQueue.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Set key priority
+      if (params.apiKey && params.tier) {
+        try {
+          this.priorityQueue.setKeyPriority(String(params.apiKey), params.tier as any);
+          this.sendJson(res, 200, { apiKey: params.apiKey, tier: params.tier });
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Invalid priority');
+        }
+        return;
+      }
+
+      // Configure queue
+      try {
+        const config = this.priorityQueue.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Priority queue ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.priorityQueue.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update queue config');
+      }
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
+  }
+
+  // ─── /admin/cost-tags — Cost allocation tag management ────────────────────
+
+  private async handleCostTags(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const dimension = url.searchParams.get('dimension');
+      if (dimension) {
+        const startMs = url.searchParams.get('start') ? Number(url.searchParams.get('start')) : undefined;
+        const endMs = url.searchParams.get('end') ? Number(url.searchParams.get('end')) : undefined;
+        const dim2 = url.searchParams.get('dim2');
+        if (dim2) {
+          this.sendJson(res, 200, this.costAllocator.crossTab(dimension, dim2, startMs, endMs));
+        } else {
+          const report = this.costAllocator.report(dimension, startMs, endMs);
+          const format = url.searchParams.get('format');
+          if (format === 'csv') {
+            res.writeHead(200, { 'Content-Type': 'text/csv', 'Content-Disposition': `attachment; filename="chargeback-${dimension}.csv"` });
+            res.end(this.costAllocator.reportToCsv(report));
+          } else {
+            this.sendJson(res, 200, report);
+          }
+        }
+        return;
+      }
+      this.sendJson(res, 200, this.costAllocator.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+
+      // Set required tags for a key
+      if (params.apiKey && params.requiredTags) {
+        this.costAllocator.setRequiredTags(String(params.apiKey), params.requiredTags as string[]);
+        this.sendJson(res, 200, { apiKey: params.apiKey, requiredTags: params.requiredTags });
+        return;
+      }
+
+      // Configure cost allocator
+      try {
+        const config = this.costAllocator.configure(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Cost tags ${config.enabled ? 'enabled' : 'disabled'}`, params);
+        this.sendJson(res, 200, this.costAllocator.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update cost tag config');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.costAllocator.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
   }
 }
