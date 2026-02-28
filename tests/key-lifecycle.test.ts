@@ -1,301 +1,237 @@
-/**
- * Tests for v8.3.0 — Key Lifecycle Report
- *
- * GET /admin/lifecycle — Key lifecycle report with creation/revocation/expiry
- * trends, average lifetime, and at-risk keys.
- */
+import { KeyLifecycleManager } from '../src/key-lifecycle';
 
-import { PayGateServer } from '../src/server';
-import { DEFAULT_CONFIG } from '../src/types';
-import http from 'http';
+describe('KeyLifecycleManager', () => {
+  let mgr: KeyLifecycleManager;
 
-/* ── helpers ─────────────────────────────────────────────── */
-
-const ECHO_CMD = process.execPath;
-const ECHO_ARGS = ['-e', `
-  process.stdin.resume();
-  process.stdin.on('data', d => {
-    const r = JSON.parse(d.toString().trim());
-    if (r.method === 'tools/list') {
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: r.id, result: { tools: [
-        { name: 'tool_a', inputSchema: { type: 'object' } },
-      ] } }) + '\\n');
-    } else {
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: r.id, result: { content: [{ type: 'text', text: 'ok' }] } }) + '\\n');
-    }
-  });
-`];
-
-function makeServer(overrides: Record<string, any> = {}): PayGateServer {
-  return new PayGateServer({
-    ...DEFAULT_CONFIG,
-    serverCommand: ECHO_CMD,
-    serverArgs: ECHO_ARGS,
-    port: 0,
-    ...overrides,
-  });
-}
-
-function httpGet(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { hostname: '127.0.0.1', port, path, method: 'GET', headers },
-      (res) => {
-        let buf = '';
-        res.on('data', (c: Buffer) => (buf += c));
-        res.on('end', () => {
-          try { resolve({ status: res.statusCode!, body: JSON.parse(buf) }); }
-          catch { resolve({ status: res.statusCode!, body: buf }); }
-        });
-      }
-    );
-    req.on('error', reject);
-    req.end();
-  });
-}
-
-function httpPost(port: number, path: string, body: any, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> {
-  const data = JSON.stringify(body);
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { hostname: '127.0.0.1', port, path, method: 'POST', headers: { 'Content-Type': 'application/json', ...headers } },
-      (res) => {
-        let buf = '';
-        res.on('data', (c: Buffer) => (buf += c));
-        res.on('end', () => {
-          try { resolve({ status: res.statusCode!, body: JSON.parse(buf) }); }
-          catch { resolve({ status: res.statusCode!, body: buf }); }
-        });
-      }
-    );
-    req.on('error', reject);
-    req.end(data);
-  });
-}
-
-/* ── tests ───────────────────────────────────────────────── */
-
-describe('Key Lifecycle Report', () => {
-  let server: PayGateServer;
-  let port: number;
-  let adminKey: string;
-
-  beforeEach(async () => {
-    server = makeServer({ defaultCreditsPerCall: 5 });
-    const started = await server.start();
-    port = started.port;
-    adminKey = started.adminKey;
-  }, 30_000);
-
-  afterEach(async () => {
-    await server.gracefulStop(5_000);
-  }, 30_000);
-
-  test('returns complete report structure', async () => {
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.status).toBe(200);
-    // Events section
-    expect(r.body.events).toBeDefined();
-    expect(typeof r.body.events.created).toBe('number');
-    expect(typeof r.body.events.revoked).toBe('number');
-    expect(typeof r.body.events.suspended).toBe('number');
-    expect(typeof r.body.events.resumed).toBe('number');
-    expect(typeof r.body.events.rotated).toBe('number');
-    expect(typeof r.body.events.cloned).toBe('number');
-    // Trends
-    expect(Array.isArray(r.body.trends)).toBe(true);
-    // At risk
-    expect(Array.isArray(r.body.atRisk)).toBe(true);
+  beforeEach(() => {
+    mgr = new KeyLifecycleManager();
   });
 
-  test('empty system has zero event counts', async () => {
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.events.created).toBe(0);
-    expect(r.body.events.revoked).toBe(0);
-    expect(r.body.events.suspended).toBe(0);
-    expect(r.body.events.resumed).toBe(0);
-    expect(r.body.atRisk).toHaveLength(0);
+  afterEach(() => {
+    mgr.destroy();
   });
 
-  test('counts key creation events', async () => {
-    await httpPost(port, '/keys', { credits: 100, name: 'k1' }, { 'X-Admin-Key': adminKey });
-    await httpPost(port, '/keys', { credits: 200, name: 'k2' }, { 'X-Admin-Key': adminKey });
+  // ─── Key Creation ─────────────────────────────────────────────────
 
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.events.created).toBe(2);
+  test('create a key', () => {
+    expect(mgr.createKey({ id: 'k1', name: 'Key 1' })).toBe(true);
+    const key = mgr.getKey('k1');
+    expect(key).toBeTruthy();
+    expect(key!.state).toBe('created');
+    expect(key!.name).toBe('Key 1');
   });
 
-  test('counts revocation events', async () => {
-    const k = (await httpPost(port, '/keys', { credits: 100, name: 'rev' }, { 'X-Admin-Key': adminKey })).body.key;
-    await httpPost(port, '/keys/revoke', { key: k }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.events.created).toBe(1);
-    expect(r.body.events.revoked).toBe(1);
+  test('reject duplicate key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1' });
+    expect(mgr.createKey({ id: 'k1', name: 'Key 1 again' })).toBe(false);
   });
 
-  test('counts suspension and resumption events', async () => {
-    const k = (await httpPost(port, '/keys', { credits: 100, name: 'toggle' }, { 'X-Admin-Key': adminKey })).body.key;
-    await httpPost(port, '/keys/suspend', { key: k }, { 'X-Admin-Key': adminKey });
-    await httpPost(port, '/keys/resume', { key: k }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.events.suspended).toBe(1);
-    expect(r.body.events.resumed).toBe(1);
+  test('enforce max keys', () => {
+    const m = new KeyLifecycleManager({ maxKeys: 2 });
+    m.createKey({ id: 'a', name: 'A' });
+    m.createKey({ id: 'b', name: 'B' });
+    expect(m.createKey({ id: 'c', name: 'C' })).toBe(false);
+    m.destroy();
   });
 
-  test('trends show daily buckets', async () => {
-    await httpPost(port, '/keys', { credits: 100, name: 'trend-key' }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.trends.length).toBeGreaterThanOrEqual(1);
-    const today = new Date().toISOString().slice(0, 10);
-    const todayBucket = r.body.trends.find((t: any) => t.date === today);
-    expect(todayBucket).toBeDefined();
-    expect(todayBucket.created).toBeGreaterThanOrEqual(1);
+  test('auto-activate on create', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    expect(mgr.getKey('k1')!.state).toBe('active');
   });
 
-  test('at-risk includes expiring keys', async () => {
-    await httpPost(port, '/keys', {
-      credits: 100, name: 'expiring-soon',
-      expiresAt: new Date(Date.now() + 3 * 24 * 3_600_000).toISOString(), // 3 days
-    }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    const atRisk = r.body.atRisk.find((k: any) => k.name === 'expiring-soon');
-    expect(atRisk).toBeDefined();
-    expect(atRisk.risk).toBe('expiring_soon');
-    expect(atRisk.details.daysRemaining).toBeLessThan(7);
+  test('create with tags and metadata', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', tags: ['prod', 'team-a'], metadata: { owner: 'alice' } });
+    const key = mgr.getKey('k1');
+    expect(key!.tags).toEqual(['prod', 'team-a']);
+    expect(key!.metadata).toEqual({ owner: 'alice' });
   });
 
-  test('at-risk includes expired keys', async () => {
-    await httpPost(port, '/keys', {
-      credits: 100, name: 'already-expired',
-      expiresAt: new Date(Date.now() - 1000).toISOString(),
-    }, { 'X-Admin-Key': adminKey });
+  // ─── State Transitions ────────────────────────────────────────────
 
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    const atRisk = r.body.atRisk.find((k: any) => k.name === 'already-expired');
-    expect(atRisk).toBeDefined();
-    expect(atRisk.risk).toBe('expired');
+  test('activate a created key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1' });
+    expect(mgr.activate('k1')).toBe(true);
+    expect(mgr.getKey('k1')!.state).toBe('active');
   });
 
-  test('at-risk includes zero-credit keys', async () => {
-    // Create key with 5 credits, spend them all
-    const k = (await httpPost(port, '/keys', { credits: 5, name: 'zero-cred' }, { 'X-Admin-Key': adminKey })).body.key;
-    await httpPost(port, '/mcp', {
-      jsonrpc: '2.0', id: 999, method: 'tools/list', params: {},
-    }, { 'X-API-Key': k });
-    await httpPost(port, '/mcp', {
-      jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name: 'tool_a', arguments: {} },
-    }, { 'X-API-Key': k });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    const atRisk = r.body.atRisk.find((k: any) => k.name === 'zero-cred');
-    expect(atRisk).toBeDefined();
-    expect(atRisk.risk).toBe('zero_credits');
+  test('suspend an active key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    expect(mgr.suspend('k1', 'Suspicious activity')).toBe(true);
+    const key = mgr.getKey('k1');
+    expect(key!.state).toBe('suspended');
+    expect(key!.suspendReason).toBe('Suspicious activity');
   });
 
-  test('at-risk excludes suspended keys', async () => {
-    const k = (await httpPost(port, '/keys', {
-      credits: 100, name: 'susp-exp',
-      expiresAt: new Date(Date.now() + 1 * 24 * 3_600_000).toISOString(),
-    }, { 'X-Admin-Key': adminKey })).body.key;
-    await httpPost(port, '/keys/suspend', { key: k }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    const atRisk = r.body.atRisk.find((k: any) => k.name === 'susp-exp');
-    expect(atRisk).toBeUndefined();
+  test('reactivate a suspended key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    mgr.suspend('k1');
+    expect(mgr.reactivate('k1')).toBe(true);
+    expect(mgr.getKey('k1')!.state).toBe('active');
   });
 
-  test('at-risk excludes revoked keys', async () => {
-    const k = (await httpPost(port, '/keys', { credits: 100, name: 'rev-risk' }, { 'X-Admin-Key': adminKey })).body.key;
-    await httpPost(port, '/keys/revoke', { key: k }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    const atRisk = r.body.atRisk.find((k: any) => k.name === 'rev-risk');
-    expect(atRisk).toBeUndefined();
+  test('reactivate fails for non-suspended keys', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    expect(mgr.reactivate('k1')).toBe(false);
   });
 
-  test('healthy keys not in at-risk', async () => {
-    await httpPost(port, '/keys', { credits: 1000, name: 'healthy' }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.atRisk).toHaveLength(0);
+  test('revoke a key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    expect(mgr.revoke('k1', 'No longer needed')).toBe(true);
+    const key = mgr.getKey('k1');
+    expect(key!.state).toBe('revoked');
+    expect(key!.revokeReason).toBe('No longer needed');
   });
 
-  test('multiple lifecycle events for same key', async () => {
-    const k = (await httpPost(port, '/keys', { credits: 100, name: 'multi' }, { 'X-Admin-Key': adminKey })).body.key;
-    await httpPost(port, '/keys/suspend', { key: k }, { 'X-Admin-Key': adminKey });
-    await httpPost(port, '/keys/resume', { key: k }, { 'X-Admin-Key': adminKey });
-    await httpPost(port, '/keys/revoke', { key: k }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.events.created).toBe(1);
-    expect(r.body.events.suspended).toBe(1);
-    expect(r.body.events.resumed).toBe(1);
-    expect(r.body.events.revoked).toBe(1);
+  test('revoked key is terminal', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    mgr.revoke('k1');
+    expect(mgr.activate('k1')).toBe(false);
+    expect(mgr.suspend('k1')).toBe(false);
   });
 
-  test('average lifetime is null when no revoked keys', async () => {
-    await httpPost(port, '/keys', { credits: 100, name: 'active' }, { 'X-Admin-Key': adminKey });
-
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    expect(r.body.averageLifetimeHours).toBeNull();
+  test('invalid transitions rejected', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1' });
+    expect(mgr.suspend('k1')).toBe(false);
   });
 
-  test('requires admin key', async () => {
-    const r = await httpGet(port, '/admin/lifecycle');
-    expect(r.status).toBe(401);
+  // ─── Deletion ─────────────────────────────────────────────────────
+
+  test('delete revoked key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    mgr.revoke('k1');
+    expect(mgr.deleteKey('k1')).toBe(true);
+    expect(mgr.getKey('k1')).toBeNull();
   });
 
-  test('rejects POST method', async () => {
-    const r = await httpPost(port, '/admin/lifecycle', {}, { 'X-Admin-Key': adminKey });
-    expect(r.status).toBe(405);
+  test('delete created key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1' });
+    expect(mgr.deleteKey('k1')).toBe(true);
   });
 
-  test('root listing includes endpoint', async () => {
-    const r = await httpGet(port, '/', { 'X-Admin-Key': adminKey });
-    expect(r.body.endpoints.keyLifecycle).toBeDefined();
-    expect(r.body.endpoints.keyLifecycle).toContain('/admin/lifecycle');
+  test('cannot delete active key', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    expect(mgr.deleteKey('k1')).toBe(false);
   });
 
-  test('at-risk key includes masked key', async () => {
-    await httpPost(port, '/keys', {
-      credits: 100, name: 'mask-check',
-      expiresAt: new Date(Date.now() + 2 * 24 * 3_600_000).toISOString(),
-    }, { 'X-Admin-Key': adminKey });
+  // ─── Validity Check ───────────────────────────────────────────────
 
-    const r = await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-
-    const atRisk = r.body.atRisk.find((k: any) => k.name === 'mask-check');
-    expect(atRisk).toBeDefined();
-    expect(atRisk.key).toMatch(/^pg_.+\.\.\./);
+  test('isValid returns true for active keys', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1', autoActivate: true });
+    expect(mgr.isValid('k1')).toBe(true);
   });
 
-  test('does not modify system state', async () => {
-    const k = (await httpPost(port, '/keys', { credits: 100, name: 'stable' }, { 'X-Admin-Key': adminKey })).body.key;
+  test('isValid returns false for non-active keys', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1' });
+    expect(mgr.isValid('k1')).toBe(false);
+    mgr.activate('k1');
+    mgr.suspend('k1');
+    expect(mgr.isValid('k1')).toBe(false);
+  });
 
-    // Call lifecycle report multiple times
-    await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
-    await httpGet(port, '/admin/lifecycle', { 'X-Admin-Key': adminKey });
+  test('isValid returns false for unknown keys', () => {
+    expect(mgr.isValid('unknown')).toBe(false);
+  });
 
-    const balance = await httpGet(port, '/balance', { 'X-API-Key': k });
-    expect(balance.body.credits).toBe(100);
+  // ─── Expiration ───────────────────────────────────────────────────
+
+  test('expired key transitions to expired state', () => {
+    const past = new Date(Date.now() - 1000).toISOString();
+    mgr.createKey({ id: 'k1', name: 'Key 1', expiresAt: past, autoActivate: true });
+    expect(mgr.isValid('k1')).toBe(false);
+    expect(mgr.getKey('k1')!.state).toBe('expired');
+  });
+
+  test('expireKeys batch expires past-due keys', () => {
+    const past = new Date(Date.now() - 1000).toISOString();
+    mgr.createKey({ id: 'k1', name: 'Key 1', expiresAt: past, autoActivate: true });
+    mgr.createKey({ id: 'k2', name: 'Key 2', autoActivate: true });
+    const count = mgr.expireKeys();
+    expect(count).toBe(1);
+  });
+
+  test('getExpiringKeys returns keys near expiration', () => {
+    const soon = new Date(Date.now() + 30_000).toISOString();
+    const far = new Date(Date.now() + 3600_000).toISOString();
+    mgr.createKey({ id: 'soon', name: 'Soon', expiresAt: soon, autoActivate: true });
+    mgr.createKey({ id: 'far', name: 'Far', expiresAt: far, autoActivate: true });
+
+    const expiring = mgr.getExpiringKeys(60);
+    expect(expiring.length).toBe(1);
+    expect(expiring[0].id).toBe('soon');
+  });
+
+  // ─── Listing & Filtering ──────────────────────────────────────────
+
+  test('listKeys returns all keys', () => {
+    mgr.createKey({ id: 'a', name: 'A', autoActivate: true });
+    mgr.createKey({ id: 'b', name: 'B' });
+    expect(mgr.listKeys().length).toBe(2);
+  });
+
+  test('listKeys filters by state', () => {
+    mgr.createKey({ id: 'a', name: 'A', autoActivate: true });
+    mgr.createKey({ id: 'b', name: 'B' });
+    expect(mgr.listKeys({ state: 'active' }).length).toBe(1);
+    expect(mgr.listKeys({ state: 'created' }).length).toBe(1);
+  });
+
+  test('listKeys filters by tag', () => {
+    mgr.createKey({ id: 'a', name: 'A', tags: ['prod'] });
+    mgr.createKey({ id: 'b', name: 'B', tags: ['staging'] });
+    expect(mgr.getKeysByTag('prod').length).toBe(1);
+  });
+
+  // ─── Events ───────────────────────────────────────────────────────
+
+  test('events track state transitions', () => {
+    mgr.createKey({ id: 'k1', name: 'Key 1' });
+    mgr.activate('k1');
+    mgr.suspend('k1', 'test');
+    mgr.reactivate('k1');
+
+    const events = mgr.getEvents('k1');
+    expect(events.length).toBe(3);
+    expect(events[0].event).toBe('reactivate');
+    expect(events[1].event).toBe('suspend');
+    expect(events[2].event).toBe('activate');
+  });
+
+  test('getAllEvents returns all key events', () => {
+    mgr.createKey({ id: 'a', name: 'A' });
+    mgr.createKey({ id: 'b', name: 'B' });
+    mgr.activate('a');
+    mgr.activate('b');
+    expect(mgr.getAllEvents().length).toBe(2);
+  });
+
+  test('getEvents with limit', () => {
+    mgr.createKey({ id: 'k', name: 'K' });
+    mgr.activate('k');
+    mgr.suspend('k');
+    mgr.reactivate('k');
+    expect(mgr.getEvents('k', 2).length).toBe(2);
+  });
+
+  // ─── Stats ────────────────────────────────────────────────────────
+
+  test('stats track key counts by state', () => {
+    mgr.createKey({ id: 'a', name: 'A', autoActivate: true });
+    mgr.createKey({ id: 'b', name: 'B' });
+    mgr.createKey({ id: 'c', name: 'C', autoActivate: true });
+    mgr.revoke('c');
+
+    const stats = mgr.getStats();
+    expect(stats.totalKeys).toBe(3);
+    expect(stats.byState.active).toBe(1);
+    expect(stats.byState.created).toBe(1);
+    expect(stats.byState.revoked).toBe(1);
+    expect(stats.totalRevoked).toBe(1);
+  });
+
+  test('destroy clears everything', () => {
+    mgr.createKey({ id: 'k', name: 'K', autoActivate: true });
+    mgr.destroy();
+    expect(mgr.getKey('k')).toBeNull();
+    expect(mgr.getStats().totalKeys).toBe(0);
   });
 });

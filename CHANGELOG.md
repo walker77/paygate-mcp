@@ -1,5 +1,53 @@
 # Changelog
 
+## 10.11.0 (2026-02-28)
+
+### Batch Credit Manager — Bulk Credit Operations
+- **Atomic batch execution** for credit operations:
+  - 5 operation types: topup, deduct, transfer, refund, adjust
+  - Atomic mode: all-or-nothing with automatic rollback on failure
+  - Non-atomic mode: partial success with per-op error reporting
+  - Transfer validation: same-key rejection, max transfer amount enforcement
+  - Negative balance protection (configurable `allowNegativeBalance`)
+  - `validate()` dry-run for pre-flight checking
+  - Batch size limits with `maxOpsPerBatch` configuration
+  - Full execution history with `getHistory()` and `getBatch(id)`
+  - Stats: batches, ops by type, failures, rollbacks, tracked keys
+
+### Key Lifecycle Manager — State Machine for API Keys
+- **Full state machine** with 5 states: created → active → suspended/expired/revoked
+  - Valid transitions enforced: created→active, active→suspended/expired/revoked, suspended→active/revoked
+  - Auto-expiration: keys transition to expired when past `expiresAt`
+  - `suspend(id, reason)` and `reactivate(id)` with reason tracking
+  - `revoke(id, reason)` for permanent deactivation
+  - `getExpiringKeys(withinSeconds)` for proactive expiration alerting
+  - `expireKeys()` batch expiration sweep
+  - Event history per key with full audit trail
+  - List and filter by state, search by name/description
+  - Configurable `maxKeys`, `defaultTtlMs`, `autoExpire`
+
+### Webhook Template Engine — Customizable Payloads
+- **Template rendering** with variable interpolation and conditionals:
+  - `{{variable}}` interpolation with nested dot-notation support
+  - `{{#if variable}}...{{/if}}` conditional blocks
+  - Format-aware escaping: JSON (backslash), form (URL-encode), text (passthrough)
+  - Header interpolation with template variables
+  - Default and required variable tracking with validation
+  - `validateTemplate()` for syntax and variable checking
+  - `extractVars()` to discover all template variables
+  - Inline rendering with `renderInline()` for ad-hoc templates
+  - Stats: templates, renders, render errors
+
+### Access Log Engine — Structured Request Logging
+- **Full-featured access logging** with search and analytics:
+  - Record key, tool, method, status, response time, IP, user agent, credits
+  - Search with 10+ filter dimensions: key, keys, tool, tools, status, IP, time range, response time range, free text
+  - Pagination with limit/offset and hasMore indicator
+  - `summarize()` with p95/p99 response times, top keys/tools, unique IPs
+  - `importEntries()` for bulk loading
+  - Automatic eviction on `maxEntries` and retention period
+  - `purge()` for manual retention-based cleanup
+
 ## 10.10.0 (2026-02-28)
 
 ### Per-Tool Rate Limiting — Fine-Grained Call Throttling

@@ -176,6 +176,14 @@ export { KeyPermissionsEngine } from './key-permissions';
 export type { PermissionRule, PermissionCondition, PermissionConditionType, PermissionCheckResult, PermissionAssignment, KeyPermissionsConfig, KeyPermissionsStats, PermissionCheckContext } from './key-permissions';
 export { HealthMonitor } from './health-monitor';
 export type { HealthStatus, HealthTarget, HealthCheckResult, HealthSnapshot, HealthMonitorConfig, HealthMonitorStats } from './health-monitor';
+export { BatchCreditManager } from './batch-credits';
+export type { BatchOp, BatchOpType, BatchTopup, BatchDeduct, BatchTransfer, BatchRefund, BatchAdjust, BatchOpResult, BatchExecutionResult, BatchConfig, BatchStats } from './batch-credits';
+export { KeyLifecycleManager } from './key-lifecycle';
+export type { KeyState, KeyRecord as LifecycleKeyRecord, KeyCreateParams as LifecycleKeyCreateParams, KeyEvent as LifecycleKeyEvent, KeyLifecycleConfig, KeyLifecycleStats } from './key-lifecycle';
+export { WebhookTemplateEngine } from './webhook-templates';
+export type { WebhookTemplate, TemplateCreateParams, TemplateFormat, RenderResult, TemplateValidation, WebhookTemplateConfig, WebhookTemplateStats } from './webhook-templates';
+export { AccessLogEngine } from './access-log';
+export type { AccessEntry, AccessRecordParams, AccessQuery, AccessQueryResult, AccessSummary, AccessStatus, AccessLogConfig, AccessLogStats } from './access-log';
 
 export type {
   PayGateConfig,
