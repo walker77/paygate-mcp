@@ -1,5 +1,49 @@
 # Changelog
 
+## 10.16.0 (2026-02-28)
+
+### Service Discovery — Upstream Server Registration with Health Checking
+- **Auto-register and health-check upstream MCP servers** with weighted routing:
+  - Register services with endpoints, health endpoints, and metadata
+  - Simulated health checks with configurable unhealthy threshold
+  - Status tracking: unknown → healthy / degraded / unhealthy
+  - Consecutive failure counting with automatic status transitions
+  - Health check history per service with configurable retention
+  - Uptime percentage and average latency calculations
+  - Weighted service selection for load balancing across healthy instances
+  - Bulk health check across all registered services
+
+### Policy Engine — Declarative Access Control with Priority-Based Evaluation
+- **Define allow/deny policies** with condition matching and priority resolution:
+  - Create policies with tool, key, IP, and time-range conditions
+  - Priority-based evaluation: highest priority matching policy wins
+  - Default effect (allow/deny) when no policies match
+  - Enable/disable policies without removal
+  - Evaluation history tracking with configurable retention
+  - Boolean `isAllowed()` shorthand for quick access checks
+  - All matched policies reported for audit trail
+
+### Agent Session Manager — Multi-Request Session Tracking with Billing
+- **Track multi-request agent sessions** with per-session billing and reports:
+  - Create sessions per key with optional TTL expiration
+  - Record tool calls with credit tracking per session
+  - Session lifecycle: active → ended / expired
+  - Per-session reports with tool breakdown (calls + credits by tool)
+  - Per-key aggregate reports across all sessions
+  - Active session filtering and session listing with status/key filters
+  - Automatic session expiry detection on access
+  - Cleanup of old ended/expired sessions with configurable age threshold
+
+### Rate Limit Profile Manager — Named Rate Limit Configurations
+- **Define and assign named rate limit profiles** to keys/tiers:
+  - Create profiles with per-minute, per-hour, and per-day limits
+  - Burst multiplier for temporary limit overrides
+  - Assign profiles to keys; default profile for unassigned keys
+  - Window-based counter tracking with automatic reset on expiry
+  - Detailed check results: current counts, limits, retry-after timing
+  - Profile enable/disable, limit updates, counter resets
+  - Stats tracking: total checks, allowed, denied
+
 ## 10.15.0 (2026-02-28)
 
 ### Notification Manager — Event-Driven Notification System

@@ -213,6 +213,16 @@ export type { PipelineContext, PipelineMiddleware, MiddlewareRegistration, Middl
 export { UsageTrendAnalyzer } from './usage-trends';
 export type { DataPoint, TrendResult, Anomaly, UsageSummary as TrendUsageSummary, UsageTrendConfig, UsageTrendStats } from './usage-trends';
 
+// ── v10.16.0 ──────────────────────────────────────────────────────────
+export { ServiceDiscovery } from './service-discovery';
+export type { ServiceInstance, ServiceRegisterParams, ServiceStatus, HealthCheckResult as ServiceHealthCheckResult, ServiceDiscoveryConfig, ServiceDiscoveryStats } from './service-discovery';
+export { PolicyEngine } from './policy-engine';
+export type { Policy as AccessPolicy, PolicyCreateParams as AccessPolicyCreateParams, PolicyEffect, PolicyConditions, EvaluationRequest, EvaluationResult, PolicyEngineConfig, PolicyEngineStats } from './policy-engine';
+export { SessionManager as AgentSessionManager } from './session-manager';
+export type { Session as AgentSession, SessionCreateParams as AgentSessionCreateParams, SessionCall as AgentSessionCall, SessionStatus as AgentSessionStatus, SessionReport as AgentSessionReport, SessionManagerConfig as AgentSessionManagerConfig, SessionManagerStats as AgentSessionManagerStats } from './session-manager';
+export { RateLimitProfileManager } from './rate-limit-profile';
+export type { RateLimitProfileDef, ProfileCreateParams as RateLimitProfileCreateParams, RateLimits, RateLimitCheck, RateLimitProfileConfig, RateLimitProfileStats } from './rate-limit-profile';
+
 // ── v10.15.0 ──────────────────────────────────────────────────────────
 export { NotificationManager } from './notification-manager';
 export type { NotificationChannel, ChannelCreateParams, ChannelType, NotificationRule, RuleCreateParams, NotificationRecord, NotifyResult, NotificationManagerConfig, NotificationManagerStats } from './notification-manager';
