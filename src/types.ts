@@ -46,6 +46,8 @@ export interface ToolPricing {
   rateLimitPerMin?: number;
   /** Dynamic pricing: extra credits per KB of input arguments. 0 = disabled. */
   creditsPerKbInput?: number;
+  /** Outcome-based pricing: extra credits per KB of response output. 0 = disabled. Post-call surcharge. */
+  creditsPerKbOutput?: number;
   /** Response cache TTL in seconds for this tool. 0 = no caching. */
   cacheTtlSeconds?: number;
   /** Per-tool timeout in milliseconds. 0 = use global. */
@@ -289,6 +291,10 @@ export interface ApiKeyRecord {
   quotaLastResetMonth: string;
   /** Timestamped notes/comments attached to this key. */
   notes?: Array<{ timestamp: string; author: string; text: string }>;
+  /** Per-key webhook URL. Events for this key are also sent here. Undefined = disabled. */
+  webhookUrl?: string;
+  /** HMAC-SHA256 secret for per-key webhook signatures. Undefined = unsigned. */
+  webhookSecret?: string;
 }
 
 // ─── Metering ───────────────────────────────────────────────────────────────────

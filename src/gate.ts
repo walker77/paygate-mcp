@@ -45,6 +45,8 @@ export class Gate {
   onCreditsDeducted?: (apiKey: string, amount: number) => void;
   /** Optional hook called when auto-topup is triggered (for audit/webhook). */
   onAutoTopup?: (apiKey: string, amount: number, newBalance: number) => void;
+  /** Per-key webhook emitters (lazily created, keyed by API key prefix). */
+  private keyWebhooks = new Map<string, WebhookEmitter>();
 
   constructor(config: PayGateConfig, statePath?: string) {
     this.config = config;
@@ -907,6 +909,56 @@ export class Gate {
   destroy(): void {
     this.rateLimiter.destroy();
     this.webhook?.destroy();
+    // Destroy per-key webhook emitters
+    for (const emitter of this.keyWebhooks.values()) {
+      emitter.destroy();
+    }
+    this.keyWebhooks.clear();
+  }
+
+  /**
+   * Get or create a per-key webhook emitter.
+   * Returns null if the key has no webhookUrl configured.
+   */
+  getKeyWebhook(apiKey: string): WebhookEmitter | null {
+    const keyRecord = this.store.getKey(apiKey);
+    if (!keyRecord?.webhookUrl) return null;
+
+    const prefix = apiKey.slice(0, 10);
+    const existing = this.keyWebhooks.get(prefix);
+
+    // Return cached if URL hasn't changed
+    if (existing && (existing as any).url === keyRecord.webhookUrl) {
+      return existing;
+    }
+
+    // Destroy old emitter if URL changed
+    if (existing) {
+      existing.destroy();
+    }
+
+    // Create new emitter for this key
+    const emitter = new WebhookEmitter(keyRecord.webhookUrl, {
+      secret: keyRecord.webhookSecret || null,
+      batchSize: 10,
+      flushIntervalMs: 5000,
+      maxRetries: 3,
+      ssrfCheckOnDelivery: this.config.webhookSsrfAtDelivery ?? true,
+    });
+    this.keyWebhooks.set(prefix, emitter);
+    return emitter;
+  }
+
+  /**
+   * Remove cached per-key webhook emitter (called when webhook URL is cleared).
+   */
+  removeKeyWebhook(apiKey: string): void {
+    const prefix = apiKey.slice(0, 10);
+    const existing = this.keyWebhooks.get(prefix);
+    if (existing) {
+      existing.destroy();
+      this.keyWebhooks.delete(prefix);
+    }
   }
 
   private recordEvent(
@@ -930,6 +982,11 @@ export class Gate {
       this.webhookRouter.emit(event);
     } else if (this.webhook) {
       this.webhook.emit(event);
+    }
+    // Per-key webhook: also emit to key-specific webhook URL
+    const keyWebhook = this.getKeyWebhook(apiKey);
+    if (keyWebhook) {
+      keyWebhook.emit(event);
     }
     this.onUsageEvent?.(event);
   }

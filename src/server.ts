@@ -17,7 +17,7 @@ import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
-import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG } from './types';
+import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG, ApiKeyRecord } from './types';
 import { validateConfig, ValidatableConfig } from './config-validator';
 import { Logger, parseLogLevel, parseLogFormat } from './logger';
 
@@ -61,6 +61,7 @@ import { StripeCheckout, CreditPackage } from './stripe-checkout';
 import { BackupManager, BackupStateProvider, BackupSnapshot } from './backup';
 import { ResponseCache } from './response-cache';
 import { CircuitBreaker } from './circuit-breaker';
+import { generateComplianceReport, complianceReportToCsv, ComplianceFramework } from './compliance';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -956,7 +957,7 @@ export class PayGateServer {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, X-Admin-Key, Mcp-Session-Id, Authorization, X-Request-Id');
-    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id, X-PayGate-Version, X-Cache');
+    res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Credits-Remaining, X-Request-Id, X-PayGate-Version, X-Cache, X-Output-Surcharge');
     if (corsConfig?.credentials) {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
     }
@@ -1117,6 +1118,8 @@ export class PayGateServer {
         return this.handleCreditTransfer(req, res);
       case '/keys/bulk':
         return this.handleBulkOperations(req, res);
+      case '/keys/webhook':
+        return this.handleKeyWebhook(req, res);
       case '/keys/export':
         return this.handleKeyExport(req, res);
       case '/keys/import':
@@ -1330,6 +1333,10 @@ export class PayGateServer {
         return;
       case '/admin/compliance':
         if (req.method === 'GET') return this.handleComplianceReport(req, res);
+        this.sendError(res, 405, 'Method not allowed. Use GET.');
+        return;
+      case '/admin/compliance/export':
+        if (req.method === 'GET') return this.handleComplianceExport(req, res);
         this.sendError(res, 405, 'Method not allowed. Use GET.');
         return;
       case '/admin/sla':
@@ -1824,6 +1831,38 @@ export class PayGateServer {
       }
     }
 
+    // ─── Outcome-based pricing: post-call output surcharge ────────
+    let outputSurcharge = 0;
+    if (!cacheHit && !circuitBroken && request.method === 'tools/call' && response && !response.error && apiKey) {
+      const toolName = (request.params as Record<string, unknown>)?.name as string || '';
+      const toolPricingForOutput = this.config.toolPricing[toolName];
+      const creditsPerKbOutput = toolPricingForOutput?.creditsPerKbOutput ?? 0;
+      if (creditsPerKbOutput > 0) {
+        const outputBytes = Buffer.byteLength(JSON.stringify(response.result ?? ''), 'utf-8');
+        const outputKb = outputBytes / 1024;
+        outputSurcharge = Math.ceil(outputKb * creditsPerKbOutput);
+        if (outputSurcharge > 0) {
+          const keyRecord = this.gate.store.getKey(apiKey);
+          if (keyRecord && keyRecord.credits >= outputSurcharge) {
+            this.gate.store.deductCredits(apiKey, outputSurcharge);
+            keyRecord.totalSpent += outputSurcharge;
+            this.gate.store.save();
+            this.gate.onCreditsDeducted?.(apiKey, outputSurcharge);
+          } else if (keyRecord) {
+            // Insufficient credits for output surcharge — deduct what's available
+            const available = keyRecord.credits;
+            if (available > 0) {
+              this.gate.store.deductCredits(apiKey, available);
+              keyRecord.totalSpent += available;
+              this.gate.store.save();
+              this.gate.onCreditsDeducted?.(apiKey, available);
+            }
+            outputSurcharge = available;
+          }
+        }
+      }
+    }
+
     // Plugin: afterToolCall — let plugins modify the response
     if (this.plugins.count > 0 && request.method === 'tools/call') {
       const toolName = (request.params as Record<string, unknown>)?.name as string || '';
@@ -1939,6 +1978,11 @@ export class PayGateServer {
     // Add X-Cache header for tool calls when caching is active
     if (request.method === 'tools/call' && this.responseCache) {
       rateLimitHeaders['X-Cache'] = cacheHit ? 'HIT' : 'MISS';
+    }
+
+    // Add X-Output-Surcharge header for outcome-based pricing
+    if (request.method === 'tools/call' && outputSurcharge > 0) {
+      rateLimitHeaders['X-Output-Surcharge'] = String(outputSurcharge);
     }
 
     // Check if client accepts SSE
@@ -2354,6 +2398,8 @@ export class PayGateServer {
         adminRestore: 'POST /admin/restore — Restore state from backup snapshot (requires X-Admin-Key, admin)',
         adminCache: 'GET /admin/cache — Response cache stats; DELETE /admin/cache?tool= — Clear cache (requires X-Admin-Key)',
         adminCircuit: 'GET /admin/circuit — Circuit breaker status; POST /admin/circuit — Reset circuit breaker (requires X-Admin-Key)',
+        adminComplianceExport: 'GET /admin/compliance/export?framework=soc2|gdpr|hipaa&format=json|csv — Framework-specific compliance audit export with event classification (requires X-Admin-Key)',
+        keyWebhook: 'POST /keys/webhook — Set per-key webhook URL; DELETE /keys/webhook — Remove per-key webhook (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -3071,6 +3117,137 @@ export class PayGateServer {
   }
 
   // ─── /keys/export — Export all API keys for backup ────────────────────────
+
+  // ─── /keys/webhook — Per-key webhook URL management ────────────────────────
+
+  private async handleKeyWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.checkAdmin(req, res)) return;
+
+    if (req.method === 'POST') {
+      // Set per-key webhook URL
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try {
+        params = JSON.parse(body);
+      } catch {
+        this.sendError(res, 400, 'Invalid JSON');
+        return;
+      }
+
+      const apiKeyPrefix = params.apiKey as string;
+      const webhookUrl = params.webhookUrl as string | undefined;
+      const webhookSecret = params.webhookSecret as string | undefined;
+
+      if (!apiKeyPrefix) {
+        this.sendError(res, 400, 'Missing apiKey parameter');
+        return;
+      }
+      if (!webhookUrl) {
+        this.sendError(res, 400, 'Missing webhookUrl parameter');
+        return;
+      }
+
+      // SSRF check
+      const ssrfError = checkSsrf(webhookUrl);
+      if (ssrfError) {
+        this.sendError(res, 400, `Webhook URL blocked: ${ssrfError}`);
+        return;
+      }
+
+      // Find key
+      const allKeys = this.gate.store.getAllRecords();
+      const keyRecord = allKeys.find((k: ApiKeyRecord) => k.key.startsWith(apiKeyPrefix));
+      if (!keyRecord) {
+        this.sendError(res, 404, 'API key not found');
+        return;
+      }
+
+      keyRecord.webhookUrl = webhookUrl;
+      if (webhookSecret !== undefined) {
+        keyRecord.webhookSecret = webhookSecret;
+      }
+      this.gate.store.save();
+
+      // Reset cached emitter so next event creates fresh one
+      this.gate.removeKeyWebhook(keyRecord.key);
+
+      this.audit.log('key.webhook_updated' as any, 'admin', `Per-key webhook set for ${keyRecord.name}`, {
+        keyPrefix: keyRecord.key.slice(0, 7),
+        webhookUrl: webhookUrl.replace(/\/\/([^:]+):([^@]+)@/, '//$1:***@'), // mask credentials
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        keyName: keyRecord.name,
+        webhookUrl,
+        webhookSecret: webhookSecret ? '***' : null,
+      }));
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      // Remove per-key webhook URL
+      const url = new URL(req.url || '/', 'http://localhost');
+      const apiKeyPrefix = url.searchParams.get('apiKey');
+
+      if (!apiKeyPrefix) {
+        this.sendError(res, 400, 'Missing apiKey query parameter');
+        return;
+      }
+
+      const allKeys2 = this.gate.store.getAllRecords();
+      const keyRecord = allKeys2.find((k: ApiKeyRecord) => k.key.startsWith(apiKeyPrefix));
+      if (!keyRecord) {
+        this.sendError(res, 404, 'API key not found');
+        return;
+      }
+
+      delete keyRecord.webhookUrl;
+      delete keyRecord.webhookSecret;
+      this.gate.store.save();
+
+      // Destroy cached emitter
+      this.gate.removeKeyWebhook(keyRecord.key);
+
+      this.audit.log('key.webhook_updated' as any, 'admin', `Per-key webhook removed for ${keyRecord.name}`, {
+        keyPrefix: keyRecord.key.slice(0, 7),
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, keyName: keyRecord.name, webhookUrl: null }));
+      return;
+    }
+
+    if (req.method === 'GET') {
+      // Get per-key webhook status
+      const url = new URL(req.url || '/', 'http://localhost');
+      const apiKeyPrefix = url.searchParams.get('apiKey');
+
+      if (!apiKeyPrefix) {
+        this.sendError(res, 400, 'Missing apiKey query parameter');
+        return;
+      }
+
+      const allKeys3 = this.gate.store.getAllRecords();
+      const keyRecord = allKeys3.find((k: ApiKeyRecord) => k.key.startsWith(apiKeyPrefix));
+      if (!keyRecord) {
+        this.sendError(res, 404, 'API key not found');
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        keyName: keyRecord.name,
+        webhookUrl: keyRecord.webhookUrl || null,
+        webhookSecret: keyRecord.webhookSecret ? '***' : null,
+        configured: !!keyRecord.webhookUrl,
+      }));
+      return;
+    }
+
+    this.sendError(res, 405, 'Method not allowed. Use GET, POST, or DELETE.');
+  }
 
   private handleKeyExport(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET') {
@@ -7599,6 +7776,51 @@ export class PayGateServer {
       recommendations,
       generatedAt: new Date().toISOString(),
     });
+  }
+
+  // ─── /admin/compliance/export — Framework-specific audit export ──────────
+
+  private handleComplianceExport(req: IncomingMessage, res: ServerResponse): void {
+    if (!this.checkAdmin(req, res)) return;
+
+    const url = new URL(req.url || '/', `http://localhost`);
+    const framework = (url.searchParams.get('framework') || 'soc2') as ComplianceFramework;
+    const format = url.searchParams.get('format') || 'json';
+    const since = url.searchParams.get('since') || undefined;
+    const until = url.searchParams.get('until') || undefined;
+
+    const validFrameworks = ['soc2', 'gdpr', 'hipaa'];
+    if (!validFrameworks.includes(framework)) {
+      this.sendError(res, 400, `Invalid framework. Must be one of: ${validFrameworks.join(', ')}`);
+      return;
+    }
+
+    const report = generateComplianceReport(this.audit, framework, {
+      since,
+      until,
+      serverVersion: PKG_VERSION,
+    });
+
+    this.audit.log('config.export', 'admin', `Compliance report exported: ${framework} (${format})`, {
+      framework, format, events: report.meta.totalEvents,
+    });
+
+    if (format === 'csv') {
+      const csv = complianceReportToCsv(report);
+      res.writeHead(200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="compliance-${framework}-${new Date().toISOString().slice(0, 10)}.csv"`,
+      });
+      res.end(csv);
+      return;
+    }
+
+    // JSON (default) with download Content-Disposition
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="compliance-${framework}-${new Date().toISOString().slice(0, 10)}.json"`,
+    });
+    res.end(JSON.stringify(report, null, 2));
   }
 
   // ─── /admin/sla — SLA Monitoring ─────────────────────────────────────────
@@ -13043,6 +13265,14 @@ export class PayGateServer {
       this.gate.webhookRouter.emitAdmin(type, actor, metadata);
     } else if (this.gate.webhook) {
       this.gate.webhook.emitAdmin(type, actor, metadata);
+    }
+    // Per-key webhook: also emit to key-specific webhook if the event references a key
+    const apiKey = (metadata.apiKey || metadata.key) as string | undefined;
+    if (apiKey) {
+      const keyWebhook = this.gate.getKeyWebhook(apiKey);
+      if (keyWebhook) {
+        keyWebhook.emitAdmin(type, actor, metadata);
+      }
     }
   }
 

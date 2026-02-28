@@ -74,6 +74,8 @@ export { ResponseCache } from './response-cache';
 export type { CacheEntry, CacheStats } from './response-cache';
 export { CircuitBreaker } from './circuit-breaker';
 export type { CircuitBreakerConfig, CircuitState, CircuitStatus } from './circuit-breaker';
+export { generateComplianceReport, complianceReportToCsv } from './compliance';
+export type { ComplianceFramework, ComplianceReport, ComplianceReportMeta, ComplianceSection, ComplianceEvent, ComplianceSummary } from './compliance';
 
 export type {
   PayGateConfig,

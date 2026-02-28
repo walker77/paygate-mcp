@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 140+ endpoints
+- [API Reference](#api-reference) — All 143+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
@@ -66,7 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
-- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 140+ endpoints documented
+- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 143+ endpoints documented
 - **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
 - **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
@@ -150,6 +150,9 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Response Caching** — SHA-256 keyed response cache for identical tool calls — skips backend invocation and credit deduction on cache hit, LRU eviction, per-tool or global TTL, `X-Cache: HIT/MISS` header, admin management (`GET/DELETE /admin/cache`), Prometheus gauge
 - **Circuit Breaker** — Three-state circuit breaker (closed → open → half_open) for backend failure detection — opens after N consecutive failures, auto-recovers after cooldown, error code `-32003`, admin management (`GET/POST /admin/circuit`)
 - **Configurable Timeouts** — Per-tool and global timeout for tool calls — returns error code `-32004` on timeout, per-tool override via `toolPricing[tool].timeoutMs`, triggers circuit breaker failure recording
+- **Outcome-Based Pricing** — Charge extra credits based on response output size — `creditsPerKbOutput` per-tool config, post-response billing, `X-Output-Surcharge` header, complements `creditsPerKbInput` for complete size-based pricing
+- **Compliance Audit Export** — Framework-specific compliance reports for SOC 2, GDPR, HIPAA — `GET /admin/compliance/export`, event classification into access control/data processing/config changes/security, JSON or CSV export, configurable time periods
+- **Per-Key Webhook URLs** — Key-level webhook routing — events for a specific key sent to key's webhook URL alongside global webhook, SSRF-protected, HMAC-SHA256 signed, lazy emitter management via `POST/GET/DELETE /keys/webhook`
 - **Security Audit** — `GET /admin/security` security posture analysis identifying keys without IP allowlists, quotas, ACL restrictions, spending limits, or expiry dates, flagging high-credit keys, and computing a composite security score
 - **Revenue Analysis** — `GET /admin/revenue` revenue metrics with per-tool revenue breakdown, per-key spending, hourly revenue trends, credit flow summary (allocated/spent/remaining), and average revenue per call
 - **Key Portfolio Health** — `GET /admin/key-portfolio` portfolio-wide key health with active/inactive/suspended counts, stale keys, expiring-soon keys, age distribution, credit utilization, and namespace breakdown
@@ -453,6 +456,10 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/admin/cache` | DELETE | `X-Admin-Key` | Clear cache (all or `?tool=` filter) |
 | `/admin/circuit` | GET | `X-Admin-Key` | Circuit breaker status (state, failures, rejections) |
 | `/admin/circuit` | POST | `X-Admin-Key` | Reset circuit breaker to closed state |
+| `/admin/compliance/export` | GET | `X-Admin-Key` | Compliance audit export (SOC 2/GDPR/HIPAA, JSON/CSV) |
+| `/keys/webhook` | POST | `X-Admin-Key` | Set per-key webhook URL |
+| `/keys/webhook` | GET | `X-Admin-Key` | Get per-key webhook status |
+| `/keys/webhook` | DELETE | `X-Admin-Key` | Remove per-key webhook URL |
 | `/.well-known/oauth-authorization-server` | GET | None | OAuth 2.1 server metadata |
 | `/oauth/register` | POST | None | Dynamic Client Registration (RFC 7591) |
 | `/oauth/authorize` | GET | None | Authorization endpoint (PKCE required) |
@@ -462,7 +469,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/.well-known/mcp.json` | GET | None | MCP Server Identity card (discovery) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
-| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 140+ endpoints) |
+| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 143+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |

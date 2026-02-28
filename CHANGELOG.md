@@ -1,5 +1,42 @@
 # Changelog
 
+## 9.3.0 (2026-02-28)
+
+### Outcome-Based Pricing
+- **Output surcharge (`creditsPerKbOutput`)**: Charge extra credits based on response size
+  - Post-response billing: credits deducted after tool call completes based on output size in KB
+  - Per-tool configuration via `toolPricing[tool].creditsPerKbOutput` (credits per KB)
+  - `X-Output-Surcharge` header on every tool call response showing surcharge amount
+  - Complements existing `creditsPerKbInput` for complete size-based pricing
+  - Graceful degradation: charges available credits if balance insufficient for full surcharge
+
+### Compliance Audit Export
+- **Framework-specific compliance reports** (`GET /admin/compliance/export`):
+  - SOC 2 report sections: CC6.1 (Logical Access Controls), CC7.2 (System Operations Monitoring), CC8.1 (Change Management), CC6.8 (Security Incident Detection)
+  - GDPR report sections: Article 25 (Data Protection by Design), Article 30 (Records of Processing Activities), Article 32 (Security of Processing), Article 33 (Notification of Data Breaches)
+  - HIPAA report sections: §164.312(a) (Access Control), §164.312(b) (Audit Controls), §164.312(e) (Transmission Security), §164.308(a)(6) (Security Incident Procedures)
+  - Event classification into access control, data processing, config changes, and security categories
+  - Severity levels: info, warning, critical per event type
+  - Export as JSON or CSV format with Content-Disposition headers for download
+  - Summary statistics: auth failures, keys created/revoked/suspended, unique actors
+  - Configurable time period with `since` and `until` query parameters
+  - Public API: `generateComplianceReport()` and `complianceReportToCsv()` exported
+
+### Per-Key Webhook URLs
+- **Key-level webhook routing** (`POST/GET/DELETE /keys/webhook`):
+  - Set per-key webhook URL: events for that specific key are also sent to key's webhook
+  - SSRF protection: all per-key webhook URLs validated against private IP ranges
+  - HMAC-SHA256 signing with per-key webhook secret
+  - Lazy emitter creation: WebhookEmitter instances created on first use, cached, destroyed on removal
+  - Admin events (key.created, key.revoked, etc.) also routed to key-specific webhooks
+  - GET: Check if a key has a webhook configured
+  - DELETE: Remove per-key webhook URL and destroy cached emitter
+  - Complements global webhook and webhook filter rules
+
+### Tests
+- 44 new tests across 5 test suites: compliance report unit tests (17), outcome-based pricing integration (4), compliance export endpoint integration (9), per-key webhook integration (12), root listing (2)
+- Total: 3,634+ tests across 189 suites
+
 ## 9.2.0 (2026-02-28)
 
 ### Response Caching
