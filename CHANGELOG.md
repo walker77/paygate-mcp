@@ -1,5 +1,41 @@
 # Changelog
 
+## 9.6.0 (2026-02-28)
+
+### Usage Plans
+- **Tiered key policies (free/pro/enterprise)** — bundle rate limits, quotas, pricing, and tool ACL into reusable templates:
+  - `POST /admin/plans` — create named plans with rate limits, call/credit limits, credit multipliers, tool whitelists/blacklists, and concurrency caps
+  - `GET /admin/plans` — list all plans with assigned key counts
+  - `DELETE /admin/plans?name=` — delete plan (fails if keys still assigned)
+  - `POST /admin/keys/plan` — assign/unassign key to a plan
+  - Plan-level tool ACL: denied tools take precedence, then allowed tools whitelist
+  - Credit multiplier: keys on a plan get automatic credit scaling (e.g. 0.5 = half price)
+  - Import/export for backup and restore
+  - Error code `-32403` when plan denies tool access
+  - Public API: `UsagePlanManager` class exported
+
+### Tool Input Schema Validation
+- **Per-tool JSON Schema validation at the gateway** — reject invalid payloads before they reach downstream:
+  - `POST /admin/tools/schema` — register JSON Schema for any tool
+  - `GET /admin/tools/schema` — list registered schemas with validation stats
+  - `DELETE /admin/tools/schema?tool=` — remove schema
+  - Zero-dependency JSON Schema subset validator supporting: type, required, properties, enum, minLength, maxLength, minimum, maximum, pattern, items, minItems, maxItems
+  - Nested object and array validation with path-aware error reporting
+  - Validation stats: total validations, total failures, per-schema timestamps
+  - Error code `-32602` (Invalid params) with detailed error list in `data.errors`
+  - Public API: `ToolSchemaValidator` class exported
+
+### Canary Routing
+- **Weighted traffic splitting** between primary and canary MCP servers for zero-downtime upgrades:
+  - `POST /admin/canary` — enable canary with server command, args, and weight (0-100%)
+  - `POST /admin/canary` (weight only) — update weight without restart when already enabled
+  - `DELETE /admin/canary` — disable canary, route all traffic to primary
+  - `GET /admin/canary` — view canary stats (enabled, weight, call counts, error rates)
+  - Uses `crypto.randomInt` for unbiased routing decisions
+  - Per-backend call and error tracking for monitoring rollout health
+  - EventEmitter: subscribe to `enabled`, `disabled`, `weight-changed` events
+  - Public API: `CanaryRouter` class exported
+
 ## 9.5.0 (2026-02-28)
 
 ### Concurrency Limiter

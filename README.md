@@ -11,7 +11,7 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Usage](#usage) — Local stdio, remote HTTP, multi-server, client SDK
-- [API Reference](#api-reference) — All 154+ endpoints
+- [API Reference](#api-reference) — All 160+ endpoints
 - [CLI Options](#cli-options)
 - [Deployment](#deployment) — Docker, docker-compose, systemd, PM2
 - [Load Testing](#load-testing) — k6 benchmarking for production
@@ -66,7 +66,7 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **SSE Streaming** — Full MCP Streamable HTTP transport (POST SSE, GET notifications, DELETE sessions)
 - **Audit Log** — Structured audit trail with retention policies, query API, CSV/JSON export
 - **Registry/Discovery** — Agent-discoverable pricing via `/.well-known/mcp-payment`, `/pricing`, and `/.well-known/mcp.json` identity card
-- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 154+ endpoints documented
+- **OpenAPI 3.1 + Interactive Docs** — Auto-generated spec at `/openapi.json`, Swagger UI at `/docs` — all 160+ endpoints documented
 - **Public Endpoint Rate Limiting** — Configurable per-IP rate limit (default 300/min) on `/health`, `/info`, `/pricing`, `/docs`, `/openapi.json`, `/.well-known/*`, `/robots.txt`, `/` — 429 with Retry-After header
 - **Robots.txt + HEAD Support** — Standard `/robots.txt` (allow public, disallow admin/keys), HEAD method on all public endpoints for uptime monitoring
 - **Prometheus Metrics** — `/metrics` endpoint with counters, gauges, and uptime in standard text format
@@ -162,6 +162,9 @@ Agent → PayGate (auth + billing) → Your MCP Server (stdio or HTTP)
 - **Concurrency Limiter** — Per-key and per-tool inflight request caps — distinct from rate limiting, limits simultaneous active requests to protect backends from burst parallelism, error code `-32005` with `Retry-After` header, runtime-adjustable via `GET/POST /admin/concurrency`
 - **Traffic Mirroring** — Fire-and-forget request duplication to a shadow backend for A/B testing MCP server versions — percentage-based sampling, configurable timeout, zero impact on primary response path, stats/management via `GET/POST/DELETE /admin/mirror`
 - **Tool Aliasing + Deprecation** — Tool renaming with RFC 8594 compliance — map old tool names to new ones with `Deprecation`, `Sunset`, and `Link` headers, chain prevention, per-alias call counts, CRUD via `GET/POST/DELETE /admin/tool-aliases`
+- **Usage Plans** — Tiered key policies (free/pro/enterprise) — bundle rate limits, quotas, credit multipliers, and tool ACL into reusable templates, assign keys to plans via `POST /admin/keys/plan`, denied tools rejected with error code `-32403`, CRUD via `GET/POST/DELETE /admin/plans`
+- **Tool Input Schema Validation** — Per-tool JSON Schema validation at the gateway — register schemas to reject invalid payloads before they reach downstream, zero-dependency JSON Schema subset (type, required, enum, minLength, pattern, items), error code `-32602` with detailed errors, manage via `GET/POST/DELETE /admin/tools/schema`
+- **Canary Routing** — Weighted traffic splitting between primary and canary MCP servers — enable zero-downtime upgrades with percentage-based routing (0-100%), unbiased `crypto.randomInt` decisions, per-backend call/error tracking, weight updates without restart, manage via `GET/POST/DELETE /admin/canary`
 - **Anomaly Detection** — `GET /admin/anomalies` identifies unusual patterns: keys with high denial rates, rapid credit depletion, low remaining credits, with severity ratings and detailed descriptions
 - **Usage Forecasting** — `GET /admin/forecast` predicts future credit consumption with per-key depletion estimates, calls remaining, at-risk key identification, system-wide consumption aggregates, and per-tool cost breakdown
 - **Compliance Report** — `GET /admin/compliance` generates compliance-ready report with key governance (expiry coverage), access control (ACL/IP/spending limit coverage), audit trail completeness, weighted overall score, and actionable recommendations
@@ -475,7 +478,7 @@ A real-time admin UI for managing keys, viewing usage, and monitoring tool calls
 | `/.well-known/mcp-payment` | GET | None | Server payment metadata (SEP-2007) |
 | `/.well-known/mcp.json` | GET | None | MCP Server Identity card (discovery) |
 | `/pricing` | GET | None | Full per-tool pricing breakdown |
-| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 154+ endpoints) |
+| `/openapi.json` | GET | None | OpenAPI 3.1 spec (all 160+ endpoints) |
 | `/docs` | GET | None | Interactive API docs (Swagger UI) |
 | `/robots.txt` | GET | None | Crawler directives (allow public, disallow admin/keys) |
 | `/portal` | GET | None | Self-service API key portal (browser UI, auth via X-API-Key prompt) |

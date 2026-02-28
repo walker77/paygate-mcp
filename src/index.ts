@@ -84,6 +84,12 @@ export { TrafficMirror } from './traffic-mirror';
 export type { MirrorConfig, MirrorStats } from './traffic-mirror';
 export { ToolAliasManager } from './tool-aliases';
 export type { ToolAlias, AliasResolveResult, AliasStats } from './tool-aliases';
+export { UsagePlanManager } from './usage-plans';
+export type { UsagePlan, UsagePlanCreateParams, UsagePlanInfo, PlanStats } from './usage-plans';
+export { ToolSchemaValidator } from './schema-validator';
+export type { ToolSchema, SchemaNode, ValidationResult, ValidationError, SchemaStats } from './schema-validator';
+export { CanaryRouter } from './canary-router';
+export type { CanaryConfig, CanaryStats, CanaryBackend, CanaryDecision } from './canary-router';
 
 export type {
   PayGateConfig,

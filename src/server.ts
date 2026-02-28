@@ -66,6 +66,9 @@ import { ContentGuardrails, GuardrailCheckResult, GuardrailRule } from './guardr
 import { ConcurrencyLimiter } from './concurrency-limiter';
 import { TrafficMirror } from './traffic-mirror';
 import { ToolAliasManager } from './tool-aliases';
+import { UsagePlanManager } from './usage-plans';
+import { ToolSchemaValidator } from './schema-validator';
+import { CanaryRouter } from './canary-router';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -464,6 +467,12 @@ export class PayGateServer {
   readonly trafficMirror: TrafficMirror;
   /** Tool alias manager for deprecation and rename support. */
   readonly toolAliases: ToolAliasManager;
+  /** Usage plan manager for tiered key policies. */
+  readonly usagePlans: UsagePlanManager;
+  /** Tool schema validator for input validation. */
+  readonly schemaValidator: ToolSchemaValidator;
+  /** Canary router for weighted traffic splitting. */
+  readonly canaryRouter: CanaryRouter;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -746,6 +755,9 @@ export class PayGateServer {
 
     // Tool alias manager for deprecation and rename support
     this.toolAliases = new ToolAliasManager();
+    this.usagePlans = new UsagePlanManager();
+    this.schemaValidator = new ToolSchemaValidator();
+    this.canaryRouter = new CanaryRouter();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1386,6 +1398,14 @@ export class PayGateServer {
         return this.handleMirror(req, res);
       case '/admin/tool-aliases':
         return this.handleToolAliases(req, res);
+      case '/admin/plans':
+        return this.handlePlans(req, res);
+      case '/admin/keys/plan':
+        return this.handleKeyPlan(req, res);
+      case '/admin/tools/schema':
+        return this.handleToolSchema(req, res);
+      case '/admin/canary':
+        return this.handleCanary(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -1878,6 +1898,43 @@ export class PayGateServer {
         for (const warning of grResult.warnings) {
           res.setHeader('X-Guardrail-Warning', warning);
         }
+      }
+    }
+
+    // ─── Schema Validation: check tool call arguments ──────────────
+    if (pluginRequest.method === 'tools/call' && this.schemaValidator.size > 0) {
+      const svToolName = (pluginRequest.params as Record<string, unknown>)?.name as string || '';
+      const svToolArgs = (pluginRequest.params as Record<string, unknown>)?.arguments;
+      const svResult = this.schemaValidator.validate(svToolName, svToolArgs || {});
+      if (!svResult.valid) {
+        const errResp: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: pluginRequest.id,
+          error: {
+            code: -32602,
+            message: `Invalid params: schema validation failed for "${svToolName}"`,
+            data: { errors: svResult.errors },
+          },
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+        res.end(JSON.stringify(errResp));
+        return;
+      }
+    }
+
+    // ─── Usage Plan: check tool ACL from plan ───────────────────────
+    if (pluginRequest.method === 'tools/call' && apiKey && this.usagePlans.size > 0) {
+      const planToolName = (pluginRequest.params as Record<string, unknown>)?.name as string || '';
+      const planCheck = this.usagePlans.isToolAllowedByPlan(apiKey, planToolName);
+      if (!planCheck.allowed) {
+        const errResp: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: pluginRequest.id,
+          error: { code: -32403, message: planCheck.reason || 'Tool denied by usage plan' },
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+        res.end(JSON.stringify(errResp));
+        return;
       }
     }
 
@@ -2570,6 +2627,10 @@ export class PayGateServer {
         adminConcurrency: 'GET /admin/concurrency — View inflight request counts per key/tool; POST /admin/concurrency — Update concurrency limits (requires X-Admin-Key)',
         adminMirror: 'GET /admin/mirror — View traffic mirror stats; POST /admin/mirror — Configure mirror backend; DELETE /admin/mirror — Disable mirroring (requires X-Admin-Key)',
         adminToolAliases: 'GET /admin/tool-aliases — List tool aliases; POST /admin/tool-aliases — Add/update alias with deprecation; DELETE /admin/tool-aliases?from= — Remove alias (requires X-Admin-Key)',
+        adminPlans: 'GET /admin/plans — List usage plans; POST /admin/plans — Create plan; DELETE /admin/plans?name= — Delete plan (requires X-Admin-Key)',
+        adminKeyPlan: 'POST /admin/keys/plan — Assign key to plan or unassign (requires X-Admin-Key)',
+        adminToolSchema: 'GET /admin/tools/schema — List schemas; POST /admin/tools/schema — Register schema; DELETE /admin/tools/schema?tool= — Remove schema (requires X-Admin-Key)',
+        adminCanary: 'GET /admin/canary — Canary status; POST /admin/canary — Enable canary; POST /admin/canary — Update weight; DELETE /admin/canary — Disable canary (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -14574,6 +14635,167 @@ export class PayGateServer {
       return;
     }
     this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /plans — Usage plan management ─────────────────────────────────────────
+  private async handlePlans(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.usagePlans.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      try {
+        const plan = this.usagePlans.createPlan(params as any);
+        this.audit.log('config.updated' as any, 'admin', `Usage plan created: "${plan.name}"`, { plan: plan.name });
+        this.sendJson(res, 200, plan);
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Invalid plan');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const url = new URL(req.url || '', `http://localhost`);
+      const name = url.searchParams.get('name');
+      if (!name) { this.sendError(res, 400, 'Missing ?name= query parameter'); return; }
+      try {
+        const removed = this.usagePlans.deletePlan(name);
+        if (!removed) { this.sendError(res, 404, `Plan "${name}" not found`); return; }
+        this.audit.log('config.updated' as any, 'admin', `Usage plan deleted: "${name}"`, { plan: name });
+        this.sendJson(res, 200, { deleted: name });
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot delete plan');
+      }
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /keys/plan — Assign key to plan ──────────────────────────────────────
+  private async handleKeyPlan(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== 'POST') { this.sendError(res, 405, 'Method not allowed. Use POST.'); return; }
+    if (!this.checkAdmin(req, res, 'admin')) return;
+    const body = await this.readBody(req);
+    let params: Record<string, unknown>;
+    try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+    const keyParam = params.key as string;
+    const planName = params.plan as string | null;
+    if (!keyParam) { this.sendError(res, 400, 'Missing "key" parameter'); return; }
+    // Verify key exists
+    const keyRecord = this.gate.store.getKey(keyParam);
+    if (!keyRecord) { this.sendError(res, 404, 'Key not found'); return; }
+    try {
+      this.usagePlans.assignKey(keyParam, planName ?? null);
+      this.audit.log('key.updated' as any, 'admin', `Key assigned to plan: ${planName || 'none'}`, { key: keyParam, plan: planName });
+      this.sendJson(res, 200, { key: keyParam, plan: planName });
+    } catch (err) {
+      this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot assign plan');
+    }
+  }
+
+  // ─── /tools/schema — Tool schema management ──────────────────────────────
+  private async handleToolSchema(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.schemaValidator.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const toolName = params.tool as string || params.toolName as string;
+      const schema = params.schema as Record<string, unknown>;
+      if (!toolName || !schema) { this.sendError(res, 400, 'Missing "tool" and "schema" parameters'); return; }
+      try {
+        const result = this.schemaValidator.registerSchema(toolName, schema);
+        this.audit.log('config.updated' as any, 'admin', `Tool schema registered: "${toolName}"`, { tool: toolName });
+        this.sendJson(res, 200, result);
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Invalid schema');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const url = new URL(req.url || '', `http://localhost`);
+      const tool = url.searchParams.get('tool');
+      if (!tool) { this.sendError(res, 400, 'Missing ?tool= query parameter'); return; }
+      const removed = this.schemaValidator.removeSchema(tool);
+      if (!removed) { this.sendError(res, 404, `Schema for "${tool}" not found`); return; }
+      this.audit.log('config.updated' as any, 'admin', `Tool schema removed: "${tool}"`, { tool });
+      this.sendJson(res, 200, { removed: tool });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /canary — Canary routing management ──────────────────────────────────
+  private async handleCanary(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      this.sendJson(res, 200, this.canaryRouter.stats());
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const serverCommand = params.serverCommand as string;
+      const serverArgs = (params.serverArgs as string[]) || [];
+      const weight = typeof params.weight === 'number' ? params.weight : 10;
+      // If already enabled and only weight is sent, just update weight
+      if (!serverCommand && this.canaryRouter.enabled && typeof params.weight === 'number') {
+        try {
+          this.canaryRouter.setWeight(weight);
+          this.audit.log('config.updated' as any, 'admin', `Canary weight updated: ${weight}%`, { weight });
+          this.sendJson(res, 200, this.canaryRouter.stats());
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update canary');
+        }
+        return;
+      }
+      if (!serverCommand) { this.sendError(res, 400, 'Missing "serverCommand" parameter'); return; }
+      try {
+        this.canaryRouter.enable({ serverCommand, serverArgs, weight });
+        this.audit.log('config.updated' as any, 'admin', `Canary enabled: ${weight}% to canary`, { serverCommand, weight });
+        this.sendJson(res, 200, this.canaryRouter.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot enable canary');
+      }
+      return;
+    }
+    if (req.method === 'PATCH') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const body = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(body); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const weight = params.weight as number;
+      if (typeof weight !== 'number') { this.sendError(res, 400, 'Missing "weight" parameter (number 0-100)'); return; }
+      try {
+        this.canaryRouter.setWeight(weight);
+        this.audit.log('config.updated' as any, 'admin', `Canary weight updated: ${weight}%`, { weight });
+        this.sendJson(res, 200, this.canaryRouter.stats());
+      } catch (err) {
+        this.sendError(res, 400, err instanceof Error ? err.message : 'Cannot update canary');
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.canaryRouter.disable();
+      this.audit.log('config.updated' as any, 'admin', 'Canary disabled', {});
+      this.sendJson(res, 200, { disabled: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/PATCH/DELETE.');
   }
 
   // ─── /keys/geo — Per-key geo-restriction management ─────────────────────────
