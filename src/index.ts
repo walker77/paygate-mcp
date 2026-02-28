@@ -126,6 +126,10 @@ export { ApprovalWorkflowManager } from './approval-workflows';
 export type { ApprovalRule, ApprovalRequest, ApprovalCheckResult, ApprovalDecision, ApprovalWorkflowStats, ApprovalWorkflowConfig, ApprovalCondition, ApprovalStatus } from './approval-workflows';
 export { GatewayHookManager } from './gateway-hooks';
 export type { GatewayHook, HookCreateParams, HookExecutionContext, HookExecutionResult, HookStageResult, GatewayHookStats, GatewayHookConfig, HookStage, HookType } from './gateway-hooks';
+export { SpendCapManager } from './spend-caps';
+export type { SpendCapCheckResult } from './spend-caps';
+export { TaskManager } from './task-manager';
+export type { TaskRecord, TaskStatus, TaskListQuery, TaskListResult } from './task-manager';
 
 export type {
   PayGateConfig,
@@ -141,6 +145,7 @@ export type {
   UsageSummary,
   GateDecision,
   QuotaConfig,
+  SpendCapConfig,
   BatchToolCall,
   BatchGateResult,
   WebhookFilterRule,

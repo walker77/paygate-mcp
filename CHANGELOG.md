@@ -1,5 +1,44 @@
 # Changelog
 
+## 10.4.0 (2026-02-28)
+
+### Spend Caps with Auto-Suspend
+- **Server-wide and per-key spend caps** to prevent runaway agent spending:
+  - Server-wide daily credit cap (`serverDailyCreditCap`) across all API keys
+  - Server-wide daily call cap (`serverDailyCallCap`) across all API keys
+  - Per-key hourly credit and call limits (`hourlyCreditLimit`, `hourlyCallLimit`) via QuotaConfig
+  - Configurable breach action: `deny` (block the call) or `suspend` (block + auto-suspend key)
+  - Auto-resume: suspended keys automatically resume after configurable cooldown (`autoResumeAfterSeconds`)
+  - Callbacks: `onAutoSuspend` and `onAutoResume` hooks for logging/alerting
+  - `GET /admin/spend-caps` — view server stats, per-key stats, suspended key info
+  - `POST /admin/spend-caps` — update config at runtime, clear auto-suspend for specific keys
+  - Config: `spendCaps: { breachAction, serverDailyCreditCap, serverDailyCallCap, autoResumeAfterSeconds }`
+
+### MCP Tasks Primitive (MCP 2025-11-25 Spec)
+- **Async task lifecycle for long-running tool calls** — full implementation of the MCP Tasks specification:
+  - `tasks/send` — create a task wrapping a tool call with pre-charge billing; returns task ID immediately
+  - `tasks/get` — get task status, progress, and metadata
+  - `tasks/result` — get task result (completed) or error (failed)
+  - `tasks/list` — list tasks filtered by session, status, or API key prefix with pagination
+  - `tasks/cancel` — cancel a running or pending task
+  - Task states: `pending` → `running` → `completed` | `failed` | `cancelled`
+  - Pre-charge billing: credits deducted at task creation, refunded on failure
+  - Background execution: tool calls run asynchronously, clients poll for results
+  - Auto-timeout: configurable task timeout (default 5 minutes) with automatic failure
+  - Capacity management: evicts oldest completed tasks when at limit (default 10K)
+  - `GET /admin/tasks` — list tasks with filters, view stats
+  - `POST /admin/tasks` — cancel tasks, get stats
+
+### OAuth Protected Resource Metadata (RFC 9728)
+- **`GET /.well-known/oauth-protected-resource`** — standard endpoint for OAuth client discovery:
+  - Returns `resource`, `authorization_servers`, `bearer_methods_supported`, `scopes_supported`
+  - Enables automated OAuth client configuration per RFC 9728
+  - Complements existing OAuth 2.1 + PKCE + Dynamic Client Registration
+
+### Test Coverage
+- 4,276 tests across 203 suites (89 new tests)
+- New test suites: `spend-caps.test.ts`, `task-manager.test.ts`
+
 ## 10.3.0 (2026-02-28)
 
 ### CLI DX: Interactive Setup Wizard

@@ -17,7 +17,7 @@ import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
-import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG, ApiKeyRecord } from './types';
+import { PayGateConfig, JsonRpcRequest, ServerBackendConfig, DEFAULT_CONFIG, ApiKeyRecord, SpendCapConfig } from './types';
 import { validateConfig, ValidatableConfig } from './config-validator';
 import { Logger, parseLogLevel, parseLogFormat } from './logger';
 
@@ -88,6 +88,8 @@ import { ScheduledReportManager } from './scheduled-reports';
 import { ApprovalWorkflowManager } from './approval-workflows';
 import { GatewayHookManager } from './gateway-hooks';
 import { getMetaTools, isMetaTool, handleMetaToolCall, ToolInfo, DynamicDiscoveryConfig } from './dynamic-discovery';
+import { SpendCapManager } from './spend-caps';
+import { TaskManager, TaskRecord } from './task-manager';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -529,6 +531,12 @@ export class PayGateServer {
 
   readonly gatewayHooks: GatewayHookManager;
 
+  /** Spend cap manager for server-wide and per-key caps. Null = disabled. */
+  readonly spendCaps: SpendCapManager | null = null;
+
+  /** MCP Task manager for async task lifecycle. */
+  readonly taskManager: TaskManager;
+
   /** Cached backend tool list for dynamic discovery mode. */
   private cachedBackendTools: ToolInfo[] | null = null;
 
@@ -570,6 +578,20 @@ export class PayGateServer {
 
     this.gate = new Gate(this.config, statePath);
     this.gate.store.logger = this.logger;
+
+    // Spend caps: server-wide and per-key caps with auto-suspend
+    if (this.config.spendCaps) {
+      this.spendCaps = new SpendCapManager(this.config.spendCaps);
+      this.spendCaps.onAutoSuspend = (prefix, reason) => {
+        this.logger.warn(`Auto-suspended key ${prefix}: ${reason}`);
+      };
+      this.spendCaps.onAutoResume = (prefix) => {
+        this.logger.info(`Auto-resumed key ${prefix}`);
+      };
+    }
+
+    // MCP Tasks lifecycle manager
+    this.taskManager = new TaskManager();
 
     // Multi-server mode: use Router
     if (servers && servers.length > 0) {
@@ -1518,6 +1540,10 @@ export class PayGateServer {
         return this.handleApprovalWorkflows(req, res);
       case '/admin/gateway-hooks':
         return this.handleGatewayHooks(req, res);
+      case '/admin/spend-caps':
+        return this.handleSpendCaps(req, res);
+      case '/admin/tasks':
+        return this.handleAdminTasks(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -1750,6 +1776,8 @@ export class PayGateServer {
       // ─── OAuth 2.1 endpoints ─────────────────────────────────────────
       case '/.well-known/oauth-authorization-server':
         return this.handleOAuthMetadata(req, res);
+      case '/.well-known/oauth-protected-resource':
+        return this.handleOAuthProtectedResource(req, res);
       case '/oauth/register':
         return this.handleOAuthRegister(req, res);
       case '/oauth/authorize':
@@ -2049,6 +2077,197 @@ export class PayGateServer {
           return;
         }
         // If not a meta-tool, fall through to normal tools/call handling
+      }
+    }
+
+    // ─── Spend Caps: server-wide and per-key hourly caps ─────────────────
+    if (this.spendCaps && (request.method === 'tools/call' || request.method === 'tasks/send')) {
+      const keyPrefix = apiKey ? apiKey.slice(0, 10) : 'anon';
+
+      // Check auto-suspend status (cooldown period)
+      if (apiKey && this.spendCaps.isAutoSuspended(keyPrefix)) {
+        const status = this.spendCaps.getAutoSuspendStatus(keyPrefix);
+        const errResp: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: request.id,
+          error: {
+            code: -32402,
+            message: `Key auto-suspended due to spend cap breach${status.autoResumeIn ? ` (resumes in ${status.autoResumeIn}s)` : ''}`,
+            data: { autoSuspended: true, autoResumeIn: status.autoResumeIn },
+          },
+        };
+        const accept = req.headers['accept'] || '';
+        if (accept.includes('text/event-stream')) {
+          writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+          writeSseEvent(res, errResp, 'message');
+          res.end();
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+          res.end(JSON.stringify(errResp));
+        }
+        return;
+      }
+
+      // Check server-wide caps
+      const toolName = (request.params as Record<string, unknown>)?.name as string || '';
+      const creditsRequired = this.gate.getToolPrice(toolName, (request.params as Record<string, unknown>)?.arguments as Record<string, unknown>, apiKey || undefined);
+      const serverCapResult = this.spendCaps.checkServerCap(creditsRequired);
+      if (!serverCapResult.allowed) {
+        const errResp: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: request.id,
+          error: { code: -32402, message: `Server spend cap: ${serverCapResult.reason}` },
+        };
+        const accept = req.headers['accept'] || '';
+        if (accept.includes('text/event-stream')) {
+          writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+          writeSseEvent(res, errResp, 'message');
+          res.end();
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+          res.end(JSON.stringify(errResp));
+        }
+        return;
+      }
+
+      // Check per-key hourly caps
+      if (apiKey) {
+        const keyRecord = this.gate.store.getKey(apiKey);
+        const quota = keyRecord?.quota || this.config.globalQuota;
+        const hourlyResult = this.spendCaps.checkHourlyCap(keyPrefix, creditsRequired, quota);
+        if (!hourlyResult.allowed) {
+          // Auto-suspend if configured
+          if (hourlyResult.shouldSuspend) {
+            this.spendCaps.autoSuspendKey(keyPrefix, hourlyResult.reason!);
+            this.audit.log('key.auto_suspended' as any, keyPrefix, `Auto-suspended: ${hourlyResult.reason}`);
+          }
+          const errResp: JsonRpcResponse = {
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code: -32402, message: `Spend cap: ${hourlyResult.reason}` },
+          };
+          const accept = req.headers['accept'] || '';
+          if (accept.includes('text/event-stream')) {
+            writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+            writeSseEvent(res, errResp, 'message');
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+            res.end(JSON.stringify(errResp));
+          }
+          return;
+        }
+      }
+    }
+
+    // ─── MCP Tasks: handle tasks/* methods ──────────────────────────────
+    if (request.method.startsWith('tasks/')) {
+      const taskSessionId = sessionId || 'default';
+      const keyPrefix = apiKey ? apiKey.slice(0, 10) : 'anon';
+
+      // tasks/send — Create async task (wraps a tool call)
+      if (request.method === 'tasks/send') {
+        const params = request.params as Record<string, unknown> || {};
+        const toolName = String(params.name || '');
+        const toolArgs = params.arguments as Record<string, unknown> | undefined;
+
+        if (!toolName) {
+          const errResp: JsonRpcResponse = {
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code: -32602, message: 'Invalid params: "name" (tool name) is required for tasks/send' },
+          };
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+          res.end(JSON.stringify(errResp));
+          return;
+        }
+
+        // Gate the task creation (pre-charge credits)
+        if (!this.gate.isFreeMethod('tasks/send')) {
+          const decision = this.gate.evaluate(apiKey, { name: toolName, arguments: toolArgs }, clientIp, scopedTokenTools, countryCode);
+          if (!decision.allowed) {
+            const errResp: JsonRpcResponse = {
+              jsonrpc: '2.0',
+              id: request.id,
+              error: { code: -32402, message: `Payment required: ${decision.reason}`, data: { creditsRequired: this.gate.getToolPrice(toolName), remainingCredits: decision.remainingCredits } },
+            };
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+            res.end(JSON.stringify(errResp));
+            return;
+          }
+        }
+
+        // Create task
+        const creditsCharged = this.gate.isFreeMethod('tasks/send') ? 0 : this.gate.getToolPrice(toolName, toolArgs, apiKey || undefined);
+        const task = this.taskManager.createTask({ toolName, arguments: toolArgs, apiKeyPrefix: keyPrefix, sessionId: taskSessionId, creditsCharged });
+
+        // Record spend cap usage
+        if (this.spendCaps) {
+          this.spendCaps.record(keyPrefix, creditsCharged);
+        }
+
+        // Start the task asynchronously
+        this.taskManager.startTask(task.id);
+
+        // Execute the tool call in the background
+        const taskToolRequest: JsonRpcRequest = {
+          jsonrpc: '2.0',
+          id: `task_${task.id}`,
+          method: 'tools/call',
+          params: { name: toolName, arguments: toolArgs },
+        };
+        this.handler.handleRequest(taskToolRequest, apiKey, clientIp, scopedTokenTools, countryCode)
+          .then(response => {
+            if (response.error) {
+              this.taskManager.failTask(task.id, response.error.message);
+              // Refund on failure
+              if (this.gate.refundOnFailure && creditsCharged > 0 && apiKey) {
+                this.gate.refund(apiKey, toolName, creditsCharged);
+              }
+            } else {
+              this.taskManager.completeTask(task.id, response.result);
+            }
+          })
+          .catch(err => {
+            this.taskManager.failTask(task.id, (err as Error).message);
+          });
+
+        // Return task ID immediately
+        const taskResponse: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: request.id,
+          result: { taskId: task.id, status: task.status, toolName, createdAt: task.createdAt },
+        };
+        const accept = req.headers['accept'] || '';
+        if (accept.includes('text/event-stream')) {
+          writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+          writeSseEvent(res, taskResponse, 'message');
+          res.end();
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+          res.end(JSON.stringify(taskResponse));
+        }
+        return;
+      }
+
+      // tasks/get, tasks/result, tasks/list, tasks/cancel — handled by TaskManager
+      const taskResult = this.taskManager.handleTasksMethod(request.method, request.params as Record<string, unknown> || {}, keyPrefix, taskSessionId);
+      if (taskResult) {
+        const taskResponse: JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: request.id,
+          result: JSON.parse(taskResult.content[0].text),
+        };
+        const accept = req.headers['accept'] || '';
+        if (accept.includes('text/event-stream')) {
+          writeSseHeaders(res, { 'Mcp-Session-Id': sessionId });
+          writeSseEvent(res, taskResponse, 'message');
+          res.end();
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId });
+          res.end(JSON.stringify(taskResponse));
+        }
+        return;
       }
     }
 
@@ -2356,6 +2575,10 @@ export class PayGateServer {
         const price = this.gate.getToolPrice(toolName,
           (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> | undefined);
         this.metrics.recordToolCall(toolName, true, price);
+        // Record spend cap usage for successful tool calls
+        if (this.spendCaps && apiKey) {
+          this.spendCaps.record(apiKey.slice(0, 10), price);
+        }
       }
     }
 
@@ -2887,8 +3110,11 @@ export class PayGateServer {
         adminScheduledReports: 'GET /admin/scheduled-reports — View schedules and stats; POST /admin/scheduled-reports — Create/update/delete/generate report schedules (requires X-Admin-Key)',
         adminApprovalWorkflows: 'GET /admin/approval-workflows — View rules and requests; POST /admin/approval-workflows — Create/update/delete rules, approve/deny requests (requires X-Admin-Key)',
         adminGatewayHooks: 'GET /admin/gateway-hooks — View hooks and stats; POST /admin/gateway-hooks — Register/update/delete hooks, test execution (requires X-Admin-Key)',
+        adminSpendCaps: 'GET /admin/spend-caps — View spend cap stats and auto-suspended keys; POST /admin/spend-caps — Update config, clear auto-suspend (requires X-Admin-Key)',
+        adminTasks: 'GET /admin/tasks — View MCP task lifecycle status and stats (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
+          oauthProtectedResource: 'GET /.well-known/oauth-protected-resource — Protected Resource Metadata (RFC 9728)',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
           oauthAuthorize: 'GET /oauth/authorize — Authorization endpoint',
           oauthToken: 'POST /oauth/token — Token endpoint',
@@ -6078,6 +6304,25 @@ export class PayGateServer {
     res.end(JSON.stringify(this.oauth.getMetadata()));
   }
 
+  /** GET /.well-known/oauth-protected-resource — Protected Resource Metadata (RFC 9728) */
+  private handleOAuthProtectedResource(_req: IncomingMessage, res: ServerResponse): void {
+    if (!this.oauth) {
+      this.sendError(res, 404, 'OAuth not enabled');
+      return;
+    }
+    const metadata = this.oauth.getMetadata();
+    const protectedResourceMetadata = {
+      resource: metadata.issuer,
+      authorization_servers: [metadata.issuer],
+      bearer_methods_supported: ['header'],
+      scopes_supported: metadata.scopes_supported,
+      resource_documentation: 'https://paygated.dev',
+      resource_signing_alg_values_supported: ['RS256'],
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(protectedResourceMetadata));
+  }
+
   /** POST /oauth/register — Dynamic Client Registration (RFC 7591) */
   private async handleOAuthRegister(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.oauth) {
@@ -6453,6 +6698,7 @@ export class PayGateServer {
         dashboard: '/dashboard',
         paymentMetadata: '/.well-known/mcp-payment',
         oauthMetadata: this.oauth ? '/.well-known/oauth-authorization-server' : undefined,
+        oauthProtectedResource: this.oauth ? '/.well-known/oauth-protected-resource' : undefined,
       },
       links: {
         homepage: 'https://paygated.dev',
@@ -13962,6 +14208,7 @@ export class PayGateServer {
     this.adminRateLimiter.destroy();
     this.sessionRateLimiter.destroy();
     this.publicRateLimiter.destroy();
+    this.taskManager.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }
@@ -14040,6 +14287,7 @@ export class PayGateServer {
     this.adminRateLimiter.destroy();
     this.sessionRateLimiter.destroy();
     this.publicRateLimiter.destroy();
+    this.taskManager.destroy();
     if (this.redisSync) {
       await this.redisSync.destroy();
     }
@@ -16527,5 +16775,136 @@ export class PayGateServer {
       return;
     }
     this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  // ─── /admin/spend-caps — Spend Cap Management ────────────────────────────────
+
+  private async handleSpendCaps(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      if (!this.spendCaps) {
+        this.sendJson(res, 200, { enabled: false, message: 'Spend caps not configured' });
+        return;
+      }
+      const url = new URL(req.url || '/', `http://localhost`);
+      const keyPrefix = url.searchParams.get('keyPrefix');
+
+      if (keyPrefix) {
+        // Per-key spend cap info
+        const hourlyStats = this.spendCaps.getKeyHourlyStats(keyPrefix);
+        const suspendStatus = this.spendCaps.getAutoSuspendStatus(keyPrefix);
+        this.sendJson(res, 200, { keyPrefix, hourlyStats, suspendStatus });
+        return;
+      }
+
+      // Server-wide stats
+      const serverStats = this.spendCaps.getServerStats();
+      const config = this.spendCaps.currentConfig;
+      this.sendJson(res, 200, {
+        enabled: true,
+        config,
+        serverStats,
+        suspendedCount: this.spendCaps.suspendedCount,
+      });
+      return;
+    }
+
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      if (!this.spendCaps) {
+        this.sendError(res, 400, 'Spend caps not configured. Enable via spendCaps config.');
+        return;
+      }
+      const raw = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(raw); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const action = String(params.action ?? '');
+
+      switch (action) {
+        case 'updateConfig': {
+          const newConfig: Partial<SpendCapConfig> = {};
+          if (typeof params.breachAction === 'string' && (params.breachAction === 'deny' || params.breachAction === 'suspend')) {
+            newConfig.breachAction = params.breachAction;
+          }
+          if (typeof params.serverDailyCreditCap === 'number') newConfig.serverDailyCreditCap = params.serverDailyCreditCap;
+          if (typeof params.serverDailyCallCap === 'number') newConfig.serverDailyCallCap = params.serverDailyCallCap;
+          if (typeof params.autoResumeAfterSeconds === 'number') newConfig.autoResumeAfterSeconds = params.autoResumeAfterSeconds;
+          const currentConfig = this.spendCaps.currentConfig;
+          this.spendCaps.updateConfig({ ...currentConfig, ...newConfig });
+          this.sendJson(res, 200, { updated: true, config: this.spendCaps.currentConfig });
+          return;
+        }
+        case 'clearSuspend': {
+          const keyPrefix = String(params.keyPrefix ?? '');
+          if (!keyPrefix) { this.sendError(res, 400, 'keyPrefix is required'); return; }
+          const cleared = this.spendCaps.clearAutoSuspend(keyPrefix);
+          this.sendJson(res, 200, { keyPrefix, cleared });
+          return;
+        }
+        default:
+          this.sendError(res, 400, 'Unknown action. Use updateConfig/clearSuspend.');
+          return;
+      }
+    }
+
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
+  }
+
+  // ─── /admin/tasks — MCP Task Administration ──────────────────────────────────
+
+  private async handleAdminTasks(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const taskId = url.searchParams.get('taskId');
+
+      if (taskId) {
+        const task = this.taskManager.getTask(taskId);
+        if (!task) { this.sendError(res, 404, `Task not found: ${taskId}`); return; }
+        this.sendJson(res, 200, task);
+        return;
+      }
+
+      // List tasks with optional filters
+      const status = url.searchParams.get('status') as any;
+      const sessionId = url.searchParams.get('sessionId') || undefined;
+      const apiKeyPrefix = url.searchParams.get('apiKeyPrefix') || undefined;
+      const pageSize = parseInt(url.searchParams.get('pageSize') || '50', 10);
+      const cursor = url.searchParams.get('cursor') || undefined;
+
+      const result = this.taskManager.listTasks({ status, sessionId, apiKeyPrefix, pageSize, cursor });
+      const stats = this.taskManager.getStats();
+      this.sendJson(res, 200, { ...result, stats });
+      return;
+    }
+
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const raw = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(raw); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const action = String(params.action ?? '');
+
+      switch (action) {
+        case 'cancel': {
+          const taskId = String(params.taskId ?? '');
+          if (!taskId) { this.sendError(res, 400, 'taskId is required'); return; }
+          const task = this.taskManager.cancelTask(taskId);
+          if (!task) { this.sendError(res, 404, 'Task not found or cannot be cancelled'); return; }
+          this.sendJson(res, 200, task);
+          return;
+        }
+        case 'stats': {
+          const stats = this.taskManager.getStats();
+          this.sendJson(res, 200, { stats, totalTasks: this.taskManager.taskCount });
+          return;
+        }
+        default:
+          this.sendError(res, 400, 'Unknown action. Use cancel/stats.');
+          return;
+      }
+    }
+
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST.');
   }
 }

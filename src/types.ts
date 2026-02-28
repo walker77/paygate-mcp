@@ -65,6 +65,23 @@ export interface QuotaConfig {
   dailyCreditLimit: number;
   /** Max credits per month (UTC). 0 = unlimited. */
   monthlyCreditLimit: number;
+  /** Max calls per hour (UTC). 0 = unlimited. */
+  hourlyCallLimit?: number;
+  /** Max credits per hour (UTC). 0 = unlimited. */
+  hourlyCreditLimit?: number;
+}
+
+// ─── Spend Caps ───────────────────────────────────────────────────────────
+
+export interface SpendCapConfig {
+  /** Action when any cap is breached: 'deny' (just deny) or 'suspend' (deny + auto-suspend key). Default: 'deny'. */
+  breachAction: 'deny' | 'suspend';
+  /** Server-wide daily credit ceiling across ALL keys. 0 = unlimited. */
+  serverDailyCreditCap: number;
+  /** Server-wide daily call ceiling across ALL keys. 0 = unlimited. */
+  serverDailyCallCap: number;
+  /** Auto-resume suspended keys after this many seconds. 0 = manual resume only. */
+  autoResumeAfterSeconds: number;
 }
 
 export interface PayGateConfig {
@@ -202,6 +219,8 @@ export interface PayGateConfig {
    *   that let agents discover and call tools on-demand. Reduces context window bloat for large tool sets.
    */
   discoveryMode?: 'static' | 'dynamic';
+  /** Spend cap configuration for preventing runaway agents. Undefined = disabled. */
+  spendCaps?: SpendCapConfig;
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────
