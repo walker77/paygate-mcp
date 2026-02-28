@@ -184,6 +184,14 @@ export { WebhookTemplateEngine } from './webhook-templates';
 export type { WebhookTemplate, TemplateCreateParams, TemplateFormat, RenderResult, TemplateValidation, WebhookTemplateConfig, WebhookTemplateStats } from './webhook-templates';
 export { AccessLogEngine } from './access-log';
 export type { AccessEntry, AccessRecordParams, AccessQuery, AccessQueryResult, AccessSummary, AccessStatus, AccessLogConfig, AccessLogStats } from './access-log';
+export { SloMonitor } from './slo-monitor';
+export type { SloDefinition, SloType, SloEvent, SloStatus, SloAlert, SloMonitorConfig, SloMonitorStats } from './slo-monitor';
+export { CreditReservationManager } from './credit-reservation';
+export type { Reservation, ReserveParams, ReserveResult, ReservationStatus, CreditReservationConfig, CreditReservationStats } from './credit-reservation';
+export { BillingCycleManager } from './billing-cycles';
+export type { BillingSubscription, SubscriptionCreateParams, BillingFrequency, Invoice, InvoiceStatus, InvoiceLineItem, UsageRecord as BillingUsageRecord, BillingCycleConfig, BillingCycleStats } from './billing-cycles';
+export { ApiVersionRouter } from './api-versioning';
+export type { ToolVersion, VersionRegistration, VersionStatus, VersionResolveResult, MigrationPlan, ApiVersionConfig, ApiVersionStats } from './api-versioning';
 
 export type {
   PayGateConfig,

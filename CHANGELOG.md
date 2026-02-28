@@ -1,5 +1,53 @@
 # Changelog
 
+## 10.12.0 (2026-02-28)
+
+### SLO Monitor — Service Level Objective Tracking
+- **Error budget monitoring** with burn rate alerting:
+  - 3 SLO types: latency (p99 threshold), availability (success rate), error rate
+  - Configurable targets (e.g., 99.9% availability = 0.001 error budget)
+  - Rolling window computation with customizable `windowSeconds`
+  - Budget consumed/remaining tracking with compliant/violated status
+  - Burn rate calculation relative to window elapsed time
+  - Auto-alerts: budget warning, budget exhausted, high burn rate
+  - Alert deduplication (60s cooldown per SLO+type)
+  - Filter SLOs by tools and keys for scoped monitoring
+  - `getViolations()` for quick SLO breach summary
+
+### Credit Reservation — Pre-Authorization for Tool Calls
+- **Reserve-settle-release pattern** for safe credit management:
+  - `reserve()` holds credits before execution, reducing available balance
+  - `settle(id, actualAmount)` consumes credits (actual may differ from reserved)
+  - `release(id)` returns held credits to available pool
+  - TTL-based auto-expiration with configurable `defaultTtlSeconds`
+  - Available vs held balance tracking per key
+  - `maxReservationsPerKey` and `maxReservationAmount` limits
+  - Full reservation lifecycle: held → settled/released/expired
+  - Query active reservations per key with history
+
+### Billing Cycle Manager — Metered Billing Periods
+- **Subscription-based billing cycles** with invoice generation:
+  - 3 frequencies: daily, weekly, monthly
+  - Usage recording per key with tool/credit/metadata tracking
+  - `generateInvoice()` aggregates usage into line items by tool
+  - Invoice lifecycle: draft → finalized → paid (or voided)
+  - Subscription management: create, pause, resume, cancel
+  - Auto-cycle advancement when period expires
+  - Invoice query by key with limit; stats tracking
+  - Configurable `maxUsageRecords` and `maxInvoices`
+
+### API Version Router — Versioned Tool Migration
+- **Multi-version tool routing** with deprecation management:
+  - Register tool versions with status: preview/current/deprecated/sunset
+  - Per-key version overrides for gradual rollout
+  - Resolution: key override → current version → latest fallback
+  - Deprecation warnings with sunset dates and migration suggestions
+  - Auto-sunset versions past their sunset date
+  - `planMigration()` identifies affected keys between versions
+  - `executeMigration()` bulk-moves keys from old to new version
+  - `getApproachingSunset(days)` for proactive migration planning
+  - Version removal auto-cleans key overrides
+
 ## 10.11.0 (2026-02-28)
 
 ### Batch Credit Manager — Bulk Credit Operations
