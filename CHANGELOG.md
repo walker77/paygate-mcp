@@ -1,5 +1,44 @@
 # Changelog
 
+## 10.3.0 (2026-02-28)
+
+### CLI DX: Interactive Setup Wizard
+- **`paygate-mcp init` — guided config file generator** with zero dependencies (Node.js readline):
+  - 3 templates: filesystem server, custom stdio, remote HTTP
+  - 10-step wizard: server type → command → port → pricing → rate limits → shadow mode → persistence → Stripe → webhooks → log format
+  - Generates `paygate.json` with next-steps instructions
+  - `--output <path>` to specify output file (default: `paygate.json`)
+  - `--force` to overwrite existing files
+
+### CLI DX: Shell Completions
+- **`paygate-mcp completions <bash|zsh|fish>` — tab completion for all commands and flags**:
+  - Bash: `_init_completion`-based with `compgen` for flags, file paths, and enum values
+  - Zsh: `_arguments`-based with `_files` and `_describe` for rich completions
+  - Fish: `complete` with `__fish_use_subcommand` and `__fish_seen_subcommand_from`
+  - All commands, all flags, log levels, log formats, discovery modes, and shell names completed
+  - Install instructions in generated output
+
+### CLI DX: Machine-Readable Output
+- **`--json` flag for CI/CD pipelines and automation**:
+  - `paygate-mcp version --json` → `{"version":"10.3.0"}`
+  - `paygate-mcp validate --config ... --json` → structured diagnostics with `valid`, `errors`, `warnings` counts
+  - Consistent JSON output for programmatic consumption
+
+### Dynamic Tool Discovery Mode
+- **`--discovery dynamic` — meta-tools for context window optimization**:
+  - When enabled, `tools/list` returns 3 meta-tools instead of the full backend tool list
+  - `paygate_list_tools` — paginated listing with pricing, rate limits, and descriptions
+  - `paygate_search_tools` — keyword search across tool names and descriptions with relevance scoring
+  - `paygate_call_tool` — proxy any backend tool call through the gate
+  - Reduces agent context window from N tools to 3, with on-demand discovery
+  - Lazy-cached backend tool list (fetched once, reused)
+  - Config: `discoveryMode: "dynamic"` or `--discovery dynamic` CLI flag
+  - Env var: `PAYGATE_DISCOVERY_MODE=dynamic`
+
+### Test Coverage
+- 4,187 tests across 201 suites (40 new tests)
+- New test suites: `cli-completions.test.ts`, `dynamic-discovery.test.ts`, `cli-init.test.ts`
+
 ## 10.2.0 (2026-02-28)
 
 ### Scheduled Reports

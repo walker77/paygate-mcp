@@ -11,6 +11,8 @@
 import { PayGateServer } from './server';
 import { PayGateConfig, ToolPricing, ServerBackendConfig } from './types';
 import { validateConfig, formatDiagnostics, ValidatableConfig } from './config-validator';
+import { runInit } from './cli-init';
+import { generateCompletions } from './cli-completions';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -52,8 +54,10 @@ function printUsage(): void {
     paygate-mcp wrap --server <command> [options]     # stdio transport
     paygate-mcp wrap --remote-url <url> [options]     # Streamable HTTP transport
     paygate-mcp wrap --config <path> [options]        # load from config file
+    paygate-mcp init [--output <path>] [--force]      # interactive setup wizard
     paygate-mcp validate --config <path>              # validate config without starting
-    paygate-mcp version                               # print version
+    paygate-mcp completions <bash|zsh|fish>           # generate shell completions
+    paygate-mcp version [--json]                      # print version
 
   OPTIONS:
     --server <cmd>         MCP server command to wrap via stdio (required unless --remote-url or --config)
@@ -86,6 +90,8 @@ function printUsage(): void {
     --keepalive-timeout <n> Idle connection timeout in ms (default: 65000)
     --max-requests-per-socket <n>  Max HTTP requests per socket (default: 0=unlimited)
     --admin-rate-limit <n> Admin endpoint rate limit per IP (requests/min, default: 120, 0=unlimited)
+    --discovery <mode>     Tool discovery mode: static (default) or dynamic (meta-tools for context window optimization)
+    --json                 Machine-readable JSON output (for version, validate, wrap startup)
 
   ENVIRONMENT VARIABLES (override defaults, overridden by CLI flags):
     PAYGATE_SERVER         MCP server command (same as --server)
@@ -116,6 +122,7 @@ function printUsage(): void {
     PAYGATE_KEEPALIVE_TIMEOUT Idle connection timeout in ms (same as --keepalive-timeout)
     PAYGATE_MAX_REQUESTS_PER_SOCKET Max requests per socket (same as --max-requests-per-socket)
     PAYGATE_ADMIN_RATE_LIMIT Admin rate limit per IP (same as --admin-rate-limit)
+    PAYGATE_DISCOVERY_MODE  Tool discovery mode (same as --discovery)
 
   EXAMPLES:
     # Wrap a local MCP server (stdio transport)
@@ -220,6 +227,8 @@ interface ConfigFile {
   maxRequestsPerSocket?: number;
   /** Admin endpoint rate limit per IP (requests/min). 0 = unlimited. Default: 120 */
   adminRateLimit?: number;
+  /** Tool discovery mode: 'static' (default) or 'dynamic' (meta-tools for context window optimization). */
+  discoveryMode?: 'static' | 'dynamic';
 }
 
 // ─── Env Var Helpers ─────────────────────────────────────────────────────────
@@ -375,6 +384,7 @@ async function main(): Promise<void> {
       const keepaliveTimeoutFlag = flags['keepalive-timeout'] || env('PAYGATE_KEEPALIVE_TIMEOUT');
       const maxReqPerSocketFlag = flags['max-requests-per-socket'] || env('PAYGATE_MAX_REQUESTS_PER_SOCKET');
       const adminRateLimitFlag = flags['admin-rate-limit'] || env('PAYGATE_ADMIN_RATE_LIMIT');
+      const discoveryModeFlag = flags['discovery'] || env('PAYGATE_DISCOVERY_MODE');
 
       const port = parseInt(portFlag || String(fileConfig.port || 3402), 10);
       const price = parseInt(priceFlag || String(fileConfig.defaultCreditsPerCall || 1), 10);
@@ -430,6 +440,7 @@ async function main(): Promise<void> {
       const keepAliveTimeoutMs = parseInt(keepaliveTimeoutFlag || String(fileConfig.keepAliveTimeoutMs || 0), 10) || undefined;
       const maxRequestsPerSocket = parseInt(maxReqPerSocketFlag || String(fileConfig.maxRequestsPerSocket || 0), 10) || undefined;
       const adminRateLimit = adminRateLimitFlag ? parseInt(adminRateLimitFlag, 10) : (fileConfig.adminRateLimit ?? undefined);
+      const discoveryMode = (discoveryModeFlag || fileConfig.discoveryMode || 'static') as 'static' | 'dynamic';
 
       const server = new PayGateServer({
         serverCommand,
@@ -456,6 +467,7 @@ async function main(): Promise<void> {
         keepAliveTimeoutMs,
         maxRequestsPerSocket,
         adminRateLimit,
+        discoveryMode,
       }, adminKey, stateFile, remoteUrl, stripeSecret, multiServers, redisUrl);
 
       // Wire config file path for hot-reload support
@@ -630,10 +642,40 @@ async function main(): Promise<void> {
       }
 
       const diags = validateConfig(rawConfig);
-      console.log(formatDiagnostics(diags));
-
       const errors = diags.filter(d => d.level === 'error');
+
+      if (flags['json'] === 'true' || 'json' in flags) {
+        console.log(JSON.stringify({
+          valid: errors.length === 0,
+          diagnostics: diags.map(d => ({ level: d.level, message: d.message, field: d.field || null })),
+          errors: errors.length,
+          warnings: diags.filter(d => d.level === 'warning').length,
+        }, null, 2));
+      } else {
+        console.log(formatDiagnostics(diags));
+      }
+
       process.exit(errors.length > 0 ? 1 : 0);
+    }
+
+    case 'init': {
+      await runInit(flags);
+      break;
+    }
+
+    case 'completions': {
+      const shell = process.argv[3];
+      if (!shell) {
+        console.error('Error: shell argument required. Usage: paygate-mcp completions <bash|zsh|fish>\n');
+        process.exit(1);
+      }
+      try {
+        console.log(generateCompletions(shell));
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(1);
+      }
+      break;
     }
 
     case 'help':
@@ -645,7 +687,11 @@ async function main(): Promise<void> {
     case 'version':
     case '--version':
     case '-v':
-      console.log(`paygate-mcp v${PKG_VERSION}`);
+      if (flags['json'] === 'true' || 'json' in flags) {
+        console.log(JSON.stringify({ version: PKG_VERSION }));
+      } else {
+        console.log(`paygate-mcp v${PKG_VERSION}`);
+      }
       break;
 
     default:

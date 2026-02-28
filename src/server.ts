@@ -87,6 +87,7 @@ import { ConfigProfileManager } from './config-profiles';
 import { ScheduledReportManager } from './scheduled-reports';
 import { ApprovalWorkflowManager } from './approval-workflows';
 import { GatewayHookManager } from './gateway-hooks';
+import { getMetaTools, isMetaTool, handleMetaToolCall, ToolInfo, DynamicDiscoveryConfig } from './dynamic-discovery';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -527,6 +528,9 @@ export class PayGateServer {
   readonly approvalWorkflows: ApprovalWorkflowManager;
 
   readonly gatewayHooks: GatewayHookManager;
+
+  /** Cached backend tool list for dynamic discovery mode. */
+  private cachedBackendTools: ToolInfo[] | null = null;
 
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
@@ -1920,6 +1924,132 @@ export class PayGateServer {
         res.end(JSON.stringify(batchResponse));
       }
       return;
+    }
+
+    // ─── Dynamic Discovery Mode ──────────────────────────────────────────────
+    // When discoveryMode === 'dynamic', intercept tools/list and meta-tool calls.
+    if (this.config.discoveryMode === 'dynamic') {
+      // Intercept tools/list → return meta-tools instead of backend tools
+      if (request.method === 'tools/list') {
+        // Cache backend tools on first tools/list (lazy initialization)
+        if (!this.cachedBackendTools) {
+          try {
+            const backendResponse = await this.handler.handleRequest(request, apiKey, clientIp, scopedTokenTools, countryCode);
+            const backendResult = backendResponse.result as { tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> };
+            this.cachedBackendTools = (backendResult?.tools || []).map(t => ({
+              name: t.name,
+              description: t.description,
+              inputSchema: t.inputSchema,
+            }));
+          } catch {
+            this.cachedBackendTools = [];
+          }
+        }
+
+        const metaTools = getMetaTools();
+        const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
+        const accept = req.headers['accept'] || '';
+        const wantsSse = accept.includes('text/event-stream');
+        const metaResponse: import('./types').JsonRpcResponse = {
+          jsonrpc: '2.0',
+          id: request.id,
+          result: { tools: metaTools },
+        };
+
+        if (wantsSse) {
+          writeSseHeaders(res, { 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
+          writeSseEvent(res, metaResponse, 'message');
+          res.end();
+        } else {
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Mcp-Session-Id': sessionId,
+            ...rateLimitHeaders,
+          });
+          res.end(JSON.stringify(metaResponse));
+        }
+        return;
+      }
+
+      // Intercept tools/call for meta-tools
+      if (request.method === 'tools/call') {
+        const metaToolName = (request.params as Record<string, unknown>)?.name as string || '';
+
+        if (metaToolName === 'paygate_call_tool') {
+          // Unwrap paygate_call_tool → rewrite as a regular tools/call
+          const metaArgs = (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> || {};
+          const realToolName = String(metaArgs.name || '');
+          const realArgs = (metaArgs.arguments as Record<string, unknown>) || {};
+          if (!realToolName) {
+            const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
+            const accept = req.headers['accept'] || '';
+            const wantsSse = accept.includes('text/event-stream');
+            const errResp: import('./types').JsonRpcResponse = {
+              jsonrpc: '2.0',
+              id: request.id,
+              error: { code: -32602, message: 'paygate_call_tool requires "name" argument' },
+            };
+            if (wantsSse) {
+              writeSseHeaders(res, { 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
+              writeSseEvent(res, errResp, 'message');
+              res.end();
+            } else {
+              res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
+              res.end(JSON.stringify(errResp));
+            }
+            return;
+          }
+          // Rewrite the request to call the real tool
+          request = {
+            ...request,
+            params: { name: realToolName, arguments: realArgs },
+          };
+        } else if (metaToolName === 'paygate_list_tools' || metaToolName === 'paygate_search_tools') {
+          // Handle list/search meta-tools locally (no credits charged, no gating)
+          if (!this.cachedBackendTools) {
+            try {
+              const listReq: import('./types').JsonRpcRequest = { jsonrpc: '2.0', id: 'discovery-init', method: 'tools/list', params: {} };
+              const backendResponse = await this.handler.handleRequest(listReq, null, clientIp);
+              const backendResult = backendResponse.result as { tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> };
+              this.cachedBackendTools = (backendResult?.tools || []).map(t => ({
+                name: t.name,
+                description: t.description,
+                inputSchema: t.inputSchema,
+              }));
+            } catch {
+              this.cachedBackendTools = [];
+            }
+          }
+
+          const metaArgs = (request.params as Record<string, unknown>)?.arguments as Record<string, unknown> || {};
+          const discoveryConfig: DynamicDiscoveryConfig = {
+            defaultCreditsPerCall: this.config.defaultCreditsPerCall,
+            toolPricing: this.config.toolPricing,
+            globalRateLimitPerMin: this.config.globalRateLimitPerMin,
+          };
+          const metaResult = handleMetaToolCall(metaToolName, metaArgs, this.cachedBackendTools, discoveryConfig);
+
+          const rateLimitHeaders = this.buildRateLimitHeaders(apiKey, request);
+          const accept = req.headers['accept'] || '';
+          const wantsSse = accept.includes('text/event-stream');
+          const metaResponse: import('./types').JsonRpcResponse = {
+            jsonrpc: '2.0',
+            id: request.id,
+            result: metaResult || { content: [{ type: 'text', text: '{}' }] },
+          };
+
+          if (wantsSse) {
+            writeSseHeaders(res, { 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
+            writeSseEvent(res, metaResponse, 'message');
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId, ...rateLimitHeaders });
+            res.end(JSON.stringify(metaResponse));
+          }
+          return;
+        }
+        // If not a meta-tool, fall through to normal tools/call handling
+      }
     }
 
     // Plugin: beforeToolCall — let plugins modify the request before forwarding

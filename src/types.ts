@@ -195,6 +195,13 @@ export interface PayGateConfig {
     /** Timeout for mirror requests in ms. Default: 5000. */
     timeoutMs?: number;
   };
+  /**
+   * Tool discovery mode. Default: 'static'.
+   * - 'static': Expose all backend tools directly (current behavior).
+   * - 'dynamic': Expose 3 meta-tools (paygate_list_tools, paygate_search_tools, paygate_call_tool)
+   *   that let agents discover and call tools on-demand. Reduces context window bloat for large tool sets.
+   */
+  discoveryMode?: 'static' | 'dynamic';
 }
 
 // ─── Webhook Filters ──────────────────────────────────────────────────────

@@ -32,7 +32,10 @@ Monetize any MCP server with one command. Add API key auth, per-tool pricing, ra
 ## Quick Start
 
 ```bash
-# Wrap a local MCP server (stdio transport)
+# Interactive setup wizard (generates paygate.json)
+npx paygate-mcp init
+
+# Or wrap directly with CLI flags
 npx paygate-mcp wrap --server "npx @modelcontextprotocol/server-filesystem /tmp"
 
 # Gate a remote MCP server (Streamable HTTP transport)
@@ -551,6 +554,42 @@ These MCP methods pass through without auth or billing:
 
 **Gated methods:** `tools/call` (single), `tools/call_batch` (batch — all-or-nothing billing, parallel execution). See [Batch Tool Calls](#batch-tool-calls).
 
+## CLI Commands
+
+```bash
+paygate-mcp wrap [options]             # Start a payment-gated MCP proxy
+paygate-mcp init [--output] [--force]  # Interactive setup wizard
+paygate-mcp validate --config <path>   # Validate config without starting
+paygate-mcp completions <bash|zsh|fish> # Generate shell completions
+paygate-mcp version [--json]           # Print version
+```
+
+### Shell Completions
+
+```bash
+# Bash
+paygate-mcp completions bash > ~/.local/share/bash-completion/completions/paygate-mcp
+
+# Zsh
+paygate-mcp completions zsh > ~/.zfunc/_paygate-mcp
+# Add to .zshrc: fpath=(~/.zfunc $fpath) && compinit
+
+# Fish
+paygate-mcp completions fish > ~/.config/fish/completions/paygate-mcp.fish
+```
+
+### Machine-Readable Output
+
+```bash
+# Version as JSON (for CI/CD)
+paygate-mcp version --json
+# → {"version":"10.3.0"}
+
+# Validate config with structured output
+paygate-mcp validate --config paygate.json --json
+# → {"valid":true,"diagnostics":[...],"errors":0,"warnings":0}
+```
+
 ## CLI Options
 
 ```
@@ -571,9 +610,21 @@ These MCP methods pass through without auth or billing:
 --refund-on-failure  Refund credits when downstream tool call fails
 --redis-url <url>    Redis URL for distributed state (e.g. "redis://localhost:6379")
 --config <path>      Load settings from a JSON config file
+--discovery <mode>   Tool discovery mode: static (default) or dynamic
+--json               Machine-readable JSON output
 ```
 
 > **Note:** Use `--server` OR `--remote-url` for single-server mode. Use `servers` in a config file for multi-server mode.
+
+### Dynamic Tool Discovery
+
+For servers with many tools, dynamic discovery mode reduces agent context window bloat by exposing 3 meta-tools instead of the full tool list:
+
+```bash
+npx paygate-mcp wrap --server "your-server" --discovery dynamic
+```
+
+Agents see 3 tools: `paygate_list_tools` (paginated listing), `paygate_search_tools` (keyword search), and `paygate_call_tool` (proxy any tool). This reduces N tools to 3 in the context window while preserving full functionality.
 
 ### Persistent Storage
 
