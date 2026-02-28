@@ -1,5 +1,45 @@
 # Changelog
 
+## 10.18.0 (2026-02-28)
+
+### Webhook Retry Manager — Exponential Backoff Retry Queue
+- **Queue and retry failed webhook deliveries** with configurable backoff:
+  - Enqueue webhooks with URL and payload, configurable max attempts
+  - Dequeue oldest ready entry or all ready entries for batch processing
+  - Mark entries as delivered or failed with error tracking
+  - Exponential backoff with configurable base delay, max delay, and multiplier
+  - Dead letter management: entries exceeding max attempts move to dead status
+  - Retry dead entries with additional attempts, purge dead entries in bulk
+
+### API Metrics Aggregator — Time-Bucketed Percentile Analytics
+- **Record and aggregate API call metrics** with percentile calculations:
+  - Record metrics with method, tool, key, latency, status code, and credits
+  - Time-bucketed aggregation at 1m, 5m, 1h, 1d granularity
+  - Percentile calculations: p50, p95, p99, min, max, average latency
+  - Error rate computation and requests-per-second calculation
+  - Per-tool breakdown with count, errors, average latency, and credits
+  - Time-series bucket generation for dashboards and monitoring
+  - Automatic cleanup of records older than configurable max age
+
+### Key Migration Manager — Tier Migration with Rollback
+- **Plan and execute API key migrations** between tiers with rollback support:
+  - Plan migrations with key lists, source/target tiers, and reason tracking
+  - Execute migrations with injectable handler callbacks (migrate + rollback)
+  - Per-key success/failure tracking during migration execution
+  - Rollback completed or failed migrations to original tier
+  - Migration lifecycle: planned → executing → completed/failed → rolled_back
+  - Query and filter migrations by status, remove migration records
+
+### Incident Manager — Incident Lifecycle with Status Pages
+- **Track incidents and generate status page data** for service health:
+  - Create incidents with title, severity (minor/major/critical), and affected services
+  - Status transitions: investigating → identified → monitoring → resolved
+  - Add updates with status changes and messages at each stage
+  - Automatic service registration from affected services
+  - Status page data: overall status, active incidents, recent resolved, service statuses
+  - Duration tracking with automatic resolution timing
+  - Stats: incidents by severity, active vs resolved counts, average resolution time
+
 ## 10.17.0 (2026-02-28)
 
 ### Load Balancer — Multi-Strategy Request Distribution

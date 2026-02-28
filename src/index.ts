@@ -243,6 +243,16 @@ export type { ValidationRule, RuleCreateParams as ValidationRuleCreateParams, Re
 export { MaintenanceWindowManager } from './maintenance-window';
 export type { MaintenanceWindow, WindowScheduleParams, WindowStatus, MaintenanceStatus, MaintenanceWindowConfig, MaintenanceWindowStats } from './maintenance-window';
 
+// ── v10.18.0 ──────────────────────────────────────────────────────────
+export { WebhookRetryManager } from './webhook-retry';
+export type { RetryEntry, RetryEntryStatus, EnqueueParams, WebhookRetryConfig, WebhookRetryStats } from './webhook-retry';
+export { APIMetricsAggregator } from './api-metrics';
+export type { MetricRecord as APIMetricRecord, MetricGranularity, MetricBucket, MetricSummary, ToolMetricSummary, APIMetricsConfig, APIMetricsStats } from './api-metrics';
+export { KeyMigrationManager } from './key-migration';
+export type { Migration, MigrationStatus, MigrationPlanParams, MigrationHandler, KeyMigrationConfig, KeyMigrationStats } from './key-migration';
+export { IncidentManager } from './incident-manager';
+export type { Incident, IncidentSeverity, IncidentStatus, IncidentCreateParams, IncidentUpdate, UpdateParams, StatusPageData, IncidentManagerConfig, IncidentManagerStats } from './incident-manager';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,
