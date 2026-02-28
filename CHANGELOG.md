@@ -1,5 +1,54 @@
 # Changelog
 
+## 10.13.0 (2026-02-28)
+
+### Event Ledger — Immutable Event Sourcing
+- **Full audit trail** with immutable event append:
+  - Sequence-ordered events with aggregate versioning
+  - Optimistic concurrency control via `expectedVersion` parameter
+  - Batch append for multi-event atomicity
+  - Query with filters: aggregateId, type, types, time range, afterSequence
+  - Pagination with offset/limit and `hasMore` flag
+  - Aggregate snapshots with version, event count, and type list
+  - `replay()` and `replayAll()` for state reconstruction from events
+  - Time-travel queries via `getEventsAsOf()` for point-in-time state
+  - Event type count analytics
+  - Configurable `maxEvents` eviction for bounded memory
+
+### Dynamic Pricing Engine — Demand-Based Tool Pricing
+- **Composable pricing rules** evaluated in priority order:
+  - Time-of-day multipliers with configurable peak hours
+  - Demand-based surge pricing with threshold/window/maxMultiplier
+  - Volume discount tiers (percentage-based, key-scoped)
+  - Per-key price overrides via key-specific pricing maps
+  - Custom pricing functions with fail-safe error handling
+  - Rule enable/disable toggle without removal
+  - Demand tracking with automatic timestamp pruning
+  - Price result includes basePrice, finalPrice, appliedRules, multiplier
+
+### Quota Rollover Manager — Recurring Quotas with Rollover
+- **Periodic quota management** with unused credit rollover:
+  - Daily, weekly, and monthly quota periods
+  - Configurable rollover percentage (0-100%) of unused quota
+  - Maximum rollover cap to prevent unbounded accumulation
+  - Auto-advance expired periods on consumption
+  - Rollover chain: unused credits from rollover periods roll over again
+  - Rollover history tracking with full event details
+  - Quota limit and rollover settings updatable mid-period
+  - Consumption denied with remaining balance reporting
+
+### API Key Scoping — Fine-Grained Tool Access Control
+- **Scope-based permission system** for API keys:
+  - Define named scopes with descriptions and inheritance chains
+  - Circular scope reference protection
+  - Tool-to-scope mapping: require any matching scope for access
+  - Permanent and temporary (TTL) scope grants per key
+  - Effective scope resolution with full inheritance expansion
+  - Wildcard `*` scope grants access to all scoped tools
+  - Detailed access check results with matched scopes and denial reasons
+  - Configurable: allowUnscopedTools, denyUnscopedKeys
+  - Automatic cleanup of expired temporary grants
+
 ## 10.12.0 (2026-02-28)
 
 ### SLO Monitor — Service Level Objective Tracking

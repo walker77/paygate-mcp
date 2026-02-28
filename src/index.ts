@@ -193,6 +193,16 @@ export type { BillingSubscription, SubscriptionCreateParams, BillingFrequency, I
 export { ApiVersionRouter } from './api-versioning';
 export type { ToolVersion, VersionRegistration, VersionStatus, VersionResolveResult, MigrationPlan, ApiVersionConfig, ApiVersionStats } from './api-versioning';
 
+// ── v10.13.0 ──────────────────────────────────────────────────────────
+export { EventLedger } from './event-ledger';
+export type { LedgerEvent, AppendParams, LedgerQuery, LedgerQueryResult, AggregateSnapshot, EventLedgerConfig, EventLedgerStats } from './event-ledger';
+export { DynamicPricingEngine } from './dynamic-pricing';
+export type { PricingRule, PricingRuleRegistration, PricingRuleType, PricingContext, PriceResult, TimeOfDayConfig, DemandConfig, VolumeDiscountConfig, KeyOverrideConfig, CustomRuleConfig, DynamicPricingConfig, DynamicPricingStats } from './dynamic-pricing';
+export { QuotaRolloverManager } from './quota-rollover';
+export type { QuotaDefinition, QuotaCreateParams, QuotaPeriod as RolloverQuotaPeriod, QuotaStatus, QuotaConsumeResult, QuotaRolloverEvent, QuotaRolloverConfig, QuotaRolloverStats } from './quota-rollover';
+export { KeyScopeManager } from './key-scoping';
+export type { ScopeDefinition, ScopeDefinitionParams, KeyScopes, AccessCheckResult, TemporaryGrant, KeyScopeConfig, KeyScopeStats } from './key-scoping';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,
