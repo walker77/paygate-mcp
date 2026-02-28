@@ -1,5 +1,50 @@
 # Changelog
 
+## 10.2.0 (2026-02-28)
+
+### Scheduled Reports
+- **Automated periodic usage, billing, compliance, and security reports** — schedule daily/weekly/monthly reports delivered via webhook:
+  - `GET /admin/scheduled-reports` — list schedules with stats
+  - `GET /admin/scheduled-reports?scheduleId=...` — specific schedule
+  - `GET /admin/scheduled-reports?name=...` — lookup by name
+  - `POST /admin/scheduled-reports` — create, update, delete, generate, configure schedules
+  - `DELETE /admin/scheduled-reports` — clear all schedules
+  - 4 report types: usage, billing, compliance, security
+  - 3 frequencies: daily, weekly, monthly
+  - HMAC-SHA256 signed webhook delivery
+  - Report filters by namespace, group, tools, or keys
+  - Run tracking with success/failure status
+
+### Approval Workflows
+- **Pre-execution approval gates for tool calls** — define rules that require admin approval before execution:
+  - `GET /admin/approval-workflows` — list rules, pending requests, stats
+  - `GET /admin/approval-workflows?ruleId=...` — specific rule
+  - `GET /admin/approval-workflows?requestId=...` — specific request
+  - `GET /admin/approval-workflows?status=pending` — filter by status
+  - `POST /admin/approval-workflows` — createRule, updateRule, deleteRule, check, decide, expirePending, configure
+  - `DELETE /admin/approval-workflows` — clear all state
+  - 3 conditions: cost_threshold (credit amount), tool_match (glob pattern), key_match (prefix)
+  - Pending requests with configurable TTL (default 1 hour)
+  - Approve/deny with reason and decidedBy tracking
+  - Auto-expire stale pending requests
+
+### Gateway Hooks
+- **Pre/post request lifecycle hooks for custom logic injection** at the gateway level:
+  - `GET /admin/gateway-hooks` — list hooks with stats
+  - `GET /admin/gateway-hooks?hookId=...` — specific hook
+  - `POST /admin/gateway-hooks` — register, update, delete, test, configure hooks
+  - `DELETE /admin/gateway-hooks` — clear all hooks
+  - 3 stages: pre_gate, pre_backend, post_backend
+  - 4 hook types: log (metadata), header_inject (add headers), metadata_tag (add tags), reject (block request)
+  - Priority-based execution order (lower = earlier)
+  - Tool and key glob pattern filters
+  - Test execution via admin API without real requests
+  - Per-hook execution count tracking
+
+### Stats
+- **4,147 tests** across 198 test suites
+- **199+ HTTP endpoints**
+
 ## 10.1.0 (2026-02-28)
 
 ### Quota Management

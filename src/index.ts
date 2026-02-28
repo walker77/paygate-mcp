@@ -120,6 +120,12 @@ export { WebhookReplayManager } from './webhook-replay';
 export type { FailedDelivery, ReplayResult, ReplayStats, WebhookReplayConfig } from './webhook-replay';
 export { ConfigProfileManager } from './config-profiles';
 export type { ConfigProfile, ProfileDiff, ProfileStats, ConfigProfileManagerConfig } from './config-profiles';
+export { ScheduledReportManager } from './scheduled-reports';
+export type { ReportSchedule, ReportCreateParams, GeneratedReport, ReportData, ScheduledReportStats, ScheduledReportConfig, ReportType, ReportFrequency } from './scheduled-reports';
+export { ApprovalWorkflowManager } from './approval-workflows';
+export type { ApprovalRule, ApprovalRequest, ApprovalCheckResult, ApprovalDecision, ApprovalWorkflowStats, ApprovalWorkflowConfig, ApprovalCondition, ApprovalStatus } from './approval-workflows';
+export { GatewayHookManager } from './gateway-hooks';
+export type { GatewayHook, HookCreateParams, HookExecutionContext, HookExecutionResult, HookStageResult, GatewayHookStats, GatewayHookConfig, HookStage, HookType } from './gateway-hooks';
 
 export type {
   PayGateConfig,

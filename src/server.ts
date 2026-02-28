@@ -84,6 +84,9 @@ import { ToolDependencyGraph } from './tool-deps';
 import { QuotaManager } from './quota-manager';
 import { WebhookReplayManager } from './webhook-replay';
 import { ConfigProfileManager } from './config-profiles';
+import { ScheduledReportManager } from './scheduled-reports';
+import { ApprovalWorkflowManager } from './approval-workflows';
+import { GatewayHookManager } from './gateway-hooks';
 
 /** Max request body size: 1MB */
 const MAX_BODY_SIZE = 1_048_576;
@@ -519,6 +522,12 @@ export class PayGateServer {
 
   readonly configProfiles: ConfigProfileManager;
 
+  readonly scheduledReports: ScheduledReportManager;
+
+  readonly approvalWorkflows: ApprovalWorkflowManager;
+
+  readonly gatewayHooks: GatewayHookManager;
+
   /** The active request handler — either proxy or router */
   private get handler(): RequestHandler {
     return (this.router || this.proxy) as RequestHandler;
@@ -818,6 +827,9 @@ export class PayGateServer {
     this.quotas = new QuotaManager();
     this.webhookReplay = new WebhookReplayManager();
     this.configProfiles = new ConfigProfileManager();
+    this.scheduledReports = new ScheduledReportManager();
+    this.approvalWorkflows = new ApprovalWorkflowManager();
+    this.gatewayHooks = new GatewayHookManager();
 
     // Backup manager for full state snapshots
     this.backup = new BackupManager(this.createBackupProvider());
@@ -1496,6 +1508,12 @@ export class PayGateServer {
         return this.handleWebhookReplayAdmin(req, res);
       case '/admin/config-profiles':
         return this.handleConfigProfiles(req, res);
+      case '/admin/scheduled-reports':
+        return this.handleScheduledReports(req, res);
+      case '/admin/approval-workflows':
+        return this.handleApprovalWorkflows(req, res);
+      case '/admin/gateway-hooks':
+        return this.handleGatewayHooks(req, res);
       case '/keys/geo':
         return this.handleKeyGeo(req, res);
       case '/admin/sla':
@@ -2736,6 +2754,9 @@ export class PayGateServer {
         adminQuotaRules: 'GET /admin/quota-rules — View quota rules and usage; POST /admin/quota-rules — Create/update/delete rules, check/reset quotas (requires X-Admin-Key)',
         adminWebhookReplay: 'GET /admin/webhook-replay — View dead letter queue; POST /admin/webhook-replay — Replay failed deliveries, purge entries (requires X-Admin-Key)',
         adminConfigProfiles: 'GET /admin/config-profiles — View profiles; POST /admin/config-profiles — Save/activate/compare/import/export profiles (requires X-Admin-Key)',
+        adminScheduledReports: 'GET /admin/scheduled-reports — View schedules and stats; POST /admin/scheduled-reports — Create/update/delete/generate report schedules (requires X-Admin-Key)',
+        adminApprovalWorkflows: 'GET /admin/approval-workflows — View rules and requests; POST /admin/approval-workflows — Create/update/delete rules, approve/deny requests (requires X-Admin-Key)',
+        adminGatewayHooks: 'GET /admin/gateway-hooks — View hooks and stats; POST /admin/gateway-hooks — Register/update/delete hooks, test execution (requires X-Admin-Key)',
         ...(this.oauth ? {
           oauthMetadata: 'GET /.well-known/oauth-authorization-server — OAuth 2.1 server metadata',
           oauthRegister: 'POST /oauth/register — Register OAuth client',
@@ -16118,6 +16139,260 @@ export class PayGateServer {
     if (req.method === 'DELETE') {
       if (!this.checkAdmin(req, res, 'admin')) return;
       this.configProfiles.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  /* ── Scheduled Reports ──────────────────────────────────────────── */
+  private async handleScheduledReports(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const scheduleId = url.searchParams.get('scheduleId');
+      const name = url.searchParams.get('name');
+      if (scheduleId) {
+        const schedule = this.scheduledReports.getSchedule(scheduleId);
+        if (!schedule) { this.sendError(res, 404, `Schedule not found: ${scheduleId}`); return; }
+        this.sendJson(res, 200, schedule);
+        return;
+      }
+      if (name) {
+        const schedule = this.scheduledReports.getScheduleByName(name);
+        if (!schedule) { this.sendError(res, 404, `Schedule not found: ${name}`); return; }
+        this.sendJson(res, 200, schedule);
+        return;
+      }
+      const type = url.searchParams.get('type') as any;
+      const frequency = url.searchParams.get('frequency') as any;
+      const schedules = this.scheduledReports.listSchedules({ type: type || undefined, frequency: frequency || undefined });
+      this.sendJson(res, 200, { schedules, stats: this.scheduledReports.stats() });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const raw = await this.readBody(req);
+      let params: Record<string, unknown>;
+      try { params = safeJsonParse(raw); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const action = String(params.action ?? '');
+      try {
+        switch (action) {
+          case 'create': {
+            const schedule = this.scheduledReports.createSchedule(params as any);
+            this.sendJson(res, 201, schedule);
+            return;
+          }
+          case 'update': {
+            if (!params.scheduleId) { this.sendError(res, 400, 'scheduleId is required'); return; }
+            const schedule = this.scheduledReports.updateSchedule(params.scheduleId as string, params as any);
+            this.sendJson(res, 200, schedule);
+            return;
+          }
+          case 'delete': {
+            if (!params.scheduleId) { this.sendError(res, 400, 'scheduleId is required'); return; }
+            const deleted = this.scheduledReports.deleteSchedule(params.scheduleId as string);
+            this.sendJson(res, 200, { deleted });
+            return;
+          }
+          case 'generate': {
+            if (!params.scheduleId) { this.sendError(res, 400, 'scheduleId is required'); return; }
+            const report = this.scheduledReports.generateReport(params.scheduleId as string);
+            this.sendJson(res, 200, report);
+            return;
+          }
+          case 'configure': {
+            const config = this.scheduledReports.configure(params as any);
+            this.sendJson(res, 200, config);
+            return;
+          }
+          default:
+            this.sendError(res, 400, 'Unknown action. Use create/update/delete/generate/configure.');
+            return;
+        }
+      } catch (err: any) {
+        this.sendError(res, 400, err.message);
+        return;
+      }
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.scheduledReports.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  /* ── Approval Workflows ────────────────────────────────────────── */
+  private async handleApprovalWorkflows(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const ruleId = url.searchParams.get('ruleId');
+      const requestId = url.searchParams.get('requestId');
+      const status = url.searchParams.get('status') as any;
+      if (ruleId) {
+        const rule = this.approvalWorkflows.getRule(ruleId);
+        if (!rule) { this.sendError(res, 404, `Rule not found: ${ruleId}`); return; }
+        this.sendJson(res, 200, rule);
+        return;
+      }
+      if (requestId) {
+        const request = this.approvalWorkflows.getRequest(requestId);
+        if (!request) { this.sendError(res, 404, `Request not found: ${requestId}`); return; }
+        this.sendJson(res, 200, request);
+        return;
+      }
+      if (status) {
+        const requests = this.approvalWorkflows.listRequests({ status });
+        this.sendJson(res, 200, { requests, stats: this.approvalWorkflows.stats() });
+        return;
+      }
+      const rules = this.approvalWorkflows.listRules();
+      const requests = this.approvalWorkflows.listRequests();
+      this.sendJson(res, 200, { rules, requests: requests.slice(0, 50), stats: this.approvalWorkflows.stats() });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const raw2 = await this.readBody(req);
+      let params2: Record<string, unknown>;
+      try { params2 = safeJsonParse(raw2); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const action2 = String(params2.action ?? '');
+      try {
+        switch (action2) {
+          case 'createRule': {
+            const rule = this.approvalWorkflows.createRule(params2 as any);
+            this.sendJson(res, 201, rule);
+            return;
+          }
+          case 'updateRule': {
+            if (!params2.ruleId) { this.sendError(res, 400, 'ruleId is required'); return; }
+            const rule = this.approvalWorkflows.updateRule(params2.ruleId as string, params2 as any);
+            this.sendJson(res, 200, rule);
+            return;
+          }
+          case 'deleteRule': {
+            if (!params2.ruleId) { this.sendError(res, 400, 'ruleId is required'); return; }
+            const deleted = this.approvalWorkflows.deleteRule(params2.ruleId as string);
+            this.sendJson(res, 200, { deleted });
+            return;
+          }
+          case 'check': {
+            if (!params2.apiKey || !params2.tool) { this.sendError(res, 400, 'apiKey and tool are required'); return; }
+            const result = this.approvalWorkflows.check(params2.apiKey as string, params2.tool as string, (params2.creditCost as number) ?? 0);
+            this.sendJson(res, 200, result);
+            return;
+          }
+          case 'decide': {
+            if (!params2.requestId || !params2.status) { this.sendError(res, 400, 'requestId and status are required'); return; }
+            const request = this.approvalWorkflows.decide(params2 as any);
+            this.sendJson(res, 200, request);
+            return;
+          }
+          case 'expirePending': {
+            const count = this.approvalWorkflows.expirePending();
+            this.sendJson(res, 200, { expired: count });
+            return;
+          }
+          case 'configure': {
+            const config = this.approvalWorkflows.configure(params2 as any);
+            this.sendJson(res, 200, config);
+            return;
+          }
+          default:
+            this.sendError(res, 400, 'Unknown action. Use createRule/updateRule/deleteRule/check/decide/expirePending/configure.');
+            return;
+        }
+      } catch (err: any) {
+        this.sendError(res, 400, err.message);
+        return;
+      }
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.approvalWorkflows.clear();
+      this.sendJson(res, 200, { cleared: true });
+      return;
+    }
+    this.sendError(res, 405, 'Method not allowed. Use GET/POST/DELETE.');
+  }
+
+  /* ── Gateway Hooks ─────────────────────────────────────────────── */
+  private async handleGatewayHooks(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method === 'GET') {
+      if (!this.checkAdmin(req, res, 'viewer')) return;
+      const url = new URL(req.url || '/', `http://localhost`);
+      const hookId = url.searchParams.get('hookId');
+      const stage = url.searchParams.get('stage') as any;
+      if (hookId) {
+        const hook = this.gatewayHooks.getHook(hookId);
+        if (!hook) { this.sendError(res, 404, `Hook not found: ${hookId}`); return; }
+        this.sendJson(res, 200, hook);
+        return;
+      }
+      const hooks = this.gatewayHooks.listHooks({ stage: stage || undefined });
+      this.sendJson(res, 200, { hooks, stats: this.gatewayHooks.stats() });
+      return;
+    }
+    if (req.method === 'POST') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      const raw3 = await this.readBody(req);
+      let params3: Record<string, unknown>;
+      try { params3 = safeJsonParse(raw3); } catch { this.sendError(res, 400, 'Invalid JSON'); return; }
+      const action3 = String(params3.action ?? '');
+      try {
+        switch (action3) {
+          case 'register': {
+            const hook = this.gatewayHooks.registerHook(params3 as any);
+            this.sendJson(res, 201, hook);
+            return;
+          }
+          case 'update': {
+            if (!params3.hookId) { this.sendError(res, 400, 'hookId is required'); return; }
+            const hook = this.gatewayHooks.updateHook(params3.hookId as string, params3 as any);
+            this.sendJson(res, 200, hook);
+            return;
+          }
+          case 'delete': {
+            if (!params3.hookId) { this.sendError(res, 400, 'hookId is required'); return; }
+            const deleted = this.gatewayHooks.deleteHook(params3.hookId as string);
+            this.sendJson(res, 200, { deleted });
+            return;
+          }
+          case 'test': {
+            if (!params3.stage || !params3.apiKey || !params3.tool) {
+              this.sendError(res, 400, 'stage, apiKey, and tool are required');
+              return;
+            }
+            const result = this.gatewayHooks.executeStage(params3.stage as any, {
+              apiKey: params3.apiKey as string,
+              tool: params3.tool as string,
+              requestId: params3.requestId as string,
+              creditCost: params3.creditCost as number,
+              timestamp: new Date().toISOString(),
+            });
+            this.sendJson(res, 200, result);
+            return;
+          }
+          case 'configure': {
+            const config = this.gatewayHooks.configure(params3 as any);
+            this.sendJson(res, 200, config);
+            return;
+          }
+          default:
+            this.sendError(res, 400, 'Unknown action. Use register/update/delete/test/configure.');
+            return;
+        }
+      } catch (err: any) {
+        this.sendError(res, 400, err.message);
+        return;
+      }
+    }
+    if (req.method === 'DELETE') {
+      if (!this.checkAdmin(req, res, 'admin')) return;
+      this.gatewayHooks.clear();
       this.sendJson(res, 200, { cleared: true });
       return;
     }
