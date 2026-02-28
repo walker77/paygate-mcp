@@ -1,5 +1,51 @@
 # Changelog
 
+## 10.15.0 (2026-02-28)
+
+### Notification Manager — Event-Driven Notification System
+- **Multi-channel notification dispatch** with templates and throttling:
+  - Register channels: email, webhook, slack, log, custom
+  - Define rules matching events to channels with priority ordering
+  - Template rendering with `{{variable}}` interpolation
+  - Per-event, per-key throttling to prevent notification storms
+  - Notification history with filtering by event, channel, and status
+  - Channel and rule enable/disable without removal
+  - Delivery tracking: sent, throttled, failed with error details
+  - Configurable max channels, max rules, max history retention
+
+### A/B Testing Manager — Experiment Management with Traffic Splitting
+- **Deterministic experiment framework** with metric collection:
+  - Create experiments with named variant groups and weighted traffic splitting
+  - Deterministic hash-based bucket assignment: same key always gets same variant
+  - Experiment lifecycle: draft → running → paused → completed
+  - Per-variant config retrieval for dynamic behavior changes
+  - Metric recording per key with variant-level aggregation
+  - Results computation: sample size, count, sum, avg, min, max per metric per variant
+  - Auto-start option for immediate experiment activation
+  - Configurable max experiments and max assignments
+
+### Data Retention Manager — Lifecycle Policies with Automated Purging
+- **Configurable retention policies** with store-backed enforcement:
+  - Define policies per data category with retention days and action (delete/archive/anonymize)
+  - Register data stores with count() and purge(beforeTimestamp) callbacks
+  - Enforcement sweeps purge expired data across all enabled policies
+  - Purge history tracking with policy name, category, count, duration
+  - Status reporting: current count, cutoff date, last purge per policy
+  - Priority-sorted policy evaluation during enforcement
+  - Graceful error handling for store purge failures
+  - Policy enable/disable and retention days update
+
+### Capacity Planner — Resource Forecasting with Threshold Alerts
+- **Linear regression-based capacity forecasting**:
+  - Define resources with capacity limits, warning/critical thresholds
+  - Record utilization samples with automatic timestamping
+  - Forecast future capacity needs with confidence scores
+  - Trend classification: growing, declining, stable with growth rate
+  - Periods-until-threshold calculations (warning, critical, capacity)
+  - Automatic alerts on sample recording when thresholds exceeded
+  - Alert severity levels: warning, critical, capacity_reached
+  - Configurable min samples for forecasting, max samples retention
+
 ## 10.14.0 (2026-02-28)
 
 ### Feature Flags — Percentage-Based Rollouts with Scheduling

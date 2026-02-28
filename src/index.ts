@@ -213,6 +213,16 @@ export type { PipelineContext, PipelineMiddleware, MiddlewareRegistration, Middl
 export { UsageTrendAnalyzer } from './usage-trends';
 export type { DataPoint, TrendResult, Anomaly, UsageSummary as TrendUsageSummary, UsageTrendConfig, UsageTrendStats } from './usage-trends';
 
+// ── v10.15.0 ──────────────────────────────────────────────────────────
+export { NotificationManager } from './notification-manager';
+export type { NotificationChannel, ChannelCreateParams, ChannelType, NotificationRule, RuleCreateParams, NotificationRecord, NotifyResult, NotificationManagerConfig, NotificationManagerStats } from './notification-manager';
+export { ABTestingManager } from './ab-testing';
+export type { Variant, Experiment, ExperimentCreateParams, VariantAssignment, MetricRecord, VariantMetrics, ExperimentResults, ABTestingConfig, ABTestingStats } from './ab-testing';
+export { DataRetentionManager } from './data-retention';
+export type { RetentionPolicy, PolicyCreateParams, RetentionAction, DataStore, PurgeRecord, EnforceResult, RetentionStatus, DataRetentionConfig, DataRetentionStats } from './data-retention';
+export { CapacityPlanner } from './capacity-planner';
+export type { Resource, ResourceCreateParams, CapacitySample, ForecastPoint, ForecastResult, AlertSeverity, CapacityAlert, CapacityPlannerConfig, CapacityPlannerStats } from './capacity-planner';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,
