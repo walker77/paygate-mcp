@@ -233,6 +233,16 @@ export type { RetentionPolicy, PolicyCreateParams, RetentionAction, DataStore, P
 export { CapacityPlanner } from './capacity-planner';
 export type { Resource, ResourceCreateParams, CapacitySample, ForecastPoint, ForecastResult, AlertSeverity, CapacityAlert, CapacityPlannerConfig, CapacityPlannerStats } from './capacity-planner';
 
+// ── v10.17.0 ──────────────────────────────────────────────────────────
+export { LoadBalancer } from './load-balancer';
+export type { Backend, BackendAddParams, PickResult, BalancingStrategy, LoadBalancerConfig, LoadBalancerStats } from './load-balancer';
+export { APIKeyTagManager } from './key-tags';
+export type { KeyTagEntry, TagSearchResult, TagGroup, KeyTagConfig, KeyTagStats } from './key-tags';
+export { RequestValidator } from './request-validator';
+export type { ValidationRule, RuleCreateParams as ValidationRuleCreateParams, RequestValidationResult, RequestValidatorConfig, RequestValidatorStats } from './request-validator';
+export { MaintenanceWindowManager } from './maintenance-window';
+export type { MaintenanceWindow, WindowScheduleParams, WindowStatus, MaintenanceStatus, MaintenanceWindowConfig, MaintenanceWindowStats } from './maintenance-window';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,

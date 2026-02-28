@@ -1,5 +1,43 @@
 # Changelog
 
+## 10.17.0 (2026-02-28)
+
+### Load Balancer — Multi-Strategy Request Distribution
+- **Distribute requests across backend instances** with health tracking:
+  - Four balancing strategies: round-robin, weighted, least-connections, random
+  - Dynamic strategy switching at runtime
+  - Backend health management with auto-unhealthy on error threshold
+  - Active connection tracking for least-connections routing
+  - Running average latency calculation per backend
+  - Request recording with status code and latency metrics
+
+### API Key Tag Manager — Tag-Based Key Organization
+- **Tag-based API key organization** with search, filtering, and grouping:
+  - Set, add, remove tags on keys with inverted index for fast lookups
+  - Search by single tag, ALL tags (intersection), or ANY tags (union)
+  - Prefix-based tag search for hierarchical organization (e.g., `tier:free`)
+  - Group tags by colon-separated prefix with key counts
+  - Configurable max tags per key and max tracked keys
+
+### Request Validator — JSON-RPC Schema Enforcement
+- **Validate incoming requests** against configurable rules:
+  - JSON-RPC 2.0 compliance checking (jsonrpc field, method field)
+  - Payload size enforcement with configurable max bytes
+  - Allowed method whitelist with dynamic updates
+  - Custom validation rules with method-scoped targeting
+  - Rule enable/disable without removal
+  - Quick `isValid()` boolean shorthand
+
+### Maintenance Window Manager — Scheduled Downtime Management
+- **Schedule and manage maintenance windows** with traffic blocking:
+  - Schedule future windows or start immediately with `startNow()`
+  - Automatic status transitions: scheduled → active → completed
+  - Traffic blocking control per window with custom messages
+  - Service-level impact tracking via affected services list
+  - Operational status checking with next-window lookahead
+  - Window cancellation and early completion
+  - Auto-complete when window end time passes
+
 ## 10.16.0 (2026-02-28)
 
 ### Service Discovery — Upstream Server Registration with Health Checking
