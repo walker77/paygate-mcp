@@ -1,5 +1,43 @@
 # Changelog
 
+## 10.21.0 (2026-03-01)
+
+### Token Bucket Rate Limiter — Classic Token Bucket Algorithm
+- **Token bucket rate limiter** with configurable refill rate and burst capacity:
+  - Consume tokens per key with allow/deny result and retry-after
+  - Automatic token refill over time intervals
+  - Peek at bucket state without consuming
+  - Reset/remove individual buckets
+  - LRU eviction at max key capacity
+  - Per-key independent bucket tracking
+
+### Webhook Delivery Log — Persistent Delivery Tracking
+- **Track every webhook delivery** with comprehensive logging:
+  - Record deliveries with status codes, duration, and error messages
+  - Automatic status classification (success/failed/pending)
+  - Retry recording with attempt counting
+  - Query by URL, event, status, or time range
+  - Per-URL success rate calculation
+  - URL breakdown in stats with success rates
+
+### Credit Expiration Manager — Time-Based Credit Expiration
+- **Credits with expiration dates** and FIFO consumption:
+  - Grant credits with configurable TTL and source tracking
+  - Consume oldest (earliest expiring) grants first
+  - Automatic expiration pruning on balance checks
+  - Expiring-soon grant queries for proactive notifications
+  - Force-expire all grants for a key
+  - Track granted, consumed, and expired amounts
+
+### API Key Rotation Policy — Policy-Driven Key Rotation
+- **Define rotation policies** and track key ages:
+  - Configurable rotation intervals, grace periods, and warning periods
+  - Register keys under policies with automatic status tracking
+  - Status classification: current, due, overdue, grace_period
+  - Record rotations with optional key replacement
+  - Query keys due for rotation or approaching rotation
+  - Rotation event history per key
+
 ## 10.20.0 (2026-03-01)
 
 ### Request Buffer Queue — Maintenance Window Request Buffering

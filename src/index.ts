@@ -273,6 +273,16 @@ export type { UsageDataPoint as AnomalyUsageDataPoint, AnomalyResult, AnomalyEve
 export { WebhookFilterExpression } from './webhook-filter-expr';
 export type { FilterOp, FilterCondition, FilterMatchMode, FilterRule, FilterRuleCreateParams, FilterEvalResult, WebhookFilterConfig, WebhookFilterStats } from './webhook-filter-expr';
 
+// ── v10.21.0 ──────────────────────────────────────────────────────────
+export { RateLimitTokenBucket } from './token-bucket';
+export type { TokenBucketConfig, TokenConsumeResult, TokenBucketState, TokenBucketStats } from './token-bucket';
+export { WebhookDeliveryLog } from './webhook-delivery-log';
+export type { DeliveryStatus, DeliveryEntry, DeliveryRecordParams, DeliveryRetryParams, DeliveryQuery, DeliveryLogConfig, DeliveryLogStats } from './webhook-delivery-log';
+export { CreditExpirationManager } from './credit-expiration';
+export type { CreditGrant as ExpirationCreditGrant, CreditGrantParams as ExpirationGrantParams, CreditConsumeResult, ExpiringGrant, CreditExpirationConfig, CreditExpirationStats } from './credit-expiration';
+export { APIKeyRotationPolicy } from './key-rotation-policy';
+export type { RotationPolicy as RotationPolicyDef, RotationPolicyParams, KeyRotationStatus, ManagedKey, RotationEvent as PolicyRotationEvent, KeyRotationPolicyConfig, KeyRotationPolicyStats } from './key-rotation-policy';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,
