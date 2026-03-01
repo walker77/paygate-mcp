@@ -253,6 +253,16 @@ export type { Migration, MigrationStatus, MigrationPlanParams, MigrationHandler,
 export { IncidentManager } from './incident-manager';
 export type { Incident, IncidentSeverity, IncidentStatus, IncidentCreateParams, IncidentUpdate, UpdateParams, StatusPageData, IncidentManagerConfig, IncidentManagerStats } from './incident-manager';
 
+// ── v10.19.0 ──────────────────────────────────────────────────────────
+export { RateLimitSlidingWindow } from './sliding-window';
+export type { SlidingWindowConfig, SlidingWindowCheckResult, SlidingWindowStats } from './sliding-window';
+export { WebhookBatchProcessor } from './webhook-batch';
+export type { BatchEvent, BatchFlushResult, FlushHandler, WebhookBatchConfig, WebhookBatchStats } from './webhook-batch';
+export { ErrorClassifier } from './error-classifier';
+export type { ErrorSeverity, ErrorPattern, PatternRegistration, ClassifyResult, ErrorFrequency, ErrorClassifierConfig, ErrorClassifierStats } from './error-classifier';
+export { GracePeriodManager } from './grace-period';
+export type { GracePolicy, PolicyDefineParams, GracePeriod, GraceCheckResult, GracePeriodConfig, GracePeriodStats } from './grace-period';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,

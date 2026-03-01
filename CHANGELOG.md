@@ -1,5 +1,43 @@
 # Changelog
 
+## 10.19.0 (2026-02-28)
+
+### Rate Limit Sliding Window — Precise Sub-Window Rate Limiting
+- **Precise sliding window rate limiter** with sub-window granularity:
+  - Configurable window duration, max requests, and sub-window count
+  - Weighted partial-window counting for smoother rate limiting
+  - Check (consume) and peek (read-only) operations per key
+  - Per-key usage tracking with reset capability
+  - LRU eviction for tracked keys at capacity
+  - Hit rate and denied request statistics
+
+### Webhook Batch Processor — Batch Event Delivery
+- **Batch multiple webhook events** into single deliveries for efficiency:
+  - Accumulate events per URL with configurable batch size
+  - Auto-flush when batch size reached or on periodic interval
+  - Manual flush per URL or all queued URLs at once
+  - Flush handler callback pattern for delivery logic
+  - Flush history tracking with success/error status
+  - Discard queued events per URL
+
+### Error Classifier — Error Pattern Matching and Analytics
+- **Classify and categorize errors** by registered patterns:
+  - Register regex-based patterns with category, severity, and retryability
+  - Classify Error objects or string messages against patterns
+  - Convenience methods: categorize() and isRetryable()
+  - Classification history with category and severity filtering
+  - Error frequency tracking per category with first/last seen timestamps
+  - Top categories in stats for prioritization
+
+### Grace Period Manager — Soft Enforcement Before Cutoff
+- **Define grace period policies** for keys before hard enforcement:
+  - Named policies with configurable duration and max extensions
+  - Start, check, extend, and cancel grace periods per key
+  - Automatic expiration detection on check
+  - Extension tracking with configurable maximum extensions
+  - List active and expiring-soon grace periods
+  - Stats: active, expired, cancelled, extended counts
+
 ## 10.18.0 (2026-02-28)
 
 ### Webhook Retry Manager — Exponential Backoff Retry Queue
