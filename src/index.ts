@@ -293,6 +293,16 @@ export type { KeyGroup, KeyGroupCreateParams, KeyGroupQuery, KeyGroupManagerConf
 export { RequestThrottleQueue } from './request-throttle';
 export type { ThrottleTicket, ThrottleQueueEntry, ThrottleResult, KeyThrottleStatus, RequestThrottleConfig, RequestThrottleStats } from './request-throttle';
 
+// ── v10.23.0 ──────────────────────────────────────────────────────────
+export { APIKeyAuditLog } from './key-audit-log';
+export type { AuditAction, AuditEntry as KeyAuditEntry, AuditRecordParams as KeyAuditRecordParams, AuditQuery as KeyAuditQuery, APIKeyAuditLogConfig, APIKeyAuditLogStats } from './key-audit-log';
+export { WebhookRateLimiter } from './webhook-rate-limiter';
+export type { WebhookRateLimit, WebhookRateLimitOverride, WebhookRateLimiterConfig, WebhookRateLimiterStats } from './webhook-rate-limiter';
+export { CreditPoolManager } from './credit-pool';
+export type { CreditPool, CreditPoolCreateParams, PoolConsumption, PoolStatus, CreditPoolConfig, CreditPoolStats } from './credit-pool';
+export { RequestPriorityRouter } from './request-priority-router';
+export type { PriorityTier as RoutingPriorityTier, PriorityRequest, PriorityEnqueueParams, TierConfig, TierStatus, RequestPriorityRouterConfig, RequestPriorityRouterStats } from './request-priority-router';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,

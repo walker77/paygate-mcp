@@ -1,5 +1,43 @@
 # Changelog
 
+## 10.23.0 (2026-03-01)
+
+### API Key Audit Log — Immutable Lifecycle Tracking
+- **Immutable audit log** for API key lifecycle events:
+  - Record creation, rotation, revocation, suspension, reactivation
+  - Permission changes, quota updates, group membership changes
+  - Actor and IP tracking per event
+  - Query by key, action, actor, or time range
+  - Per-key history with configurable depth
+  - Action breakdown statistics
+
+### Webhook Rate Limiter — Per-URL Delivery Throttling
+- **Per-URL rate limiting** for webhook delivery:
+  - Configurable max deliveries per minute per URL
+  - Per-URL rate limit overrides
+  - Retry-after calculation for blocked URLs
+  - Window-based counting with automatic reset
+  - Blocked URL listing
+  - LRU eviction at max URL capacity
+
+### Credit Pool Manager — Shared Budgets
+- **Shared credit pools** across multiple API keys:
+  - Named pools with credit budgets
+  - Multi-key membership with reverse index
+  - Consumption tracking with before/after balances
+  - Pool-level remaining credits and utilization
+  - Add credits operation for top-ups
+  - Consumption history per pool
+
+### Request Priority Router — Tier-Based Routing
+- **Priority-tier request routing** with 4 levels:
+  - Critical, high, normal, low priority tiers
+  - Key-to-tier assignment with default fallback
+  - Priority-ordered dequeue (highest tier first)
+  - FIFO within same tier
+  - Batch dequeue with priority ordering
+  - Per-tier queue depth limits and cancellation
+
 ## 10.22.0 (2026-03-01)
 
 ### Webhook Circuit Breaker — Per-URL Failure Protection
