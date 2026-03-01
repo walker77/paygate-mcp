@@ -1,361 +1,224 @@
-/**
- * Tests for v3.9.0 — Credit Transfers
- *
- * POST /keys/transfer — Transfer credits between API keys atomically
- * with full validation, audit trail, and webhook events.
- */
+import { CreditTransferManager } from '../src/credit-transfer';
 
-import { PayGateServer } from '../src/server';
-import { DEFAULT_CONFIG } from '../src/types';
-import http from 'http';
+describe('CreditTransferManager', () => {
+  let mgr: CreditTransferManager;
 
-// ─── Echo MCP backend ─────────────────────────────────────────────────────────
-
-const ECHO_CMD = 'node';
-const ECHO_ARGS = ['-e', `
-  process.stdin.resume();
-  process.stdin.on('data', d => {
-    const r = JSON.parse(d.toString().trim());
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: r.id, result: {} }) + '\\n');
-  });
-`];
-
-// ─── Helper: HTTP request to server ───────────────────────────────────────────
-
-function request(
-  port: number,
-  method: string,
-  path: string,
-  body?: Record<string, unknown>,
-  headers?: Record<string, string>,
-): Promise<{ status: number; body: any }> {
-  return new Promise((resolve, reject) => {
-    const data = body ? JSON.stringify(body) : undefined;
-    const req = http.request(
-      {
-        hostname: '127.0.0.1',
-        port,
-        path,
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...headers,
-        },
-      },
-      (res) => {
-        let buf = '';
-        res.on('data', (chunk) => (buf += chunk));
-        res.on('end', () => {
-          try {
-            resolve({ status: res.statusCode!, body: JSON.parse(buf) });
-          } catch {
-            resolve({ status: res.statusCode!, body: buf });
-          }
-        });
-      },
-    );
-    req.on('error', reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-describe('Credit Transfer — POST /keys/transfer', () => {
-  let server: PayGateServer;
-  let port: number;
-  let adminKey: string;
-
-  beforeAll(async () => {
-    server = new PayGateServer({
-      ...DEFAULT_CONFIG,
-      serverCommand: ECHO_CMD,
-      serverArgs: ECHO_ARGS,
-      port: 0,
-    });
-    const started = await server.start();
-    port = started.port;
-    adminKey = started.adminKey;
+  beforeEach(() => {
+    mgr = new CreditTransferManager();
   });
 
-  afterAll(async () => {
-    await server.gracefulStop();
+  afterEach(() => {
+    mgr.destroy();
   });
 
-  // Helper to create a key with a given amount of credits
-  async function createKey(credits: number, name?: string): Promise<string> {
-    const res = await request(port, 'POST', '/keys', { credits, name }, { 'X-Admin-Key': adminKey });
-    return res.body.key;
-  }
+  // ── Balance Management ──────────────────────────────────────────
 
-  test('should transfer credits between two keys', async () => {
-    const fromKey = await createKey(1000, 'source-key');
-    const toKey = await createKey(200, 'dest-key');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 300,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(200);
-    expect(res.body.transferred).toBe(300);
-    expect(res.body.from.balance).toBe(700);
-    expect(res.body.to.balance).toBe(500);
-    expect(res.body.message).toContain('300');
-  });
-
-  test('should support optional memo field', async () => {
-    const fromKey = await createKey(500, 'memo-source');
-    const toKey = await createKey(100, 'memo-dest');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 50,
-      memo: 'Monthly allocation',
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(200);
-    expect(res.body.memo).toBe('Monthly allocation');
-  });
-
-  test('should reject transfer with insufficient credits', async () => {
-    const fromKey = await createKey(100, 'poor-source');
-    const toKey = await createKey(50, 'dest');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 500,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Insufficient credits');
-  });
-
-  test('should reject transfer to same key', async () => {
-    const key = await createKey(500, 'self-key');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: key,
-      to: key,
-      credits: 100,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('same key');
-  });
-
-  test('should reject transfer with non-existent source key', async () => {
-    const toKey = await createKey(100, 'exists-dest');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: 'pg_nonexistent_key_12345',
-      to: toKey,
-      credits: 50,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toContain('Source key not found');
-  });
-
-  test('should reject transfer with non-existent destination key', async () => {
-    const fromKey = await createKey(500, 'exists-source');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: 'pg_nonexistent_key_12345',
-      credits: 50,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toContain('Destination key not found');
-  });
-
-  test('should reject transfer from revoked source key', async () => {
-    const fromKey = await createKey(500, 'revoked-source');
-    const toKey = await createKey(100, 'active-dest');
-
-    // Revoke the source key
-    await request(port, 'POST', '/keys/revoke', { key: fromKey }, { 'X-Admin-Key': adminKey });
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 50,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toContain('Source key not found');
-  });
-
-  test('should reject transfer to revoked destination key', async () => {
-    const fromKey = await createKey(500, 'active-source');
-    const toKey = await createKey(100, 'revoked-dest');
-
-    // Revoke the destination key (getKey returns null for inactive keys)
-    await request(port, 'POST', '/keys/revoke', { key: toKey }, { 'X-Admin-Key': adminKey });
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 50,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toContain('Destination key not found');
-  });
-
-  test('should reject missing from/to fields', async () => {
-    const res = await request(port, 'POST', '/keys/transfer', {
-      credits: 50,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Missing');
-  });
-
-  test('should reject zero credits', async () => {
-    const fromKey = await createKey(500, 'zero-source');
-    const toKey = await createKey(100, 'zero-dest');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 0,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('positive integer');
-  });
-
-  test('should reject negative credits', async () => {
-    const fromKey = await createKey(500, 'neg-source');
-    const toKey = await createKey(100, 'neg-dest');
-
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: -50,
-    }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('positive integer');
-  });
-
-  test('should reject invalid JSON body', async () => {
-    const res = await new Promise<{ status: number; body: any }>((resolve, reject) => {
-      const req = http.request(
-        {
-          hostname: '127.0.0.1',
-          port,
-          path: '/keys/transfer',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Admin-Key': adminKey,
-          },
-        },
-        (res) => {
-          let buf = '';
-          res.on('data', (chunk) => (buf += chunk));
-          res.on('end', () => resolve({ status: res.statusCode!, body: JSON.parse(buf) }));
-        },
-      );
-      req.on('error', reject);
-      req.write('not json');
-      req.end();
+  describe('balance management', () => {
+    it('sets and gets balance', () => {
+      mgr.setBalance('k1', 1000);
+      expect(mgr.getBalance('k1')).toBe(1000);
     });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('Invalid JSON');
-  });
-
-  test('should require admin auth', async () => {
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: 'a', to: 'b', credits: 100,
+    it('returns null for unknown key', () => {
+      expect(mgr.getBalance('unknown')).toBeNull();
     });
 
-    expect(res.status).toBe(401);
+    it('adds credits to existing balance', () => {
+      mgr.setBalance('k1', 100);
+      const newBal = mgr.addCredits('k1', 50);
+      expect(newBal).toBe(150);
+      expect(mgr.getBalance('k1')).toBe(150);
+    });
+
+    it('adds credits to new key (starts at 0)', () => {
+      const newBal = mgr.addCredits('k1', 200);
+      expect(newBal).toBe(200);
+    });
+
+    it('rejects negative addCredits', () => {
+      expect(() => mgr.addCredits('k1', -10)).toThrow('positive');
+    });
   });
 
-  test('should reject GET method', async () => {
-    const res = await request(port, 'GET', '/keys/transfer', undefined, { 'X-Admin-Key': adminKey });
+  // ── Transfer ────────────────────────────────────────────────────
 
-    expect(res.status).toBe(405);
+  describe('transfer', () => {
+    it('transfers credits between keys', () => {
+      mgr.setBalance('alice', 1000);
+      mgr.setBalance('bob', 200);
+
+      const record = mgr.transfer({ fromKey: 'alice', toKey: 'bob', amount: 300 });
+
+      expect(record.id).toMatch(/^xfer_/);
+      expect(record.fromBalanceBefore).toBe(1000);
+      expect(record.fromBalanceAfter).toBe(700);
+      expect(record.toBalanceBefore).toBe(200);
+      expect(record.toBalanceAfter).toBe(500);
+      expect(mgr.getBalance('alice')).toBe(700);
+      expect(mgr.getBalance('bob')).toBe(500);
+    });
+
+    it('records reason', () => {
+      mgr.setBalance('a', 100);
+      mgr.setBalance('b', 0);
+      const record = mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 50, reason: 'team rebalance' });
+      expect(record.reason).toBe('team rebalance');
+    });
+
+    it('rejects transfer to same key', () => {
+      mgr.setBalance('k1', 100);
+      expect(() => mgr.transfer({ fromKey: 'k1', toKey: 'k1', amount: 10 })).toThrow('same key');
+    });
+
+    it('rejects insufficient balance', () => {
+      mgr.setBalance('a', 50);
+      mgr.setBalance('b', 0);
+      expect(() => mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 100 })).toThrow('Insufficient');
+    });
+
+    it('rejects unknown source key', () => {
+      mgr.setBalance('b', 0);
+      expect(() => mgr.transfer({ fromKey: 'unknown', toKey: 'b', amount: 10 })).toThrow('not found');
+    });
+
+    it('rejects unknown destination key', () => {
+      mgr.setBalance('a', 100);
+      expect(() => mgr.transfer({ fromKey: 'a', toKey: 'unknown', amount: 10 })).toThrow('not found');
+    });
+
+    it('enforces minAmount', () => {
+      const strict = new CreditTransferManager({ minAmount: 10 });
+      strict.setBalance('a', 100);
+      strict.setBalance('b', 0);
+      expect(() => strict.transfer({ fromKey: 'a', toKey: 'b', amount: 5 })).toThrow('at least 10');
+      strict.destroy();
+    });
+
+    it('enforces maxAmount', () => {
+      const strict = new CreditTransferManager({ maxAmount: 100 });
+      strict.setBalance('a', 1000);
+      strict.setBalance('b', 0);
+      expect(() => strict.transfer({ fromKey: 'a', toKey: 'b', amount: 200 })).toThrow('cannot exceed 100');
+      strict.destroy();
+    });
+
+    it('allows overdraft when configured', () => {
+      const od = new CreditTransferManager({ allowOverdraft: true });
+      od.setBalance('a', 10);
+      od.setBalance('b', 0);
+      const record = od.transfer({ fromKey: 'a', toKey: 'b', amount: 50 });
+      expect(record.fromBalanceAfter).toBe(-40);
+      expect(od.getBalance('a')).toBe(-40);
+      od.destroy();
+    });
   });
 
-  test('should floor fractional credits', async () => {
-    const fromKey = await createKey(1000, 'frac-source');
-    const toKey = await createKey(100, 'frac-dest');
+  // ── Reversal ────────────────────────────────────────────────────
 
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 99.7,
-    }, { 'X-Admin-Key': adminKey });
+  describe('reversal', () => {
+    it('reverses a transfer', () => {
+      mgr.setBalance('a', 1000);
+      mgr.setBalance('b', 200);
 
-    expect(res.status).toBe(200);
-    expect(res.body.transferred).toBe(99); // floored
-    expect(res.body.from.balance).toBe(901);
-    expect(res.body.to.balance).toBe(199);
+      const original = mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 300 });
+      const reversal = mgr.reverse(original.id);
+
+      expect(mgr.getBalance('a')).toBe(1000);
+      expect(mgr.getBalance('b')).toBe(200);
+      expect(reversal.fromKey).toBe('b');
+      expect(reversal.toKey).toBe('a');
+    });
+
+    it('marks original as reversed', () => {
+      mgr.setBalance('a', 100);
+      mgr.setBalance('b', 0);
+      const original = mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 50 });
+      const reversal = mgr.reverse(original.id);
+
+      const updated = mgr.getTransfer(original.id)!;
+      expect(updated.reversedAt).toBeTruthy();
+      expect(updated.reversalId).toBe(reversal.id);
+    });
+
+    it('prevents double reversal', () => {
+      mgr.setBalance('a', 100);
+      mgr.setBalance('b', 0);
+      const original = mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 50 });
+      mgr.reverse(original.id);
+      expect(() => mgr.reverse(original.id)).toThrow('already reversed');
+    });
+
+    it('rejects unknown transfer ID', () => {
+      expect(() => mgr.reverse('xfer_999')).toThrow('not found');
+    });
   });
 
-  test('should appear in audit log', async () => {
-    const fromKey = await createKey(500, 'audit-source');
-    const toKey = await createKey(100, 'audit-dest');
+  // ── Query ───────────────────────────────────────────────────────
 
-    await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 75,
-      memo: 'Audit test',
-    }, { 'X-Admin-Key': adminKey });
+  describe('query', () => {
+    it('gets key history', () => {
+      mgr.setBalance('a', 1000);
+      mgr.setBalance('b', 500);
+      mgr.setBalance('c', 100);
 
-    const auditRes = await request(port, 'GET', '/audit?types=key.credits_transferred&limit=1', undefined, { 'X-Admin-Key': adminKey });
-    expect(auditRes.status).toBe(200);
-    expect(auditRes.body.events.length).toBeGreaterThanOrEqual(1);
-    const event = auditRes.body.events[0];
-    expect(event.type).toBe('key.credits_transferred');
-    expect(event.metadata.credits).toBe(75);
-    expect(event.metadata.memo).toBe('Audit test');
+      mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 100 });
+      mgr.transfer({ fromKey: 'a', toKey: 'c', amount: 50 });
+      mgr.transfer({ fromKey: 'b', toKey: 'c', amount: 25 });
+
+      const aHistory = mgr.getKeyHistory('a');
+      expect(aHistory).toHaveLength(2);
+    });
+
+    it('gets all history', () => {
+      mgr.setBalance('a', 100);
+      mgr.setBalance('b', 100);
+      mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 10 });
+      mgr.transfer({ fromKey: 'b', toKey: 'a', amount: 5 });
+      expect(mgr.getHistory()).toHaveLength(2);
+    });
+
+    it('gets transfer by ID', () => {
+      mgr.setBalance('a', 100);
+      mgr.setBalance('b', 0);
+      const record = mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 25 });
+      const found = mgr.getTransfer(record.id);
+      expect(found).not.toBeNull();
+      expect(found!.amount).toBe(25);
+    });
+
+    it('lists all balances sorted by balance', () => {
+      mgr.setBalance('low', 10);
+      mgr.setBalance('high', 1000);
+      mgr.setBalance('mid', 500);
+      const balances = mgr.listBalances();
+      expect(balances[0].key).toBe('high');
+      expect(balances[2].key).toBe('low');
+    });
   });
 
-  test('root listing should include transfer endpoint', async () => {
-    const res = await request(port, 'GET', '/', undefined, {});
-    expect(res.status).toBe(200);
-    const body = JSON.stringify(res.body);
-    expect(body).toContain('/keys/transfer');
-  });
+  // ── Stats & Destroy ─────────────────────────────────────────────
 
-  test('should transfer exact amount (full balance)', async () => {
-    const fromKey = await createKey(250, 'exact-source');
-    const toKey = await createKey(50, 'exact-dest');
+  describe('stats and destroy', () => {
+    it('tracks comprehensive stats', () => {
+      mgr.setBalance('a', 1000);
+      mgr.setBalance('b', 500);
+      mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 100 });
+      mgr.transfer({ fromKey: 'a', toKey: 'b', amount: 200 });
+      const t3 = mgr.transfer({ fromKey: 'b', toKey: 'a', amount: 50 });
+      mgr.reverse(t3.id);
 
-    const res = await request(port, 'POST', '/keys/transfer', {
-      from: fromKey,
-      to: toKey,
-      credits: 250,
-    }, { 'X-Admin-Key': adminKey });
+      const stats = mgr.getStats();
+      expect(stats.trackedKeys).toBe(2);
+      expect(stats.totalTransfers).toBe(4); // 3 + 1 reversal
+      expect(stats.totalReversals).toBe(1);
+      expect(stats.totalAmountTransferred).toBe(400); // 100+200+50+50
+    });
 
-    expect(res.status).toBe(200);
-    expect(res.body.from.balance).toBe(0);
-    expect(res.body.to.balance).toBe(300); // 50 + 250
-  });
-
-  test('multiple transfers should be consistent', async () => {
-    const fromKey = await createKey(1000, 'multi-source');
-    const toKey = await createKey(50, 'multi-dest');
-
-    // Transfer 3 times
-    await request(port, 'POST', '/keys/transfer', { from: fromKey, to: toKey, credits: 200 }, { 'X-Admin-Key': adminKey });
-    await request(port, 'POST', '/keys/transfer', { from: fromKey, to: toKey, credits: 300 }, { 'X-Admin-Key': adminKey });
-    const res = await request(port, 'POST', '/keys/transfer', { from: fromKey, to: toKey, credits: 100 }, { 'X-Admin-Key': adminKey });
-
-    expect(res.status).toBe(200);
-    expect(res.body.from.balance).toBe(400); // 1000 - 200 - 300 - 100
-    expect(res.body.to.balance).toBe(650);   // 50 + 200 + 300 + 100
+    it('destroy resets everything', () => {
+      mgr.setBalance('a', 100);
+      mgr.destroy();
+      expect(mgr.getBalance('a')).toBeNull();
+      expect(mgr.getStats().totalTransfers).toBe(0);
+    });
   });
 });

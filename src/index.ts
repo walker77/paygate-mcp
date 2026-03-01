@@ -263,6 +263,16 @@ export type { ErrorSeverity, ErrorPattern, PatternRegistration, ClassifyResult, 
 export { GracePeriodManager } from './grace-period';
 export type { GracePolicy, PolicyDefineParams, GracePeriod, GraceCheckResult, GracePeriodConfig, GracePeriodStats } from './grace-period';
 
+// ── v10.20.0 ──────────────────────────────────────────────────────────
+export { RequestBufferQueue } from './request-buffer';
+export type { BufferedRequest, BufferEnqueueParams, BufferStatus, RequestBufferConfig, RequestBufferStats } from './request-buffer';
+export { CreditTransferManager } from './credit-transfer';
+export type { TransferRecord, TransferParams, CreditTransferConfig, CreditTransferStats } from './credit-transfer';
+export { UsageAnomalyDetector } from './usage-anomaly';
+export type { UsageDataPoint as AnomalyUsageDataPoint, AnomalyResult, AnomalyEvent as UsageAnomalyEvent, UsageAnomalyConfig, UsageAnomalyStats } from './usage-anomaly';
+export { WebhookFilterExpression } from './webhook-filter-expr';
+export type { FilterOp, FilterCondition, FilterMatchMode, FilterRule, FilterRuleCreateParams, FilterEvalResult, WebhookFilterConfig, WebhookFilterStats } from './webhook-filter-expr';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,

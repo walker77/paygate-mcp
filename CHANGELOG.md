@@ -1,5 +1,50 @@
 # Changelog
 
+## 10.20.0 (2026-03-01)
+
+### Request Buffer Queue — Maintenance Window Request Buffering
+- **Buffer and replay requests** during maintenance or outages:
+  - Start/stop buffering with reason tracking
+  - Enqueue requests with priority, key association, and TTL-based expiry
+  - Drain all or batch drain with priority ordering (highest first, FIFO within)
+  - Peek at buffered requests without consuming
+  - Remove specific requests or discard all
+  - Automatic TTL-based expiry pruning on drain/enqueue
+  - Comprehensive stats: enqueued, drained, expired, dropped counts
+
+### Credit Transfer Manager — Inter-Key Credit Transfers with Audit Trail
+- **Transfer credits between API keys** with complete audit trail:
+  - Set/get/add balance management per key
+  - Transfer with before/after balance snapshots
+  - Configurable min/max transfer amounts
+  - Optional overdraft (negative balance) support
+  - Full transfer reversal with linked reversal IDs
+  - Query history per key or globally with limits
+  - Balance listing sorted by amount
+
+### Usage Anomaly Detector — Statistical Anomaly Detection
+- **Z-score based anomaly detection** on per-key usage patterns:
+  - Configurable sliding window size and z-score threshold
+  - Per-key baseline tracking with mean/stdDev calculation
+  - Anomaly event creation with acknowledgement workflow
+  - Filter events by key, acknowledgement status, or limit
+  - Acknowledge individual events or all for a key
+  - Key baseline query and reset
+  - LRU key eviction at capacity
+  - Top anomaly keys in stats
+
+### Webhook Filter Expression — Expression-Based Event Filtering
+- **13 filter operators** for webhook event routing:
+  - Comparison: eq, neq, gt, gte, lt, lte
+  - String: contains, starts_with, ends_with, regex
+  - Set: in, not_in
+  - Existence: exists
+  - Nested field access with dot notation
+  - All/any match modes per rule
+  - Enable/disable rules without removal
+  - Test rules without side effects
+  - Per-rule match counting and top-rule stats
+
 ## 10.19.0 (2026-02-28)
 
 ### Rate Limit Sliding Window — Precise Sub-Window Rate Limiting
