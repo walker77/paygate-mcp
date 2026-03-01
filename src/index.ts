@@ -283,6 +283,16 @@ export type { CreditGrant as ExpirationCreditGrant, CreditGrantParams as Expirat
 export { APIKeyRotationPolicy } from './key-rotation-policy';
 export type { RotationPolicy as RotationPolicyDef, RotationPolicyParams, KeyRotationStatus, ManagedKey, RotationEvent as PolicyRotationEvent, KeyRotationPolicyConfig, KeyRotationPolicyStats } from './key-rotation-policy';
 
+// ── v10.22.0 ──────────────────────────────────────────────────────────
+export { WebhookCircuitBreaker } from './webhook-circuit-breaker';
+export type { CircuitState as WebhookCircuitState, CircuitStatus as WebhookCircuitStatus, WebhookCircuitBreakerConfig, WebhookCircuitBreakerStats } from './webhook-circuit-breaker';
+export { UsageQuotaAlert } from './usage-quota-alert';
+export type { QuotaThreshold, QuotaThresholdParams, QuotaAlert, KeyQuotaStatus, UsageQuotaAlertConfig, UsageQuotaAlertStats } from './usage-quota-alert';
+export { KeyGroupManager as KeyGroupAdmin } from './key-group-manager';
+export type { KeyGroup, KeyGroupCreateParams, KeyGroupQuery, KeyGroupManagerConfig, KeyGroupManagerStats } from './key-group-manager';
+export { RequestThrottleQueue } from './request-throttle';
+export type { ThrottleTicket, ThrottleQueueEntry, ThrottleResult, KeyThrottleStatus, RequestThrottleConfig, RequestThrottleStats } from './request-throttle';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,

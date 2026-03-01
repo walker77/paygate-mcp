@@ -1,5 +1,44 @@
 # Changelog
 
+## 10.22.0 (2026-03-01)
+
+### Webhook Circuit Breaker — Per-URL Failure Protection
+- **Circuit breaker pattern** for webhook endpoints:
+  - Three states: closed (allow), open (block), half-open (probe)
+  - Configurable failure threshold to open circuit
+  - Reset timeout for automatic half-open transition
+  - Half-open success threshold to close circuit
+  - Per-URL independent circuit tracking
+  - Manual reset and remove operations
+  - LRU eviction at max URL capacity
+
+### Usage Quota Alerts — Threshold-Based Alerting
+- **Quota threshold alerting** with configurable triggers:
+  - Define percentage thresholds (warning, critical, etc.)
+  - Automatic alert generation when thresholds crossed
+  - One-time trigger per threshold per reset cycle
+  - Alert acknowledgement (individual and bulk per key)
+  - Re-evaluation on quota changes
+  - Top alerted keys tracking
+
+### Key Group Manager — Collective Key Management
+- **Group API keys** for shared policies:
+  - Create/update/delete named groups with metadata
+  - Add/remove keys with membership tracking
+  - Reverse index: find all groups a key belongs to
+  - Query groups by name or member key
+  - Duplicate name prevention
+  - Configurable max groups and members per group
+
+### Request Throttle Queue — Concurrency Control
+- **Per-key concurrency limiting** with queue depth:
+  - Acquire/queued/rejected status for each request
+  - Automatic queue promotion on slot release
+  - Cancel individual queued requests
+  - Clear entire queue per key
+  - Key-level status with active/queued counts
+  - Empty slot cleanup and key eviction
+
 ## 10.21.0 (2026-03-01)
 
 ### Token Bucket Rate Limiter — Classic Token Bucket Algorithm
