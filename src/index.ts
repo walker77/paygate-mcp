@@ -303,6 +303,16 @@ export type { CreditPool, CreditPoolCreateParams, PoolConsumption, PoolStatus, C
 export { RequestPriorityRouter } from './request-priority-router';
 export type { PriorityTier as RoutingPriorityTier, PriorityRequest, PriorityEnqueueParams, TierConfig, TierStatus, RequestPriorityRouterConfig, RequestPriorityRouterStats } from './request-priority-router';
 
+// ── v10.24.0 ──────────────────────────────────────────────────────────
+export { APIKeyDeprecation } from './key-deprecation';
+export type { DeprecationStatus, DeprecationRecord, DeprecateKeyParams, DeprecationKeyStatus, DeprecationQuery, APIKeyDeprecationConfig, APIKeyDeprecationStats } from './key-deprecation';
+export { WebhookPayloadTransform } from './webhook-payload-transform';
+export type { TransformType, TransformRule as PayloadTransformRule, TransformRuleCreateParams as PayloadTransformCreateParams, TransformResult, WebhookPayloadTransformConfig, WebhookPayloadTransformStats } from './webhook-payload-transform';
+export { CreditLedgerReconciler } from './credit-ledger-reconciler';
+export type { LedgerEntryType, LedgerEntry, ReconciliationResult, CreditLedgerReconcilerConfig, CreditLedgerReconcilerStats } from './credit-ledger-reconciler';
+export { RequestDeduplicator as RequestDedupEngine } from './request-dedup-engine';
+export type { DedupRecord, DedupCheckResult, RequestDeduplicatorConfig as DedupEngineConfig, RequestDeduplicatorStats as DedupEngineStats } from './request-dedup-engine';
+
 export type {
   PayGateConfig,
   JsonRpcRequest,

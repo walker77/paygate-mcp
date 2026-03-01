@@ -1,5 +1,19 @@
 # Changelog
 
+## 10.24.0 (2026-03-01)
+
+### API Key Deprecation — Lifecycle Sunset Scheduling
+Schedule key deprecation with sunset dates, status tracking (deprecated/expired), cancellation, forced expiry, sunset extensions, and expiring-soon queries. Clean lifecycle management for API key retirement.
+
+### Webhook Payload Transform — Rule-Based Payload Manipulation
+5 transform types (remove, rename, add, mask, filter fields) with named rules, enable/disable toggling, ordered multi-rule application, configurable mask values, and rule usage tracking. Shape webhook payloads before delivery.
+
+### Credit Ledger Reconciler — Double-Entry Balance Verification
+Grant/debit/adjustment/refund ledger entries with running balance tracking, reconciliation against reported balances, discrepancy detection, per-key entry history, and per-type queries. Catch billing drift before it becomes a problem.
+
+### Request Dedup Engine — Fingerprint-Based Duplicate Detection
+Content-based request fingerprinting with TTL-based expiration, duplicate detection with count tracking, per-key record grouping, LRU eviction at capacity, and deduplication rate statistics. Prevent duplicate processing automatically.
+
 ## 10.23.0 (2026-03-01)
 
 ### API Key Audit Log — Immutable Lifecycle Tracking
