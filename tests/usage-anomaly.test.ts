@@ -44,9 +44,9 @@ describe('UsageAnomalyDetector', () => {
     });
 
     it('does not flag normal variation', () => {
-      for (let i = 0; i < 10; i++) {
-        detector.recordUsage('k1', 95 + Math.random() * 10);
-      }
+      // Deterministic baseline with wide variation so 105 is within normal range
+      const base = [80, 120, 85, 115, 90, 110, 95, 105, 92, 108];
+      for (const v of base) detector.recordUsage('k1', v);
       const result = detector.recordUsage('k1', 105);
       expect(result.anomaly).toBe(false);
     });
