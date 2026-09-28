@@ -21,13 +21,17 @@ import * as https from 'https';
 export class HttpMcpProxy extends EventEmitter {
   private readonly gate: Gate;
   private readonly remoteUrl: URL;
+  private readonly upstreamTimeoutMs: number;
   private sessionId: string | null = null;
   private started = false;
 
-  constructor(gate: Gate, remoteUrl: string) {
+  constructor(gate: Gate, remoteUrl: string, options: { upstreamTimeoutMs?: number } = {}) {
     super();
     this.gate = gate;
     this.remoteUrl = new URL(remoteUrl);
+    // Max time to wait for the remote MCP server to answer one request. Tool calls that do
+    // real work (crawls, LLM runs) can legitimately exceed 30 s; callers can raise this.
+    this.upstreamTimeoutMs = options.upstreamTimeoutMs && options.upstreamTimeoutMs > 0 ? options.upstreamTimeoutMs : 30_000;
   }
 
   /**
@@ -98,12 +102,26 @@ export class HttpMcpProxy extends EventEmitter {
       // Allowed — forward to remote server
       const response = await this.forwardToServer(request);
 
+      // Refund on failure: if the remote tool call returned an error (including transport
+      // errors mapped to -32603), give the credits back (pre-execution deduction model).
+      // Mirrors McpProxy; previously the remote transport never refunded.
+      let refunded = false;
+      if (response.error && this.gate.refundOnFailure && decision.creditsCharged > 0 && apiKey) {
+        this.gate.refund(apiKey, toolCall.name, decision.creditsCharged);
+        refunded = true;
+      }
+
+      const remaining = refunded
+        ? (this.gate.store.getKey(apiKey!)?.credits ?? decision.remainingCredits)
+        : decision.remainingCredits;
+
       // Emit for observability
       this.emit('tool-call', {
         tool: toolCall.name,
         apiKey: apiKey?.slice(0, 10),
-        creditsCharged: decision.creditsCharged,
-        remainingCredits: decision.remainingCredits,
+        creditsCharged: refunded ? 0 : decision.creditsCharged,
+        remainingCredits: remaining,
+        refunded,
       });
 
       return response;
@@ -253,7 +271,7 @@ export class HttpMcpProxy extends EventEmitter {
         path: this.remoteUrl.pathname + this.remoteUrl.search,
         method: 'POST',
         headers,
-        timeout: 30_000,
+        timeout: this.upstreamTimeoutMs,
       };
 
       const MAX_RESPONSE_BODY = 10 * 1024 * 1024; // 10 MB response limit
@@ -283,6 +301,10 @@ export class HttpMcpProxy extends EventEmitter {
         });
       });
 
+      // Long-running remote tools answer nothing for a while; TCP keepalive probes keep
+      // NAT/firewall state alive so an idle flow is not silently dropped (seen as ETIMEDOUT).
+      req.on('socket', (socket) => socket.setKeepAlive(true, 10_000));
+
       req.on('error', (err) => {
         if (!settled) {
           settled = true;
@@ -293,7 +315,7 @@ export class HttpMcpProxy extends EventEmitter {
         if (!settled) {
           settled = true;
           req.destroy();
-          reject(new Error('Request timed out after 30s'));
+          reject(new Error(`Request timed out after ${this.upstreamTimeoutMs / 1000}s`));
         }
       });
 

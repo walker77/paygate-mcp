@@ -164,6 +164,8 @@ export interface PayGateConfig {
   requestTimeoutMs?: number;
   /** Max time (ms) to receive request headers. Default: 10000 (10s). */
   headersTimeoutMs?: number;
+  /** Max time (ms) to wait for the wrapped remote MCP server (--remote-url) to answer one request. Default: 30000 (30s). */
+  upstreamTimeoutMs?: number;
   /** Keep-alive timeout (ms) for idle connections. Default: 65000 (65s). */
   keepAliveTimeoutMs?: number;
   /** Max HTTP requests per socket (pipelining limit). 0 = unlimited. Default: 0. */
@@ -281,6 +283,8 @@ export interface ServerBackendConfig {
   serverArgs?: string[];
   /** Remote MCP server URL (Streamable HTTP transport) */
   remoteUrl?: string;
+  /** Max time (ms) to wait for this remote server per request. Default: 30000 (30s). */
+  upstreamTimeoutMs?: number;
 }
 
 export const DEFAULT_CONFIG: PayGateConfig = {

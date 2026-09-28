@@ -619,7 +619,7 @@ export class PayGateServer {
       this.router = null;
       this.logger.info(`OpenAPI backend: ${openApiBackend.getInfo().title} (${openApiBackend.getInfo().totalTools} tools)`);
     } else if (remoteUrl) {
-      this.proxy = new HttpMcpProxy(this.gate, remoteUrl);
+      this.proxy = new HttpMcpProxy(this.gate, remoteUrl, { upstreamTimeoutMs: this.config.upstreamTimeoutMs });
       this.router = null;
     } else {
       this.proxy = new McpProxy(this.gate, this.config.serverCommand, this.config.serverArgs);
@@ -3300,6 +3300,7 @@ export class PayGateServer {
       },
       serverLimits: {
         requestTimeoutMs: this.server?.requestTimeout ?? this.config.requestTimeoutMs ?? 30_000,
+        upstreamTimeoutMs: this.config.upstreamTimeoutMs ?? 30_000,
         headersTimeoutMs: this.server?.headersTimeout ?? this.config.headersTimeoutMs ?? 10_000,
         keepAliveTimeoutMs: this.server?.keepAliveTimeout ?? this.config.keepAliveTimeoutMs ?? 65_000,
         maxRequestsPerSocket: this.server?.maxRequestsPerSocket ?? this.config.maxRequestsPerSocket ?? 0,

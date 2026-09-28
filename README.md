@@ -608,6 +608,7 @@ paygate-mcp validate --config paygate.json --json
 --webhook-url <url>  POST batched usage events to this URL
 --webhook-secret <s> HMAC-SHA256 secret for signing webhook payloads
 --refund-on-failure  Refund credits when downstream tool call fails
+--upstream-timeout <n> Max ms to wait for the --remote-url server per request (default: 30000)
 --redis-url <url>    Redis URL for distributed state (e.g. "redis://localhost:6379")
 --config <path>      Load settings from a JSON config file
 --discovery <mode>   Tool discovery mode: static (default) or dynamic

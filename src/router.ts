@@ -56,7 +56,7 @@ export class MultiServerRouter extends EventEmitter {
     for (const cfg of configs) {
       let proxy: ProxyBackend;
       if (cfg.remoteUrl) {
-        proxy = new HttpMcpProxy(gate, cfg.remoteUrl);
+        proxy = new HttpMcpProxy(gate, cfg.remoteUrl, { upstreamTimeoutMs: cfg.upstreamTimeoutMs });
       } else {
         proxy = new McpProxy(gate, cfg.serverCommand!, cfg.serverArgs || []);
       }

@@ -87,6 +87,7 @@ function printUsage(): void {
     --log-level <s>        Log level: debug, info, warn, error, silent (default: info)
     --log-format <s>       Log format: text (human-readable) or json (structured) (default: text)
     --request-timeout <n>  Max request time in ms (default: 30000, 0=no timeout)
+    --upstream-timeout <n> Max time in ms to wait for the --remote-url server per request (default: 30000)
     --headers-timeout <n>  Max header receive time in ms (default: 10000)
     --keepalive-timeout <n> Idle connection timeout in ms (default: 65000)
     --max-requests-per-socket <n>  Max HTTP requests per socket (default: 0=unlimited)
@@ -119,6 +120,7 @@ function printUsage(): void {
     PAYGATE_LOG_LEVEL      Log level (same as --log-level)
     PAYGATE_LOG_FORMAT     Log format (same as --log-format)
     PAYGATE_REQUEST_TIMEOUT  Max request time in ms (same as --request-timeout)
+    PAYGATE_UPSTREAM_TIMEOUT Max time in ms to wait for the remote server (same as --upstream-timeout)
     PAYGATE_HEADERS_TIMEOUT  Max header receive time in ms (same as --headers-timeout)
     PAYGATE_KEEPALIVE_TIMEOUT Idle connection timeout in ms (same as --keepalive-timeout)
     PAYGATE_MAX_REQUESTS_PER_SOCKET Max requests per socket (same as --max-requests-per-socket)
@@ -220,6 +222,8 @@ interface ConfigFile {
   logFormat?: string;
   /** Max time (ms) to complete a request. Default: 30000 */
   requestTimeoutMs?: number;
+  /** Max time (ms) to wait for the remote MCP server per request. Default: 30000 */
+  upstreamTimeoutMs?: number;
   /** Max time (ms) to receive request headers. Default: 10000 */
   headersTimeoutMs?: number;
   /** Keep-alive timeout (ms) for idle connections. Default: 65000 */
@@ -271,6 +275,7 @@ export const ENV_VAR_MAP: Record<string, string> = {
   PAYGATE_LOG_LEVEL: '--log-level (log level: debug/info/warn/error/silent)',
   PAYGATE_LOG_FORMAT: '--log-format (log format: text/json)',
   PAYGATE_REQUEST_TIMEOUT: '--request-timeout (max request time in ms, default: 30000)',
+  PAYGATE_UPSTREAM_TIMEOUT: '--upstream-timeout (max time to wait for the remote server in ms, default: 30000)',
   PAYGATE_HEADERS_TIMEOUT: '--headers-timeout (max header receive time in ms, default: 10000)',
   PAYGATE_KEEPALIVE_TIMEOUT: '--keepalive-timeout (idle connection timeout in ms, default: 65000)',
   PAYGATE_MAX_REQUESTS_PER_SOCKET: '--max-requests-per-socket (pipelining limit, 0=unlimited, default: 0)',
@@ -381,6 +386,7 @@ async function main(): Promise<void> {
       const logLevelFlag = flags['log-level'] || env('PAYGATE_LOG_LEVEL');
       const logFormatFlag = flags['log-format'] || env('PAYGATE_LOG_FORMAT');
       const requestTimeoutFlag = flags['request-timeout'] || env('PAYGATE_REQUEST_TIMEOUT');
+      const upstreamTimeoutFlag = flags['upstream-timeout'] || env('PAYGATE_UPSTREAM_TIMEOUT');
       const headersTimeoutFlag = flags['headers-timeout'] || env('PAYGATE_HEADERS_TIMEOUT');
       const keepaliveTimeoutFlag = flags['keepalive-timeout'] || env('PAYGATE_KEEPALIVE_TIMEOUT');
       const maxReqPerSocketFlag = flags['max-requests-per-socket'] || env('PAYGATE_MAX_REQUESTS_PER_SOCKET');
@@ -437,6 +443,7 @@ async function main(): Promise<void> {
 
       // Server timeout configuration: CLI > env > config > defaults (set in server.ts)
       const requestTimeoutMs = parseInt(requestTimeoutFlag || String(fileConfig.requestTimeoutMs || 0), 10) || undefined;
+      const upstreamTimeoutMs = parseInt(upstreamTimeoutFlag || String(fileConfig.upstreamTimeoutMs || 0), 10) || undefined;
       const headersTimeoutMs = parseInt(headersTimeoutFlag || String(fileConfig.headersTimeoutMs || 0), 10) || undefined;
       const keepAliveTimeoutMs = parseInt(keepaliveTimeoutFlag || String(fileConfig.keepAliveTimeoutMs || 0), 10) || undefined;
       const maxRequestsPerSocket = parseInt(maxReqPerSocketFlag || String(fileConfig.maxRequestsPerSocket || 0), 10) || undefined;
@@ -464,6 +471,7 @@ async function main(): Promise<void> {
         logLevel,
         logFormat,
         requestTimeoutMs,
+        upstreamTimeoutMs,
         headersTimeoutMs,
         keepAliveTimeoutMs,
         maxRequestsPerSocket,
